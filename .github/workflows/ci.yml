@@ -82,7 +82,7 @@ jobs:
           default: true
           ldproxy: false
       - uses: Swatinem/rust-cache@v2
-      - run: cargo +esp build --target ${{ matrix.target }}
+      - run: cargo +esp build --target ${{ matrix.target }} -Zbuild-std=core
 
   doc:
     name: Docs
