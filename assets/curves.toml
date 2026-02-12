@@ -1,0 +1,116 @@
+# ph-curves example TOML — demonstrates all three curve definition styles.
+#
+# Each curve needs exactly ONE of: `builtin`, `formula`, or `points`.
+# Set `monotonic = false` to skip inverse LUT generation (default: true).
+#
+# Coordinates are in the LUT's index range (0..lut_size-1, default 0..255).
+# Use --value-type u16 --lut-size 65536 for 16-bit resolution.
+
+# ── Builtins ────────────────────────────────────────────────────────────
+# Just set builtin = "<name>". No other fields needed (monotonic defaults
+# to true, which is correct for every builtin).
+#
+# Available builtins:
+#   linear, ease_in_quad, ease_out_quad, ease_in_out_quad,
+#   ease_in_cubic, ease_out_cubic, ease_in_out_cubic,
+#   ease_in_quart, ease_out_quart, ease_in_out_quart,
+#   ease_in_expo, ease_out_expo, smoothstep, smoother_step.
+# Legacy aliases: ease_in, ease_out, ease_in_out (= quad variants).
+
+[curves.linear]
+builtin = "linear"
+
+[curves.ease_in_quad]
+builtin = "ease_in_quad"
+
+[curves.ease_out_quad]
+builtin = "ease_out_quad"
+
+[curves.ease_in_out_quad]
+builtin = "ease_in_out_quad"
+
+[curves.ease_in_cubic]
+builtin = "ease_in_cubic"
+
+[curves.ease_out_cubic]
+builtin = "ease_out_cubic"
+
+[curves.ease_in_out_cubic]
+builtin = "ease_in_out_cubic"
+
+[curves.ease_in_quart]
+builtin = "ease_in_quart"
+
+[curves.ease_out_quart]
+builtin = "ease_out_quart"
+
+[curves.ease_in_out_quart]
+builtin = "ease_in_out_quart"
+
+[curves.ease_in_expo]
+builtin = "ease_in_expo"
+
+[curves.ease_out_expo]
+builtin = "ease_out_expo"
+
+[curves.smoothstep]
+builtin = "smoothstep"
+
+[curves.smoother_step]
+builtin = "smoother_step"
+
+# ── Formulas ────────────────────────────────────────────────────────────
+# `t` goes from 0.0 to 1.0; expression must return 0.0..=1.0.
+# Operators: + - * / ^ (or **), unary -, parentheses.
+# Functions: pow, sqrt, abs, min, max, clamp, sin, cos, tan, exp, ln, log2.
+# Constants: pi, e.
+
+# Standard gamma correction (sRGB-ish).
+[curves.gamma_22]
+formula = "pow(t, 2.2)"
+
+# Inverse gamma (for linearising sRGB values).
+[curves.gamma_inv_22]
+formula = "pow(t, 1.0 / 2.2)"
+
+# CIE perceptual brightness (simplified).
+[curves.cie_lightness]
+formula = "pow((t + 0.16) / 1.16, 3.0)"
+
+# A gentle S-curve using a power function.
+[curves.power_s_curve]
+formula = "pow(t, 2.0) / (pow(t, 2.0) + pow(1.0 - t, 2.0))"
+
+# Attempt at a sine-based ease-in-out
+[curves.sine_ease]
+formula = "(1.0 - cos(t * pi)) / 2.0"
+
+# ── Points ──────────────────────────────────────────────────────────────
+# Piecewise-linear control points as [input, output] pairs.
+# Must start at [0, 0] and end at [lut_size-1, lut_size-1] (or less).
+# Points must have strictly increasing input values.
+#
+# NOTE: Point coordinates are absolute, so these examples are only valid
+# for the default --lut-size 256.  For u16 curves, use formulas or
+# builtins instead (or write points with coordinates up to 65535).
+
+# Contrast-boost S-curve via points.
+[curves.contrast_boost]
+points = [
+  [0, 0],
+  [64, 32],
+  [128, 128],
+  [192, 224],
+  [255, 255],
+]
+
+# Non-monotonic wave (no inverse LUT).
+[curves.wave]
+monotonic = false
+points = [
+  [0, 0],
+  [64, 200],
+  [128, 55],
+  [192, 200],
+  [255, 255],
+]

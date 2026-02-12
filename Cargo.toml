@@ -1,0 +1,37 @@
+[package]
+name = "ph-curves"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92.0"
+description = "no-std, no-alloc curve lookup tables and tickless scheduling for embedded Rust"
+authors = ["Steven Giacomelli <steve@giacomelli.ca>"]
+license = "MIT"
+repository = "https://github.com/photon-circus/ph-curves"
+documentation = "https://docs.rs/ph-curves"
+readme = "README.md"
+keywords = ["no-std", "embedded", "curves", "lut", "easing"]
+categories = ["no-std", "embedded", "mathematics"]
+exclude = [
+    ".github/",
+    ".gitattributes",
+    ".gitignore",
+    "clippy.toml",
+    "rust-toolchain.toml",
+    "assets/",
+]
+
+[features]
+gen = ["dep:serde", "dep:toml", "dep:clap"]
+
+[dependencies]
+fixed = { version = "1", default-features = false }
+
+# Only pulled in by the `gen` feature for the CLI binary.
+serde = { version = "1", features = ["derive"], optional = true }
+toml = { version = "0.8", optional = true }
+clap = { version = "4", features = ["derive"], optional = true }
+
+[[bin]]
+name = "ph-curves-gen"
+path = "src/bin/gen/main.rs"
+required-features = ["gen"]
