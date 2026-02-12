@@ -845,3 +845,130 @@ fn tickless_deadline_min_dt_pushes_past_end() {
         dl.deadline_ms
     );
 }
+
+#[test]
+fn quantize_nearest_no_u16_overflow() {
+    // step=2000, value=65535: (65535+1000)/2000*2000 = 66000 would overflow u16.
+    // Must produce 65535 (capped), not 999 (wrapped).
+    assert_eq!(crate::quantize(65535, 2000, Rounding::Nearest), 65535);
+    assert_eq!(crate::quantize(65000, 2000, Rounding::Nearest), 65535);
+    // Just below the overflow threshold — should round down normally.
+    assert_eq!(crate::quantize(64001, 2000, Rounding::Nearest), 64000);
+    assert_eq!(crate::quantize(64000, 2000, Rounding::Nearest), 64000);
+}
+
+#[test]
+fn quantize_ceil_no_u16_overflow() {
+    // div_ceil(65535, 2000) * 2000 = 33 * 2000 = 66000 would overflow u16.
+    assert_eq!(crate::quantize(65535, 2000, Rounding::Ceil), 65535);
+    assert_eq!(crate::quantize(64001, 2000, Rounding::Ceil), 65535);
+    // Exact multiple — no rounding needed.
+    assert_eq!(crate::quantize(64000, 2000, Rounding::Ceil), 64000);
+}
+
+#[test]
+fn quantize_floor_large_step_at_max() {
+    // Floor should never overflow (result <= value), but verify.
+    assert_eq!(crate::quantize(65535, 2000, Rounding::Floor), 64000);
+    assert_eq!(crate::quantize(65535, 30000, Rounding::Floor), 60000);
+}
+
+#[test]
+fn quantize_large_step_near_max() {
+    // step > u16::MAX/2 — previous code would always overflow for Nearest.
+    assert_eq!(crate::quantize(40000, 40000, Rounding::Nearest), 40000);
+    assert_eq!(crate::quantize(60000, 40000, Rounding::Nearest), 65535);
+    assert_eq!(crate::quantize(60000, 40000, Rounding::Ceil), 65535);
+    assert_eq!(crate::quantize(60000, 40000, Rounding::Floor), 40000);
+}
+
+#[test]
+fn quantize_step_equals_max_u16() {
+    // Edge case: step = u16::MAX.
+    assert_eq!(crate::quantize(0, 65535, Rounding::Floor), 0);
+    assert_eq!(crate::quantize(0, 65535, Rounding::Ceil), 0);
+    assert_eq!(crate::quantize(0, 65535, Rounding::Nearest), 0);
+    assert_eq!(crate::quantize(65535, 65535, Rounding::Floor), 65535);
+    assert_eq!(crate::quantize(65535, 65535, Rounding::Ceil), 65535);
+    assert_eq!(crate::quantize(65535, 65535, Rounding::Nearest), 65535);
+    assert_eq!(crate::quantize(32767, 65535, Rounding::Nearest), 0);
+    assert_eq!(crate::quantize(32768, 65535, Rounding::Nearest), 65535);
+}
+
+/// Proves that the bug caused ramps to 65535 to be skipped entirely.
+/// With the overflow, `end_val_q` wraps to 0, matching `current_val` at t=0,
+/// making the scheduler think the ramp is already complete.
+#[test]
+fn tickless_ramp_to_max_with_large_step_not_skipped() {
+    let curve = linear_curve();
+    let schedule = curve.tickless_schedule(
+        0,      // t0_ms
+        100,    // duration_ms
+        0,      // start_val
+        65535,  // end_val
+        2000,   // step — triggers the overflow in old code
+        Rounding::Nearest,
+        0,      // min_dt_ms
+    );
+
+    // At t=0, the ramp should NOT be finished — it should have intermediate steps.
+    let dl_start = schedule.next_deadline(0);
+    assert_eq!(dl_start.current_val, 0, "start value should be 0");
+    // The deadline should be BEFORE end_ms, meaning there's a transition to wake for.
+    assert!(
+        dl_start.deadline_ms < 100,
+        "first deadline {} should be before end_ms 100 (ramp has intermediate steps)",
+        dl_start.deadline_ms
+    );
+
+    // At t=50 (midpoint), value should be roughly half of 65535.
+    let dl_mid = schedule.next_deadline(50);
+    assert!(
+        dl_mid.current_val > 0,
+        "midpoint value should be non-zero, got {}",
+        dl_mid.current_val
+    );
+    assert!(
+        dl_mid.current_val < 65535,
+        "midpoint value should be below max, got {}",
+        dl_mid.current_val
+    );
+
+    // Collect all deadlines — should have multiple steps, not just one.
+    let deadlines: Vec<TicklessDeadline> = schedule.iter(0).collect();
+    assert!(
+        deadlines.len() > 2,
+        "ramp 0→65535 with step=2000 should produce >2 deadlines, got {}",
+        deadlines.len()
+    );
+}
+
+/// Same test but for decreasing ramp with Ceil rounding.
+#[test]
+fn tickless_ramp_from_max_with_large_step_ceil() {
+    let curve = linear_curve();
+    let schedule = curve.tickless_schedule(
+        0,      // t0_ms
+        100,    // duration_ms
+        65535,  // start_val
+        0,      // end_val
+        2000,   // step
+        Rounding::Ceil,
+        0,      // min_dt_ms
+    );
+
+    let dl_start = schedule.next_deadline(0);
+    // Start should be quantized from 65535 — with fix, should be 65535 (capped).
+    assert!(
+        dl_start.current_val > 60000,
+        "start value should be near max, got {}",
+        dl_start.current_val
+    );
+
+    let deadlines: Vec<TicklessDeadline> = schedule.iter(0).collect();
+    assert!(
+        deadlines.len() > 2,
+        "ramp 65535→0 with step=2000 should produce >2 deadlines, got {}",
+        deadlines.len()
+    );
+}

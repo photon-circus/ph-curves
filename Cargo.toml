@@ -1,6 +1,6 @@
 [package]
 name = "ph-curves"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.92.0"
 description = "no-std, no-alloc curve lookup tables and tickless scheduling for embedded Rust"
@@ -16,8 +16,7 @@ exclude = [
     ".gitattributes",
     ".gitignore",
     "clippy.toml",
-    "rust-toolchain.toml",
-    "assets/",
+    "rust-toolchain.toml"
 ]
 
 [features]

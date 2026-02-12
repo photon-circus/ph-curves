@@ -223,11 +223,14 @@ pub fn map_u8_to_u16(w: u8, max: u16) -> u16 {
 ///
 /// Panics if `step` is `0` (division by zero).
 pub fn quantize(value: u16, step: u16, rounding: Rounding) -> u16 {
-    match rounding {
-        Rounding::Floor => (value / step) * step,
-        Rounding::Ceil => value.div_ceil(step) * step,
-        Rounding::Nearest => ((value + step / 2) / step) * step,
-    }
+    let v = u32::from(value);
+    let s = u32::from(step);
+    let result = match rounding {
+        Rounding::Floor => (v / s) * s,
+        Rounding::Ceil => ((v + s - 1) / s) * s,
+        Rounding::Nearest => ((v + s / 2) / s) * s,
+    };
+    result.min(u32::from(u16::MAX)) as u16
 }
 
 /// Return the next quantized target value one `step` closer to `end`.
