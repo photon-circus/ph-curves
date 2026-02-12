@@ -227,7 +227,7 @@ pub fn quantize(value: u16, step: u16, rounding: Rounding) -> u16 {
     let s = u32::from(step);
     let result = match rounding {
         Rounding::Floor => (v / s) * s,
-        Rounding::Ceil => ((v + s - 1) / s) * s,
+        Rounding::Ceil => v.div_ceil(s) * s,
         Rounding::Nearest => ((v + s / 2) / s) * s,
     };
     result.min(u32::from(u16::MAX)) as u16

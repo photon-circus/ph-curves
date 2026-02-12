@@ -902,13 +902,13 @@ fn quantize_step_equals_max_u16() {
 fn tickless_ramp_to_max_with_large_step_not_skipped() {
     let curve = linear_curve();
     let schedule = curve.tickless_schedule(
-        0,      // t0_ms
-        100,    // duration_ms
-        0,      // start_val
-        65535,  // end_val
-        2000,   // step — triggers the overflow in old code
+        0,     // t0_ms
+        100,   // duration_ms
+        0,     // start_val
+        65535, // end_val
+        2000,  // step — triggers the overflow in old code
         Rounding::Nearest,
-        0,      // min_dt_ms
+        0, // min_dt_ms
     );
 
     // At t=0, the ramp should NOT be finished — it should have intermediate steps.
@@ -948,13 +948,13 @@ fn tickless_ramp_to_max_with_large_step_not_skipped() {
 fn tickless_ramp_from_max_with_large_step_ceil() {
     let curve = linear_curve();
     let schedule = curve.tickless_schedule(
-        0,      // t0_ms
-        100,    // duration_ms
-        65535,  // start_val
-        0,      // end_val
-        2000,   // step
+        0,     // t0_ms
+        100,   // duration_ms
+        65535, // start_val
+        0,     // end_val
+        2000,  // step
         Rounding::Ceil,
-        0,      // min_dt_ms
+        0, // min_dt_ms
     );
 
     let dl_start = schedule.next_deadline(0);
