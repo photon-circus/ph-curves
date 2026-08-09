@@ -12,12 +12,17 @@ function Invoke-Cargo {
 Invoke-Cargo fmt --all --check
 Invoke-Cargo test
 Invoke-Cargo test --features gen
+# `gen` is the build.rs library API only. The CLI binary sits behind
+# `gen-cli`, so without this line `--all-targets` silently stops covering
+# src/bin/gen/main.rs.
+Invoke-Cargo test --features gen-cli
 
 $previousRustFlags = $env:RUSTFLAGS
 try {
     $env:RUSTFLAGS = "-Dwarnings"
     Invoke-Cargo clippy --all-targets
     Invoke-Cargo clippy --all-targets --features gen
+    Invoke-Cargo clippy --all-targets --features gen-cli
 } finally {
     $env:RUSTFLAGS = $previousRustFlags
 }
