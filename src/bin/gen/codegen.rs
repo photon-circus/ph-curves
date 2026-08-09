@@ -45,15 +45,7 @@ pub fn generate(
     for (name, def) in &curves {
         let data = super::curve::build(name, def, lut_size);
         let const_name = &const_names[*name];
-        emit_curve(
-            &mut out,
-            name,
-            const_name,
-            def,
-            &data,
-            value_type,
-            lut_size,
-        );
+        emit_curve(&mut out, name, const_name, def, &data, value_type, lut_size);
     }
 
     for (name, def) in &transfers {
@@ -224,12 +216,12 @@ fn emitted_const_names(
         if def.monotonic {
             identifiers.push(format!("{const_name}_INV"));
         }
-        reserve_identifiers(*name, identifiers, &mut emitted_sources)?;
+        reserve_identifiers(name, identifiers, &mut emitted_sources)?;
     }
     for (name, _) in transfers {
         let const_name = &names[*name];
         reserve_identifiers(
-            *name,
+            name,
             [
                 const_name.clone(),
                 format!("{const_name}_INPUTS"),
@@ -349,12 +341,20 @@ mod tests {
 
     #[test]
     fn const_name_rejects_empty() {
-        assert!(to_const_name("").unwrap_err().contains("cannot be normalized"));
+        assert!(
+            to_const_name("")
+                .unwrap_err()
+                .contains("cannot be normalized")
+        );
     }
 
     #[test]
     fn const_name_rejects_special_chars_only() {
-        assert!(to_const_name("---").unwrap_err().contains("cannot be normalized"));
+        assert!(
+            to_const_name("---")
+                .unwrap_err()
+                .contains("cannot be normalized")
+        );
     }
 
     #[test]
@@ -540,12 +540,7 @@ mod tests {
                 output_range: None,
             },
         );
-        let error = generate(
-            &CurvesFile { curves, transfers },
-            "u8",
-            256,
-        )
-        .unwrap_err();
+        let error = generate(&CurvesFile { curves, transfers }, "u8", 256).unwrap_err();
         assert!(error.contains("both normalize"));
         assert!(error.contains("`SENSOR`"));
     }

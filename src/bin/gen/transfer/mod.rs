@@ -110,7 +110,7 @@ pub fn build(name: &str, def: &TransferDef) -> TransferData {
             minimum < maximum,
             "transfer `{name}`: domain must be strictly increasing"
         );
-        let parsed = formula::Formula::parse(expression, "x");
+        let parsed = formula::Formula::parse(expression);
         let physical: Vec<f64> = (minimum..=maximum)
             .map(|input| parsed.eval("x", f64::from(input)))
             .collect();
@@ -295,7 +295,21 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "cannot meet maximum error")]
+    fn formula_validation_uses_declared_domain_values() {
+        let data = build(
+            "formula",
+            &TransferDef {
+                formula: Some("clamp(x, 1, x)".into()),
+                domain: Some([2, 10]),
+                ..base_def()
+            },
+        );
+        assert_eq!(data.inputs, vec![2, 10]);
+        assert_eq!(data.outputs, vec![2_000, 10_000]);
+    }
+
+    #[test]
+    #[should_panic(expected = "greedy fitter did not meet maximum error")]
     fn knot_cap_prevents_full_domain_fallback() {
         let mut def = base_def();
         def.formula = Some("x * x".into());

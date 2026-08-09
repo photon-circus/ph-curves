@@ -1,4 +1,8 @@
-//! Bounded adaptive knot selection and exhaustive verification.
+//! Bounded greedy knot selection and exhaustive verification.
+//!
+//! The fitter repeatedly splits at the current worst-error input. Exhaustive
+//! verification proves the emitted table meets the requested error, but
+//! exhausting `max_knots` does not prove that no other knot placement could.
 
 use ph_curves::interpolate_segment;
 
@@ -46,7 +50,7 @@ pub fn fit(
         );
         assert!(
             knot_offsets.len() < max_knots,
-            "transfer `{name}`: cannot meet maximum error {requested_max_error} within max_knots={max_knots}; best error is {worst_error:.6} at input {}",
+            "transfer `{name}`: greedy fitter did not meet maximum error {requested_max_error} within max_knots={max_knots}; current error is {worst_error:.6} at input {}; increase max_knots or provide physical points chosen by another fitting method",
             domain_min + worst_offset as u16
         );
 

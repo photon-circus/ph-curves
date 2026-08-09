@@ -325,16 +325,12 @@ pub struct Formula {
 }
 
 impl Formula {
-    /// Parse and validate an expression.
-    pub fn parse(expr: &str, variable_name: &str) -> Self {
+    /// Tokenize an expression for repeated evaluation.
+    ///
+    /// Evaluation performs syntax and semantic validation because some valid
+    /// operations depend on the caller-provided variable value.
+    pub fn parse(expr: &str) -> Self {
         let tokens = tokenize(expr);
-        let mut evaluator = Evaluator::new(&tokens, variable_name, 0.5);
-        let _ = evaluator.expr();
-        assert!(
-            evaluator.pos == tokens.len(),
-            "trailing tokens in formula: {:?}",
-            &tokens[evaluator.pos..]
-        );
         Self { tokens }
     }
 
@@ -354,7 +350,7 @@ impl Formula {
 /// Evaluate `expr` for a given `t` value (0.0..=1.0).
 #[cfg(test)]
 pub fn eval(expr: &str, t: f64) -> f64 {
-    Formula::parse(expr, "t").eval("t", t)
+    Formula::parse(expr).eval("t", t)
 }
 
 // ===========================================================================

@@ -167,6 +167,13 @@ numerical error. Adaptive fitting defaults to at most 256 knots (configurable
 up to an absolute 4,096-knot safety limit) and fails rather than silently
 emitting a full domain table.
 
+Knot selection is a bounded greedy heuristic: it repeatedly adds the input
+with the current worst error. Exhaustive verification guarantees that every
+emitted table meets the requested error, but reaching `max_knots` does not
+prove that no alternative knot placement could meet it. Increase `max_knots`
+or generate physical points with a domain-specific fitting tool when that
+distinction matters.
+
 `below` and `above` independently select `"error"` (the default) or `"clamp"`.
 Transfer functions never extrapolate.
 

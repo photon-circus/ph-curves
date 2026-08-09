@@ -70,7 +70,7 @@ pub fn build(name: &str, def: &CurveDef, lut_size: usize) -> CurveData {
     let fwd = if let Some(b) = &def.builtin {
         build_from_easing(b, lut_size, |t| builtin::eval(b, t))
     } else if let Some(f) = &def.formula {
-        let parsed = formula::Formula::parse(f, "t");
+        let parsed = formula::Formula::parse(f);
         build_from_easing(f, lut_size, |t| parsed.eval("t", t))
     } else {
         points::build(name, def.points.as_deref().unwrap(), lut_size)

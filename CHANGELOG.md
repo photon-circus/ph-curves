@@ -25,6 +25,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `_OUTPUTS`, `_METADATA`).
 - Generated `///` docs Debug-escape curve/transfer names, provenance, and unit
   strings so TOML text cannot break out of line comments.
+- Formula parsing no longer evaluates at an arbitrary out-of-domain value
+  before the generator evaluates the declared input domain.
+- Signed transfer interpolation rounds the complete result at half-way ties,
+  matching the documented ties-away-from-zero behavior.
+
+### Changed
+
+- Exhausting the greedy transfer fitter's knot budget now reports the
+  heuristic limitation without claiming that no alternative knot placement
+  could satisfy the requested error.
 
 ### Notes
 

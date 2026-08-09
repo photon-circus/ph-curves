@@ -271,13 +271,12 @@ fn interpolate_valid_segment(input: u16, x0: u16, y0: i32, x1: u16, y1: i32) -> 
     let offset = i64::from(input - x0);
     let span = i64::from(x1 - x0);
     let delta = i64::from(y1) - i64::from(y0);
-    let numerator = delta * offset;
-    let adjustment = if numerator >= 0 {
+    let numerator = i64::from(y0) * span + delta * offset;
+    let result = if numerator >= 0 {
         (numerator + span / 2) / span
     } else {
         -((-numerator + span / 2) / span)
     };
-    let result = i64::from(y0) + adjustment;
     debug_assert!((i64::from(i32::MIN)..=i64::from(i32::MAX)).contains(&result));
     result as i32
 }
@@ -330,6 +329,8 @@ mod tests {
     fn signed_rounding_ties_away_from_zero() {
         assert_eq!(interpolate_segment(1, 0, 0, 2, 1), Ok(1));
         assert_eq!(interpolate_segment(1, 0, 0, 2, -1), Ok(-1));
+        assert_eq!(interpolate_segment(1, 0, -10, 2, -9), Ok(-10));
+        assert_eq!(interpolate_segment(1, 0, 10, 2, 9), Ok(10));
         assert_eq!(interpolate_segment(1, 0, 10, 3, 11), Ok(10));
         assert_eq!(interpolate_segment(2, 0, 10, 3, 11), Ok(11));
         assert_eq!(interpolate_segment(1, 0, -10, 3, -11), Ok(-10));

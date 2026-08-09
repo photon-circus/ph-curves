@@ -18,7 +18,7 @@ fn generated_ntc_metadata_and_boundaries() {
     assert_eq!(NTC_10K_BETA_3950_METADATA.domain_min, 142);
     assert_eq!(NTC_10K_BETA_3950_METADATA.domain_max, 3995);
     assert_eq!(NTC_10K_BETA_3950_METADATA.knot_count, 61);
-    assert_eq!(NTC_10K_BETA_3950_METADATA.achieved_max_error, 47);
+    assert_eq!(NTC_10K_BETA_3950_METADATA.achieved_max_error, 49);
     assert_eq!(
         NTC_10K_BETA_3950_METADATA.direction,
         ph_curves::MonotonicDirection::Decreasing
