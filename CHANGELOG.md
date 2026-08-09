@@ -7,8 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.2.0] - 2026-08-09
-
 ### Added
 
 - Sparse, integer-only `PiecewiseLinearTransfer` support for physical
@@ -122,8 +120,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 14 built-in easing curves plus legacy aliases.
 - 16-bit LUT support (`--value-type u16 --lut-size 65536`).
 
-[Unreleased]: https://github.com/photon-circus/ph-curves/compare/v0.2.0...HEAD
-[0.2.0]: https://github.com/photon-circus/ph-curves/compare/v0.1.2...v0.2.0
+[Unreleased]: https://github.com/photon-circus/ph-curves/compare/v0.1.2...HEAD
 [0.1.2]: https://github.com/photon-circus/ph-curves/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/photon-circus/ph-curves/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/photon-circus/ph-curves/releases/tag/v0.1.0
