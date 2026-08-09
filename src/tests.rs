@@ -526,6 +526,13 @@ fn u16_from_time_frac_half() {
     );
 }
 
+#[test]
+fn u16_from_time_frac_supports_full_u32_duration_range() {
+    assert_eq!(u16::from_time_frac(70_000, 100_000), 45874);
+    assert_eq!(u16::from_time_frac(u32::MAX / 2, u32::MAX), 32767);
+    assert_eq!(u16::from_time_frac(u32::MAX - 1, u32::MAX), 65534);
+}
+
 // ---------------------------------------------------------------------------
 // UnitValue for u16 — to_time_offset
 // ---------------------------------------------------------------------------
@@ -543,6 +550,27 @@ fn u16_to_time_offset_full() {
 #[test]
 fn u16_to_time_offset_zero_duration() {
     assert_eq!(32768u16.to_time_offset(0), 0);
+}
+
+#[test]
+fn u16_to_time_offset_supports_full_u32_duration_range() {
+    assert_eq!(1u16.to_time_offset(u32::MAX), 65537);
+    assert_eq!(32768u16.to_time_offset(u32::MAX), 2_147_516_416);
+    assert_eq!(65535u16.to_time_offset(u32::MAX), u32::MAX);
+}
+
+/// `to_time_offset` must never schedule a wake-up past the segment end.
+#[test]
+fn u16_to_time_offset_never_exceeds_duration() {
+    for duration in [1, 1000, 65_535, 100_000, u32::MAX / 2, u32::MAX] {
+        for value in [0u16, 1, 32_768, 65_534, 65_535] {
+            let offset = value.to_time_offset(duration);
+            assert!(
+                offset <= duration,
+                "u16 {value} over {duration}ms produced {offset}ms"
+            );
+        }
+    }
 }
 
 #[test]

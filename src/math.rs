@@ -1,7 +1,7 @@
 //! Fixed-point math helpers and the [`UnitValue`] abstraction.
 //!
-//! All arithmetic uses the [`fixed`] crate so that the library remains
-//! `no_std` and avoids floating-point operations at runtime.
+//! All arithmetic uses the [`fixed`] crate or plain integers so that the
+//! library remains `no_std` and avoids floating-point operations at runtime.
 
 use fixed::types::{I16F16, I32F32, U16F16};
 
@@ -131,19 +131,19 @@ impl UnitValue for u16 {
         if elapsed_ms == 0 {
             return 0;
         }
-        let frac = I32F32::from_num(elapsed_ms) / I32F32::from_num(duration_ms);
-        let u = frac * I32F32::from_num(65535u32);
-        u.to_num::<u32>().min(65535) as u16
+        // `u64` rather than `I32F32`: the fixed-point type holds only 32
+        // integer bits, so durations above `i32::MAX` overflowed on
+        // conversion.  The guard above bounds the quotient below 65535.
+        (u64::from(elapsed_ms) * 65535 / u64::from(duration_ms)) as u16
     }
 
     fn to_time_offset(self, duration_ms: u32) -> u32 {
         if duration_ms == 0 {
             return 0;
         }
-        let frac = I32F32::from_num(self) / I32F32::from_num(65535u32);
-        (frac * I32F32::from_num(duration_ms))
-            .ceil()
-            .to_num::<u32>()
+        // Rounds up, as documented; the product is at most
+        // `65535 * u32::MAX`, so the result never exceeds `duration_ms`.
+        (u64::from(self) * u64::from(duration_ms)).div_ceil(65535) as u32
     }
 
     fn lerp_u16(self, a: u16, b: u16) -> u16 {
