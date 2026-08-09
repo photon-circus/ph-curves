@@ -1,5 +1,6 @@
 use ph_curves::{
-    MedianFilter, Stability, StabilityDetector, TemporalFilter, TransferError, TransferFunction,
+    InverseTransferFunction, MedianFilter, Stability, StabilityDetector, TemporalFilter,
+    TransferError, TransferFunction,
 };
 
 include!("fixtures/ntc_generated.rs");
@@ -36,6 +37,34 @@ fn generated_ntc_metadata_and_boundaries() {
             input: 3996,
             maximum: 3995
         })
+    );
+}
+
+#[test]
+fn generated_ntc_inverse_setpoint_and_round_trip() {
+    assert_eq!(NTC_10K_BETA_3950_METADATA.range_min, -39_919);
+    assert_eq!(NTC_10K_BETA_3950_METADATA.range_max, 124_957);
+    assert_eq!(NTC_10K_BETA_3950_METADATA.flat_segment_count, 0);
+    assert_eq!(
+        NTC_10K_BETA_3950_METADATA.strictly_monotonic,
+        NTC_10K_BETA_3950_METADATA.flat_segment_count == 0
+    );
+
+    let room = NTC_10K_BETA_3950.invert(25_000).unwrap();
+    assert!((2040..=2056).contains(&room));
+    assert_eq!(NTC_10K_BETA_3950.invert_physical(124_957), Ok(142));
+    assert_eq!(NTC_10K_BETA_3950.invert_physical(-39_919), Ok(3995));
+
+    let mut worst = 0u16;
+    for code in NTC_10K_BETA_3950_METADATA.domain_min..=NTC_10K_BETA_3950_METADATA.domain_max {
+        let physical = NTC_10K_BETA_3950.convert(code).unwrap();
+        let recovered = NTC_10K_BETA_3950.invert(physical).unwrap();
+        let distance = u16::try_from(i32::from(recovered).abs_diff(i32::from(code))).unwrap();
+        worst = worst.max(distance);
+    }
+    assert_eq!(
+        worst, NTC_10K_BETA_3950_METADATA.achieved_max_inverse_code_error,
+        "update fixture achieved_max_inverse_code_error if the table changes"
     );
 }
 

@@ -205,7 +205,7 @@ The transfer layer does **not** currently provide:
 
 - Signed or wider-than-`u16` input domains, or outputs wider than `i32`.
 - Nonmonotonic forward maps.
-- Physical-value-to-input inverse conversion.
+- Dense physical-domain inverse LUTs (inverse uses runtime search on the forward knots).
 - Multidimensional compensation such as measurement by temperature or load.
 - Runtime/factory gain-and-offset calibration wrappers.
 - Automatic chaining or unit conversion between transfer functions.
@@ -415,8 +415,9 @@ formula = "pow((t + 0.16) / 1.16, 3.0)"
 | `MonotonicCurveLut256` | Type alias: `MonotonicCurveLut<u8, u8, 256>`        |
 | `CurveLut65536`        | Type alias: `CurveLut<u16, u16, 65536>`             |
 | `MonotonicCurveLut65536` | Type alias: `MonotonicCurveLut<u16, u16, 65536>`  |
-| `PiecewiseLinearTransfer<N>` | Sparse integer ADC-to-measurement transfer |
-| `TransferMetadata`       | Units, scale, domain, direction, and error bound  |
+| `PiecewiseLinearTransfer<N>` | Sparse integer ADC↔measurement transfer (forward + inverse) |
+| `TransferMetadata`       | Units, scale, domain/range, flats, and error bounds |
+| `FlatResolution`         | Policy for non-unique (flat) inverse outputs      |
 | `MovingAverage<T,N>`     | Exact fixed-window integer mean                  |
 | `MedianFilter<T,N>`      | Small fixed-window outlier rejection             |
 | `ExponentialSmoother<T>` | Constant-memory integer smoothing                |
@@ -431,6 +432,9 @@ formula = "pow((t + 0.16) / 1.16, 3.0)"
   onto a discrete integer range with fixed-point helpers.
 - **`TransferFunction`** — checked physical conversion with explicit
   below/above-domain behavior and no extrapolation.
+- **`InverseTransferFunction`** — physical → observation invert on the same
+  sparse knots (`invert` / `invert_physical`), with `FlatResolution` for
+  plateaus.
 - **`TemporalFilter`** — caller-driven update/reset interface with explicit
   warm-up output.
 

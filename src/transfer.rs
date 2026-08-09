@@ -3,6 +3,9 @@
 //! Transfer functions map an integer observation, such as an ADC code, to a
 //! signed measurement value in a declared scale. Unlike normalized curves,
 //! they are not coupled to [`crate::UnitValue`] or tickless scheduling.
+//!
+//! Inverse conversion maps a physical setpoint back to an observation using
+//! the same sparse knot tables — no dense physical-domain LUT.
 
 /// A conversion from an observation to a measurement.
 pub trait TransferFunction {
@@ -19,6 +22,28 @@ pub trait TransferFunction {
     fn convert(&self, input: Self::Input) -> Result<Self::Output, TransferError<Self::Input>>;
 }
 
+/// A conversion from a physical measurement back to an observation.
+///
+/// Parallel to [`TransferFunction`]; not a supertrait, because the map
+/// direction and error type differ.
+pub trait InverseTransferFunction {
+    /// Physical measurement type (input to inverse).
+    type Physical: Copy;
+    /// Observation type (output of inverse).
+    type Observation: Copy;
+
+    /// Invert a physical measurement to an observation.
+    ///
+    /// Values outside the table's physical range follow the table's
+    /// [`BoundaryBehavior`] settings, interpreted against the physical
+    /// range (not the observation domain). Transfer inverses never
+    /// extrapolate.
+    fn invert(
+        &self,
+        physical: Self::Physical,
+    ) -> Result<Self::Observation, InverseTransferError<Self::Physical>>;
+}
+
 /// Monotonic direction of a transfer function's output.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum MonotonicDirection {
@@ -29,12 +54,29 @@ pub enum MonotonicDirection {
 }
 
 /// Behavior for observations outside one side of a transfer domain.
+///
+/// For [`InverseTransferFunction`], the same settings apply to physical
+/// values below or above the knot output range.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum BoundaryBehavior {
-    /// Return a [`TransferError`].
+    /// Return a domain/range error.
     Error,
     /// Return the nearest endpoint value.
     Clamp,
+}
+
+/// How to resolve a physical value that lands on a flat (non-unique) output run.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Default)]
+pub enum FlatResolution {
+    /// Return the smallest input of the flat run.
+    #[default]
+    PreferLowInput,
+    /// Return the largest input of the flat run.
+    PreferHighInput,
+    /// Return `(low + high) / 2`, truncating toward the low input.
+    Midpoint,
+    /// Return [`InverseTransferError::AmbiguousFlat`].
+    Error,
 }
 
 /// Error returned when an observation is outside a transfer domain.
@@ -56,6 +98,34 @@ pub enum TransferError<I> {
     },
 }
 
+/// Error returned when a physical value cannot be inverted uniquely.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum InverseTransferError<P> {
+    /// The physical value is below the minimum supported output.
+    BelowRange {
+        /// Physical value supplied by the caller.
+        physical: P,
+        /// Smallest supported physical output.
+        minimum: P,
+    },
+    /// The physical value is above the maximum supported output.
+    AboveRange {
+        /// Physical value supplied by the caller.
+        physical: P,
+        /// Largest supported physical output.
+        maximum: P,
+    },
+    /// The physical value lies on a flat run and [`FlatResolution::Error`] is set.
+    AmbiguousFlat {
+        /// Physical value supplied by the caller.
+        physical: P,
+        /// Smallest observation on the flat run.
+        low: u16,
+        /// Largest observation on the flat run.
+        high: u16,
+    },
+}
+
 /// Error returned for invalid standalone segment interpolation arguments.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum InterpolationError {
@@ -69,6 +139,17 @@ pub enum InterpolationError {
         minimum: u16,
         /// Segment's upper input.
         maximum: u16,
+    },
+    /// Segment outputs are equal, so the segment cannot be inverted uniquely.
+    FlatSegment,
+    /// The physical value is outside the closed segment's output span.
+    OutsidePhysicalSpan {
+        /// Physical value supplied by the caller.
+        physical: i32,
+        /// Segment's lower output.
+        minimum: i32,
+        /// Segment's upper output.
+        maximum: i32,
     },
 }
 
@@ -89,22 +170,42 @@ pub struct TransferMetadata {
     pub domain_min: u16,
     /// Inclusive maximum input.
     pub domain_max: u16,
+    /// Inclusive minimum physical output (endpoint of the knot range).
+    pub range_min: i32,
+    /// Inclusive maximum physical output.
+    pub range_max: i32,
     /// Output monotonic direction.
     pub direction: MonotonicDirection,
     /// Number of piecewise-linear knots.
     pub knot_count: usize,
+    /// True when every adjacent knot pair has unequal outputs.
+    pub strictly_monotonic: bool,
+    /// Count of adjacent knot pairs with equal outputs.
+    pub flat_segment_count: usize,
     /// Requested maximum numerical error in output quanta.
     pub requested_max_error: u32,
     /// Exhaustively measured, conservatively rounded-up maximum error.
     pub achieved_max_error: u32,
     /// Input where the achieved maximum error first occurs.
     pub worst_case_input: u16,
+    /// Exhaustively host-measured worst
+    /// `|invert(convert(x)) as i32 − x as i32|` over the input domain, in
+    /// codes, under the table's default [`FlatResolution`].
+    ///
+    /// This is a measured round-trip bound, not a promise of identity: a
+    /// nonzero value means some observations do not survive a
+    /// convert-then-invert cycle exactly. Flat runs are resolved with
+    /// [`FlatResolution::PreferLowInput`]; overriding the policy with
+    /// [`PiecewiseLinearTransfer::with_flat_resolution`] can exceed this
+    /// bound on tables where `flat_segment_count` is nonzero.
+    pub achieved_max_inverse_code_error: u16,
 }
 
 /// A sparse, nonuniform, piecewise-linear `u16` to `i32` transfer function.
 ///
 /// Inputs are searched in `O(log N)` time. The two arrays use six bytes of
-/// table payload per knot and require no allocation.
+/// table payload per knot and require no allocation. Inverse conversion
+/// binary-searches the same output knots — no dense physical→input LUT.
 #[derive(Copy, Clone, Debug)]
 pub struct PiecewiseLinearTransfer<const N: usize> {
     inputs: &'static [u16; N],
@@ -112,10 +213,13 @@ pub struct PiecewiseLinearTransfer<const N: usize> {
     direction: MonotonicDirection,
     below: BoundaryBehavior,
     above: BoundaryBehavior,
+    flat_resolution: FlatResolution,
 }
 
 impl<const N: usize> PiecewiseLinearTransfer<N> {
     /// Construct a transfer whose below/above behaviors both default to error.
+    ///
+    /// Flat runs default to [`FlatResolution::PreferLowInput`].
     ///
     /// # Panics
     ///
@@ -150,10 +254,14 @@ impl<const N: usize> PiecewiseLinearTransfer<N> {
             direction,
             below: BoundaryBehavior::Error,
             above: BoundaryBehavior::Error,
+            flat_resolution: FlatResolution::PreferLowInput,
         }
     }
 
     /// Set independent below-domain and above-domain behavior.
+    ///
+    /// For inverse conversion, the same settings apply to physical values
+    /// below or above the knot output range.
     pub const fn with_boundaries(
         mut self,
         below: BoundaryBehavior,
@@ -161,6 +269,12 @@ impl<const N: usize> PiecewiseLinearTransfer<N> {
     ) -> Self {
         self.below = below;
         self.above = above;
+        self
+    }
+
+    /// Set how flat (equal-output) runs are resolved by [`invert`](InverseTransferFunction::invert).
+    pub const fn with_flat_resolution(mut self, policy: FlatResolution) -> Self {
+        self.flat_resolution = policy;
         self
     }
 
@@ -179,19 +293,109 @@ impl<const N: usize> PiecewiseLinearTransfer<N> {
         self.direction
     }
 
-    /// Return the below-domain behavior.
+    /// Return the below-domain / below-range behavior.
     pub const fn below_behavior(&self) -> BoundaryBehavior {
         self.below
     }
 
-    /// Return the above-domain behavior.
+    /// Return the above-domain / above-range behavior.
     pub const fn above_behavior(&self) -> BoundaryBehavior {
         self.above
+    }
+
+    /// Return the flat-run resolution policy.
+    pub const fn flat_resolution(&self) -> FlatResolution {
+        self.flat_resolution
     }
 
     /// Return the inclusive input domain.
     pub const fn domain(&self) -> (u16, u16) {
         (self.inputs[0], self.inputs[N - 1])
+    }
+
+    /// Return the inclusive physical output range as `(min, max)`.
+    pub const fn physical_range(&self) -> (i32, i32) {
+        let first = self.outputs[0];
+        let last = self.outputs[N - 1];
+        if first <= last {
+            (first, last)
+        } else {
+            (last, first)
+        }
+    }
+
+    /// Invert a physical measurement to an observation.
+    ///
+    /// Convenience alias for [`InverseTransferFunction::invert`].
+    pub fn invert_physical(&self, physical: i32) -> Result<u16, InverseTransferError<i32>> {
+        InverseTransferFunction::invert(self, physical)
+    }
+
+    fn observation_at_physical_end(&self, low_physical: bool) -> u16 {
+        match (self.direction, low_physical) {
+            (MonotonicDirection::Increasing, true) | (MonotonicDirection::Decreasing, false) => {
+                self.inputs[0]
+            }
+            (MonotonicDirection::Increasing, false) | (MonotonicDirection::Decreasing, true) => {
+                self.inputs[N - 1]
+            }
+        }
+    }
+
+    fn resolve_flat_run(
+        &self,
+        physical: i32,
+        left: usize,
+        right: usize,
+    ) -> Result<u16, InverseTransferError<i32>> {
+        let low = self.inputs[left];
+        let high = self.inputs[right];
+        if left == right {
+            return Ok(low);
+        }
+        match self.flat_resolution {
+            FlatResolution::PreferLowInput => Ok(low),
+            FlatResolution::PreferHighInput => Ok(high),
+            FlatResolution::Midpoint => Ok(low + (high - low) / 2),
+            FlatResolution::Error => Err(InverseTransferError::AmbiguousFlat {
+                physical,
+                low,
+                high,
+            }),
+        }
+    }
+
+    fn expand_flat_run(&self, index: usize) -> (usize, usize) {
+        let value = self.outputs[index];
+        let mut left = index;
+        while left > 0 && self.outputs[left - 1] == value {
+            left -= 1;
+        }
+        let mut right = index;
+        while right + 1 < N && self.outputs[right + 1] == value {
+            right += 1;
+        }
+        (left, right)
+    }
+
+    /// Largest knot index whose output is on the inclusive low-physical side
+    /// of `physical` for the table's monotonic direction.
+    fn largest_index_at_or_past(&self, physical: i32) -> usize {
+        let mut low = 0usize;
+        let mut high = N - 1;
+        while low < high {
+            let middle = low + (high - low).div_ceil(2);
+            let past = match self.direction {
+                MonotonicDirection::Increasing => self.outputs[middle] <= physical,
+                MonotonicDirection::Decreasing => self.outputs[middle] >= physical,
+            };
+            if past {
+                low = middle;
+            } else {
+                high = middle - 1;
+            }
+        }
+        low
     }
 }
 
@@ -243,6 +447,49 @@ impl<const N: usize> TransferFunction for PiecewiseLinearTransfer<N> {
     }
 }
 
+impl<const N: usize> InverseTransferFunction for PiecewiseLinearTransfer<N> {
+    type Physical = i32;
+    type Observation = u16;
+
+    fn invert(&self, physical: i32) -> Result<u16, InverseTransferError<i32>> {
+        let (minimum, maximum) = self.physical_range();
+
+        if physical < minimum {
+            return match self.below {
+                BoundaryBehavior::Error => {
+                    Err(InverseTransferError::BelowRange { physical, minimum })
+                }
+                BoundaryBehavior::Clamp => Ok(self.observation_at_physical_end(true)),
+            };
+        }
+        if physical > maximum {
+            return match self.above {
+                BoundaryBehavior::Error => {
+                    Err(InverseTransferError::AboveRange { physical, maximum })
+                }
+                BoundaryBehavior::Clamp => Ok(self.observation_at_physical_end(false)),
+            };
+        }
+
+        let index = self.largest_index_at_or_past(physical);
+        if self.outputs[index] == physical {
+            let (left, right) = self.expand_flat_run(index);
+            return self.resolve_flat_run(physical, left, right);
+        }
+
+        // `index` is the last knot on the inclusive low-physical side, so the
+        // bracketing sloped segment is `index .. index + 1`.
+        debug_assert!(index + 1 < N);
+        Ok(invert_valid_segment(
+            physical,
+            self.inputs[index],
+            self.outputs[index],
+            self.inputs[index + 1],
+            self.outputs[index + 1],
+        ))
+    }
+}
+
 /// Interpolate one signed integer segment with nearest, ties-away rounding.
 ///
 /// The input must lie within the closed segment and `x1` must be greater than
@@ -267,18 +514,73 @@ pub fn interpolate_segment(
     Ok(interpolate_valid_segment(input, x0, y0, x1, y1))
 }
 
+/// Invert one signed integer segment with nearest, ties-away rounding.
+///
+/// The mirror of [`interpolate_segment`]. `physical` must lie within the
+/// closed output span, `x1` must be greater than `x0`, and the segment must
+/// not be flat. All arithmetic uses `i64`; the full `u16`/`i32` ranges are
+/// safe. Host tools use this so a generated round-trip audit measures the
+/// same arithmetic the runtime performs.
+pub fn invert_segment(
+    physical: i32,
+    x0: u16,
+    y0: i32,
+    x1: u16,
+    y1: i32,
+) -> Result<u16, InterpolationError> {
+    if x1 <= x0 {
+        return Err(InterpolationError::InvalidSpan);
+    }
+    if y0 == y1 {
+        return Err(InterpolationError::FlatSegment);
+    }
+    let (minimum, maximum) = if y0 < y1 { (y0, y1) } else { (y1, y0) };
+    if physical < minimum || physical > maximum {
+        return Err(InterpolationError::OutsidePhysicalSpan {
+            physical,
+            minimum,
+            maximum,
+        });
+    }
+    Ok(invert_valid_segment(physical, x0, y0, x1, y1))
+}
+
+/// Divide with nearest rounding, ties away from zero.
+///
+/// `denominator` must be non-zero. Used by both forward and inverse segment
+/// math so rounding cannot drift between directions.
+fn div_nearest_ties_away(numerator: i64, denominator: i64) -> i64 {
+    debug_assert!(denominator != 0);
+    let den_abs = denominator.unsigned_abs();
+    let half = (den_abs / 2) as i64;
+    if numerator >= 0 {
+        let quotient = ((numerator as u64) + (half as u64)) / den_abs;
+        let quotient = quotient as i64;
+        if denominator > 0 { quotient } else { -quotient }
+    } else {
+        let quotient = ((-numerator) as u64 + (half as u64)) / den_abs;
+        let quotient = quotient as i64;
+        if denominator > 0 { -quotient } else { quotient }
+    }
+}
+
 fn interpolate_valid_segment(input: u16, x0: u16, y0: i32, x1: u16, y1: i32) -> i32 {
     let offset = i64::from(input - x0);
     let span = i64::from(x1 - x0);
     let delta = i64::from(y1) - i64::from(y0);
     let numerator = i64::from(y0) * span + delta * offset;
-    let result = if numerator >= 0 {
-        (numerator + span / 2) / span
-    } else {
-        -((-numerator + span / 2) / span)
-    };
+    let result = div_nearest_ties_away(numerator, span);
     debug_assert!((i64::from(i32::MIN)..=i64::from(i32::MAX)).contains(&result));
     result as i32
+}
+
+fn invert_valid_segment(physical: i32, x0: u16, y0: i32, x1: u16, y1: i32) -> u16 {
+    let dy = i64::from(y1) - i64::from(y0);
+    debug_assert!(dy != 0);
+    let dx = i64::from(x1) - i64::from(x0);
+    let numerator = i64::from(x0) * dy + (i64::from(physical) - i64::from(y0)) * dx;
+    let result = div_nearest_ties_away(numerator, dy);
+    result.clamp(i64::from(x0), i64::from(x1)) as u16
 }
 
 #[cfg(test)]
@@ -290,6 +592,8 @@ mod tests {
     static INPUTS: [u16; 3] = [100, 200, 400];
     static OUTPUTS: [i32; 3] = [-1_000, 0, 2_000];
     static DECREASING: [i32; 3] = [2_000, 0, -1_000];
+    static FLAT_OUTPUTS: [i32; 4] = [0, 10, 10, 20];
+    static FLAT_INPUTS: [u16; 4] = [0, 10, 20, 30];
 
     #[test]
     fn exact_knots_and_binary_search() {
@@ -414,5 +718,167 @@ mod tests {
                 maximum: 20
             })
         );
+    }
+
+    #[test]
+    fn standalone_inversion_validates_arguments() {
+        assert_eq!(
+            invert_segment(0, 10, 0, 10, 1),
+            Err(InterpolationError::InvalidSpan)
+        );
+        assert_eq!(
+            invert_segment(5, 10, 7, 20, 7),
+            Err(InterpolationError::FlatSegment)
+        );
+        assert_eq!(
+            invert_segment(21, 10, 0, 20, 20),
+            Err(InterpolationError::OutsidePhysicalSpan {
+                physical: 21,
+                minimum: 0,
+                maximum: 20
+            })
+        );
+        // A decreasing segment reports its span low-to-high.
+        assert_eq!(
+            invert_segment(25, 10, 20, 20, 0),
+            Err(InterpolationError::OutsidePhysicalSpan {
+                physical: 25,
+                minimum: 0,
+                maximum: 20
+            })
+        );
+    }
+
+    #[test]
+    fn standalone_inversion_matches_the_table_path() {
+        // Same knots the increasing fixture table uses for its first segment.
+        for physical in -1_000..=0 {
+            assert_eq!(
+                invert_segment(physical, 100, -1_000, 200, 0),
+                Ok(invert_valid_segment(physical, 100, -1_000, 200, 0)),
+                "physical {physical}"
+            );
+        }
+        assert_eq!(invert_segment(-500, 100, -1_000, 200, 0), Ok(150));
+        assert_eq!(invert_segment(1_000, 200, 0, 400, 2_000), Ok(300));
+    }
+
+    #[test]
+    fn invert_exact_knots_and_midpoints() {
+        let transfer =
+            PiecewiseLinearTransfer::new(&INPUTS, &OUTPUTS, MonotonicDirection::Increasing);
+        assert_eq!(transfer.invert_physical(-1_000), Ok(100));
+        assert_eq!(transfer.invert_physical(0), Ok(200));
+        assert_eq!(transfer.invert_physical(2_000), Ok(400));
+        assert_eq!(transfer.invert_physical(-500), Ok(150));
+        assert_eq!(transfer.invert_physical(1_000), Ok(300));
+    }
+
+    #[test]
+    fn invert_decreasing_maps_by_physical_range() {
+        let transfer =
+            PiecewiseLinearTransfer::new(&INPUTS, &DECREASING, MonotonicDirection::Decreasing)
+                .with_boundaries(BoundaryBehavior::Clamp, BoundaryBehavior::Clamp);
+        assert_eq!(transfer.invert_physical(1_000), Ok(150));
+        assert_eq!(transfer.invert_physical(-500), Ok(300));
+        // Below physical min (-1000) clamps to the high-input endpoint.
+        assert_eq!(transfer.invert_physical(-2_000), Ok(400));
+        // Above physical max (2000) clamps to the low-input endpoint.
+        assert_eq!(transfer.invert_physical(3_000), Ok(100));
+    }
+
+    #[test]
+    fn invert_range_errors_use_physical_bounds() {
+        let transfer =
+            PiecewiseLinearTransfer::new(&INPUTS, &OUTPUTS, MonotonicDirection::Increasing);
+        assert_eq!(
+            transfer.invert(-1_001),
+            Err(InverseTransferError::BelowRange {
+                physical: -1_001,
+                minimum: -1_000
+            })
+        );
+        assert_eq!(
+            transfer.invert(2_001),
+            Err(InverseTransferError::AboveRange {
+                physical: 2_001,
+                maximum: 2_000
+            })
+        );
+    }
+
+    #[test]
+    fn flat_resolution_policies() {
+        let base = PiecewiseLinearTransfer::new(
+            &FLAT_INPUTS,
+            &FLAT_OUTPUTS,
+            MonotonicDirection::Increasing,
+        );
+
+        assert_eq!(
+            base.with_flat_resolution(FlatResolution::PreferLowInput)
+                .invert(10),
+            Ok(10)
+        );
+        assert_eq!(
+            base.with_flat_resolution(FlatResolution::PreferHighInput)
+                .invert(10),
+            Ok(20)
+        );
+        assert_eq!(
+            base.with_flat_resolution(FlatResolution::Midpoint)
+                .invert(10),
+            Ok(15)
+        );
+        assert_eq!(
+            base.with_flat_resolution(FlatResolution::Error).invert(10),
+            Err(InverseTransferError::AmbiguousFlat {
+                physical: 10,
+                low: 10,
+                high: 20
+            })
+        );
+        // Unique knot: FlatResolution::Error is unused.
+        assert_eq!(
+            base.with_flat_resolution(FlatResolution::Error).invert(0),
+            Ok(0)
+        );
+        assert_eq!(base.invert(5), Ok(5));
+    }
+
+    #[test]
+    fn invert_segment_rounding_ties_away() {
+        // Forward: input 1 on [0,2] with y 0→1 rounds to 1.
+        // Inverse of that physical should prefer the observation side of the tie.
+        assert_eq!(invert_valid_segment(1, 0, 0, 2, 2), 1);
+        assert_eq!(invert_valid_segment(-1, 0, 0, 2, -2), 1);
+        // Half-quantum ties away from zero along the input axis from x0.
+        assert_eq!(invert_valid_segment(1, 0, 0, 4, 2), 2);
+        assert_eq!(invert_valid_segment(-1, 0, 0, 4, -2), 2);
+    }
+
+    #[test]
+    fn round_trip_invert_convert_on_non_flat_table() {
+        let transfer =
+            PiecewiseLinearTransfer::new(&INPUTS, &OUTPUTS, MonotonicDirection::Increasing);
+        for input in INPUTS[0]..=INPUTS[INPUTS.len() - 1] {
+            let physical = transfer.convert(input).unwrap();
+            let recovered = transfer.invert(physical).unwrap();
+            let distance = i32::from(recovered).abs_diff(i32::from(input));
+            assert!(
+                distance <= 1,
+                "input {input}: invert(convert) -> {recovered} (Δ={distance})"
+            );
+        }
+    }
+
+    #[test]
+    fn div_nearest_ties_away_matches_forward_policy() {
+        assert_eq!(div_nearest_ties_away(1, 2), 1);
+        assert_eq!(div_nearest_ties_away(-1, 2), -1);
+        assert_eq!(div_nearest_ties_away(1, -2), -1);
+        assert_eq!(div_nearest_ties_away(-1, -2), 1);
+        assert_eq!(div_nearest_ties_away(3, 2), 2);
+        assert_eq!(div_nearest_ties_away(-3, 2), -2);
     }
 }

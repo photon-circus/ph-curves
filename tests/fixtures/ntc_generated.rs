@@ -25,9 +25,15 @@ pub const NTC_10K_BETA_3950_METADATA: TransferMetadata = TransferMetadata {
     output_scale: 1000,
     domain_min: 142,
     domain_max: 3995,
+    range_min: -39919,
+    range_max: 124957,
     direction: MonotonicDirection::Decreasing,
     knot_count: 61,
+    strictly_monotonic: true,
+    flat_segment_count: 0,
     requested_max_error: 50,
     achieved_max_error: 49,
     worst_case_input: 539,
+    achieved_max_inverse_code_error: 0,
 };
+
