@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Host-side adaptive transfer generation from physical points, formulas, and
   an NTC Beta-divider model, with exhaustive discrete-domain error reporting
   and bounded knot counts.
+- Fixed-memory integer moving-average, median, and exponential filters plus a
+  separate range-based stability detector for caller-supplied sample series.
 
 ## [0.1.1] - 2026-02-12
 

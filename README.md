@@ -23,6 +23,22 @@ functions, and tickless scheduling for embedded Rust.
 - **Physical transfer functions** — sparse adaptive knots convert integer ADC
   observations to signed, scaled measurements with explicit range behavior.
   Firmware uses only integer math; physical modeling and fitting are host-only.
+- **Temporal stabilization** — fixed-memory integer moving-average, median,
+  exponential smoothing, and stability detection for caller-supplied samples.
+
+## Scope and non-goals
+
+`ph-curves` is a pure math and scheduling-primitives crate, not a hardware
+driver crate. It may map caller-provided observations, normalized positions,
+and timestamps to values or future deadlines. It does not own or access ADCs,
+GPIO, buses, clocks, timers, interrupts, async runtimes, sensors, actuators, or
+device lifecycle. Hardware acquisition and application remain the caller's
+responsibility.
+
+New APIs must remain deterministic and side-effect-free: data in, data or
+deadlines out. Sensor models in the host generator describe transfer
+mathematics only; they must not grow into sensor configuration, sampling,
+calibration storage, fault management, or device-specific driver behavior.
 
 ## Quick start
 
@@ -163,6 +179,49 @@ only into `ph-curves-gen` behind the `gen` feature. The library and generated
 firmware code contain integer arrays, binary search, and `i64` interpolation
 only.
 
+## Temporal stabilization
+
+A transfer function converts one observation. Meaningful measurements often
+need several observations to suppress noise, reject spikes, or determine that
+a signal has settled. `ph-curves` provides caller-driven, fixed-memory
+primitives without acquiring samples or owning a clock:
+
+```rust
+use ph_curves::{MedianFilter, Stability, StabilityDetector, TemporalFilter};
+
+let mut median = MedianFilter::<u16, 5>::new();
+let mut stable = StabilityDetector::<i32, 4>::new(100); // 0.1 C in milli-C
+
+if let Some(filtered_adc) = median.update(adc_code).ready() {
+    let milli_celsius = NTC_10K_BETA_3950.convert(filtered_adc)?;
+    if matches!(stable.update(milli_celsius), Stability::Stable { .. }) {
+        use_measurement(milli_celsius);
+    }
+}
+```
+
+Available primitives:
+
+- `MovingAverage<T, N>`: `O(1)` exact fixed-window mean with explicit warm-up.
+- `MedianFilter<T, N>`: robust isolated-spike rejection for small odd windows.
+- `ExponentialSmoother<T>`: constant-memory smoothing with an explicit integer
+  blend coefficient.
+- `StabilityDetector<T, N>`: reports warming, stable, or unstable from the
+  recent range; it never substitutes a stale last-good value.
+
+Filtering raw ADC codes and filtering converted measurements are intentionally
+separate composition choices. For a nonlinear transfer,
+`transfer(mean(raw))` generally differs from `mean(transfer(raw))`. Raw-domain
+filtering suppresses acquisition noise before conversion; physical-domain
+filtering expresses windows and thresholds in measurement units. A median is
+order-based and therefore composes predictably with monotonic transfers,
+apart from integer rounding.
+
+Window sizes count caller-supplied valid samples. Sampling cadence, invalid
+sample policy, transfer errors, and whether instability resets application
+state remain caller responsibilities. The crate does not read timestamps or
+silently assume a sample rate.
+
 ## Built-in curves
 
 | Name                 | Formula              | Description                      |
@@ -215,6 +274,10 @@ formula = "pow((t + 0.16) / 1.16, 3.0)"
 | `MonotonicCurveLut65536` | Type alias: `MonotonicCurveLut<u16, u16, 65536>`  |
 | `PiecewiseLinearTransfer<N>` | Sparse integer ADC-to-measurement transfer |
 | `TransferMetadata`       | Units, scale, domain, direction, and error bound  |
+| `MovingAverage<T,N>`     | Exact fixed-window integer mean                  |
+| `MedianFilter<T,N>`      | Small fixed-window outlier rejection             |
+| `ExponentialSmoother<T>` | Constant-memory integer smoothing                |
+| `StabilityDetector<T,N>` | Independent recent-range stability classification |
 
 ### Traits
 
@@ -225,6 +288,8 @@ formula = "pow((t + 0.16) / 1.16, 3.0)"
   onto a discrete integer range with fixed-point helpers.
 - **`TransferFunction`** — checked physical conversion with explicit
   below/above-domain behavior and no extrapolation.
+- **`TemporalFilter`** — caller-driven update/reset interface with explicit
+  warm-up output.
 
 ### Tickless scheduling
 

@@ -51,8 +51,26 @@
 //! - **Physical transfer functions** — [`TransferFunction`] and the sparse,
 //!   integer-only [`PiecewiseLinearTransfer`] for ADC-to-measurement
 //!   conversion.
+//! - **Temporal stabilization** — [`MovingAverage`], [`MedianFilter`],
+//!   [`ExponentialSmoother`], and [`StabilityDetector`] over caller-supplied
+//!   integer samples.
 //! - **Math helpers** — [`UnitValue`] trait, [`lerp_u8`], [`lerp_u16`],
 //!   [`map_u8_to_u16`], [`quantize`], and [`next_target_value`].
+//!
+//! # Scope
+//!
+//! This crate provides pure mappings and scheduling calculations, not hardware
+//! drivers. It never owns or accesses ADCs, GPIO, buses, clocks, timers,
+//! interrupts, async runtimes, sensors, or actuators. Callers provide
+//! observations and timestamps, then decide how to acquire inputs, schedule
+//! wakeups, and apply outputs.
+//!
+//! # Temporal stabilization
+//!
+//! Filters consume samples supplied by the caller and retain bounded,
+//! const-generic state. Windowed filters return [`FilterOutput::WarmingUp`]
+//! until ready. Stability classification is separate from smoothing so a
+//! filtered value is not implicitly treated as settled.
 //!
 //! # Physical measurements
 //!
@@ -121,6 +139,7 @@
 
 mod curve;
 mod math;
+mod stabilize;
 mod tickless;
 mod transfer;
 
@@ -130,6 +149,10 @@ pub use curve::{
 };
 pub use math::{
     Rounding, UnitValue, lerp_u8, lerp_u16, map_u8_to_u16, next_target_value, quantize,
+};
+pub use stabilize::{
+    ExponentialSmoother, FilterOutput, MedianFilter, MovingAverage, Stability, StabilityDetector,
+    TemporalFilter, TemporalSample,
 };
 pub use tickless::{RepeatMode, Tickless, TicklessDeadline, TicklessIter, TicklessSchedule};
 pub use transfer::{

@@ -1,4 +1,6 @@
-use ph_curves::{TransferError, TransferFunction};
+use ph_curves::{
+    MedianFilter, Stability, StabilityDetector, TemporalFilter, TransferError, TransferFunction,
+};
 
 include!("fixtures/ntc_generated.rs");
 
@@ -35,4 +37,21 @@ fn generated_ntc_metadata_and_boundaries() {
             maximum: 3995
         })
     );
+}
+
+#[test]
+fn raw_median_and_physical_stability_compose_without_driver_state() {
+    let mut median = MedianFilter::<u16, 5>::new();
+    let mut detector = StabilityDetector::<i32, 3>::new(100);
+    let mut last = None;
+
+    for code in [2048, 2049, 4095, 2047, 2048, 2048, 2049] {
+        let Some(filtered_code) = median.update(code).ready() else {
+            continue;
+        };
+        let measurement = NTC_10K_BETA_3950.convert(filtered_code).unwrap();
+        last = Some(detector.update(measurement));
+    }
+
+    assert!(matches!(last, Some(Stability::Stable { .. })));
 }

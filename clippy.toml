@@ -5,10 +5,10 @@
 # MSRV for this project (Rust 2024 edition)
 msrv = "1.92.0"
 
-# Allow slightly longer functions for driver code
+# Allow slightly longer functions for embedded math and generator code.
 too-many-lines-threshold = 150
 
-# Hardware drivers often need many arguments for configuration
+# Static curve and schedule configuration can require several arguments.
 too-many-arguments-threshold = 10
 
 # Embedded code often has deeper type nesting
