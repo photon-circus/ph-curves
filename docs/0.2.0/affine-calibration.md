@@ -32,8 +32,13 @@ pub struct AffineCalibration<T> {
 }
 
 impl<T> AffineCalibration<T> {
-    pub const fn new(inner: T, gain: i32, offset: i32, scale: i32) -> Self;
-    // panics if scale == 0 (const-friendly, matches PR #1 style)
+    pub fn new(
+        inner: T,
+        gain: i32,
+        offset: i32,
+        scale: i32,
+    ) -> Result<Self, AffineCalibrationError>;
+    // returns AffineCalibrationError::ZeroScale if scale == 0
 
     pub const fn inner(&self) -> &T;
     pub const fn gain(&self) -> i32;

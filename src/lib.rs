@@ -166,8 +166,8 @@ pub use stabilize::{
 };
 pub use tickless::{RepeatMode, Tickless, TicklessDeadline, TicklessIter, TicklessSchedule};
 pub use transfer::{
-    AffineCalibration, BoundaryBehavior, InterpolationError, MonotonicDirection,
-    PiecewiseLinearTransfer, TransferError, TransferFunction, TransferMetadata,
+    AffineCalibration, AffineCalibrationError, BoundaryBehavior, InterpolationError,
+    MonotonicDirection, PiecewiseLinearTransfer, TransferError, TransferFunction, TransferMetadata,
     interpolate_segment,
 };
 

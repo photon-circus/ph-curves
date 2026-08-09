@@ -311,20 +311,34 @@ pub struct AffineCalibration<T> {
     scale: i32,
 }
 
+/// Error returned when affine calibration constants are invalid.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum AffineCalibrationError {
+    /// The scale divisor is zero.
+    ZeroScale,
+}
+
 impl<T> AffineCalibration<T> {
     /// Wrap `inner` with affine calibration constants.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `scale == 0`.
-    pub const fn new(inner: T, gain: i32, offset: i32, scale: i32) -> Self {
-        assert!(scale != 0);
-        Self {
+    /// Returns [`AffineCalibrationError::ZeroScale`] if `scale == 0`.
+    pub fn new(
+        inner: T,
+        gain: i32,
+        offset: i32,
+        scale: i32,
+    ) -> Result<Self, AffineCalibrationError> {
+        if scale == 0 {
+            return Err(AffineCalibrationError::ZeroScale);
+        }
+        Ok(Self {
             inner,
             gain,
             offset,
             scale,
-        }
+        })
     }
 
     /// Return a reference to the inner transfer.
@@ -364,7 +378,7 @@ where
 /// Apply `y' = (y * gain + offset) / scale` with checked `i64` math.
 ///
 /// Rounding is nearest, ties away from zero. `scale` must be nonzero; callers
-/// such as [`AffineCalibration::new`] enforce that before invocation.
+/// such as [`AffineCalibration::new`] validate that before invocation.
 fn apply_affine_i64<I>(
     y: i32,
     gain: i32,
@@ -551,14 +565,14 @@ mod tests {
     #[test]
     fn affine_identity_and_factory_scale() {
         let base = PiecewiseLinearTransfer::new(&INPUTS, &OUTPUTS, MonotonicDirection::Increasing);
-        let identity = AffineCalibration::new(base, 1, 0, 1);
+        let identity = AffineCalibration::new(base, 1, 0, 1).unwrap();
         assert_eq!(identity.convert(150), Ok(-500));
         assert_eq!(identity.gain(), 1);
         assert_eq!(identity.offset(), 0);
         assert_eq!(identity.scale(), 1);
         assert_eq!(identity.inner().convert(150), Ok(-500));
 
-        let cal = AffineCalibration::new(base, 1005, -120, 1000);
+        let cal = AffineCalibration::new(base, 1005, -120, 1000).unwrap();
         // (-500 * 1005 + -120) / 1000 = -502.62 → -503 (ties-away / nearest)
         assert_eq!(cal.convert(150), Ok(-503));
         // (0 * 1005 + -120) / 1000 = -0.12 → 0
@@ -570,7 +584,7 @@ mod tests {
     #[test]
     fn affine_rounding_ties_away_and_negative_scale() {
         let base = PiecewiseLinearTransfer::new(&INPUTS, &OUTPUTS, MonotonicDirection::Increasing);
-        let half_up = AffineCalibration::new(base, 1, 0, 2);
+        let half_up = AffineCalibration::new(base, 1, 0, 2).unwrap();
         // 2000 / 2 = 1000 exact; 0 / 2 = 0; -1000 / 2 = -500
         assert_eq!(half_up.convert(400), Ok(1_000));
         assert_eq!(half_up.convert(200), Ok(0));
@@ -587,7 +601,7 @@ mod tests {
     #[test]
     fn affine_propagates_domain_errors_and_rejects_overflow() {
         let base = PiecewiseLinearTransfer::new(&INPUTS, &OUTPUTS, MonotonicDirection::Increasing);
-        let cal = AffineCalibration::new(base, 1, 0, 1);
+        let cal = AffineCalibration::new(base, 1, 0, 1).unwrap();
         assert_eq!(
             cal.convert(99),
             Err(TransferError::BelowDomain {
@@ -597,7 +611,7 @@ mod tests {
         );
 
         // Large gain maps an in-domain knot outside i32.
-        let overflow = AffineCalibration::new(base, i32::MAX, 0, 1);
+        let overflow = AffineCalibration::new(base, i32::MAX, 0, 1).unwrap();
         assert_eq!(overflow.convert(400), Err(TransferError::Overflow));
         assert_eq!(
             apply_affine_i64::<u16>(i32::MAX, 2, 0, 1),
@@ -606,16 +620,19 @@ mod tests {
     }
 
     #[test]
-    fn affine_constructor_rejects_zero_scale() {
+    fn affine_constructor_returns_error_for_zero_scale() {
         let base = PiecewiseLinearTransfer::new(&INPUTS, &OUTPUTS, MonotonicDirection::Increasing);
-        assert!(std::panic::catch_unwind(|| AffineCalibration::new(base, 1, 0, 0)).is_err());
+        assert!(matches!(
+            AffineCalibration::new(base, 1, 0, 0),
+            Err(AffineCalibrationError::ZeroScale)
+        ));
     }
 
     #[test]
     fn affine_nesting_composes() {
         let base = PiecewiseLinearTransfer::new(&INPUTS, &OUTPUTS, MonotonicDirection::Increasing);
-        let inner = AffineCalibration::new(base, 2, 10, 1);
-        let outer = AffineCalibration::new(inner, 1, -10, 2);
+        let inner = AffineCalibration::new(base, 2, 10, 1).unwrap();
+        let outer = AffineCalibration::new(inner, 1, -10, 2).unwrap();
         // y=0 → (0*2+10)=10 → (10-10)/2 = 0
         assert_eq!(outer.convert(200), Ok(0));
         // y=2000 → 4010 → (4010-10)/2 = 2000
