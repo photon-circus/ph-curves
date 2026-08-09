@@ -352,6 +352,12 @@ fn u8_from_time_frac_one_ms() {
     assert!(val <= 1, "tiny fraction should be 0 or 1, got {val}");
 }
 
+#[test]
+fn u8_from_time_frac_supports_full_u32_duration_range() {
+    assert_eq!(u8::from_time_frac(u32::MAX / 2, u32::MAX), 127);
+    assert_eq!(u8::from_time_frac(u32::MAX - 1, u32::MAX), 254);
+}
+
 // ---------------------------------------------------------------------------
 // UnitValue for u8 — to_time_offset
 // ---------------------------------------------------------------------------
@@ -379,6 +385,13 @@ fn u8_to_time_offset_mid() {
         (501..=503).contains(&ms),
         "mid offset should be ~502, got {ms}"
     );
+}
+
+#[test]
+fn u8_to_time_offset_supports_full_u32_duration_range() {
+    assert_eq!(1u8.to_time_offset(u32::MAX), 16_843_009);
+    assert_eq!(128u8.to_time_offset(u32::MAX), 2_155_905_152);
+    assert_eq!(255u8.to_time_offset(u32::MAX), u32::MAX);
 }
 
 #[test]

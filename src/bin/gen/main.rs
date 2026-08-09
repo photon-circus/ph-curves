@@ -71,6 +71,9 @@
 //!
 //! Point coordinates are in the LUT's index range (0..lut_size-1).
 //! The first point must start at u=0 and the last must end at u=lut_size-1.
+//! Curve names are normalized to uppercase Rust identifiers. Names that contain
+//! no ASCII letters or digits, and names that normalize to the same identifier,
+//! are rejected.
 //!
 //! ## Common options
 //!
@@ -104,7 +107,7 @@ struct Cli {
     #[arg(long, default_value = "u8")]
     value_type: String,
 
-    /// Number of entries in each LUT (must fit in value type).
+    /// Number of entries in each LUT (256 for u8; 65536 for u16).
     #[arg(long, default_value_t = 256)]
     lut_size: usize,
 }
@@ -112,20 +115,8 @@ struct Cli {
 fn main() {
     let cli = Cli::parse();
 
-    // Validate the value type.
-    let max_lut_size: usize = match cli.value_type.as_str() {
-        "u8" => 256,
-        "u16" => 65536,
-        other => {
-            eprintln!("unsupported --value-type `{other}` (expected `u8` or `u16`)");
-            std::process::exit(1);
-        }
-    };
-    if cli.lut_size < 2 || cli.lut_size > max_lut_size {
-        eprintln!(
-            "--lut-size {} out of range for {} (2..={})",
-            cli.lut_size, cli.value_type, max_lut_size
-        );
+    if let Err(error) = validate_lut_size(&cli.value_type, cli.lut_size) {
+        eprintln!("{error}");
         std::process::exit(1);
     }
 
@@ -135,7 +126,11 @@ fn main() {
     let curves_file: curve::CurvesFile =
         toml::from_str(&toml_str).unwrap_or_else(|e| panic!("invalid TOML: {e}"));
 
-    let output = codegen::generate(&curves_file, &cli.value_type, cli.lut_size);
+    let output =
+        codegen::generate(&curves_file, &cli.value_type, cli.lut_size).unwrap_or_else(|error| {
+            eprintln!("{error}");
+            std::process::exit(1);
+        });
 
     match cli.output {
         Some(path) => {
@@ -144,5 +139,49 @@ fn main() {
             eprintln!("wrote {}", path.display());
         }
         None => print!("{output}"),
+    }
+}
+
+fn validate_lut_size(value_type: &str, lut_size: usize) -> Result<(), String> {
+    let required_lut_size = match value_type {
+        "u8" => 256,
+        "u16" => 65_536,
+        other => {
+            return Err(format!(
+                "unsupported --value-type `{other}` (expected `u8` or `u16`)"
+            ));
+        }
+    };
+    if lut_size != required_lut_size {
+        return Err(format!(
+            "--lut-size must be {required_lut_size} for --value-type {value_type} \
+             (the LUT must cover the full {value_type} domain)"
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_lut_size;
+
+    #[test]
+    fn lut_size_must_cover_full_u8_domain() {
+        assert!(validate_lut_size("u8", 256).is_ok());
+        assert_eq!(
+            validate_lut_size("u8", 255).unwrap_err(),
+            "--lut-size must be 256 for --value-type u8 \
+             (the LUT must cover the full u8 domain)"
+        );
+    }
+
+    #[test]
+    fn lut_size_must_cover_full_u16_domain() {
+        assert!(validate_lut_size("u16", 65_536).is_ok());
+        assert_eq!(
+            validate_lut_size("u16", 256).unwrap_err(),
+            "--lut-size must be 65536 for --value-type u16 \
+             (the LUT must cover the full u16 domain)"
+        );
     }
 }

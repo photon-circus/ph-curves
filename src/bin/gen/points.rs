@@ -40,15 +40,18 @@ pub fn build(name: &str, points: &[[u16; 2]], lut_size: usize) -> Vec<u32> {
 }
 
 fn interpolate(u: u16, u0: u16, w0: u16, u1: u16, w1: u16) -> u32 {
-    let t = u.saturating_sub(u0) as u32;
-    let span = (u1 - u0) as u32;
-    let delta = i32::from(w1 as i16) - i32::from(w0 as i16);
+    let t = u64::from(u.saturating_sub(u0));
+    let span = u64::from(u1 - u0);
     if span == 0 {
         return w0 as u32;
     }
-    let numer = (delta as i64) * (t as i64) + (span as i64) / 2;
-    let w = (w0 as i64) + numer / (span as i64);
-    w.clamp(0, u16::MAX as i64) as u32
+    let distance = u64::from(w0.abs_diff(w1));
+    let offset = (distance * t + span / 2) / span;
+    (if w1 >= w0 {
+        u64::from(w0) + offset
+    } else {
+        u64::from(w0) - offset
+    }) as u32
 }
 
 #[cfg(test)]
@@ -72,10 +75,7 @@ mod tests {
         // Midpoint at u=128: interpolate(128, 0, 0, 128, 255)
         // t=128, span=128, delta=255, numer=255*128+64=32704, w=0+32704/128=255
         assert_eq!(fwd[128], 255);
-        // End: interpolate(255, 128, 255, 255, 128)
-        // t=127, span=127, delta=-127, numer=-127*127+63=-16066, w=255+(-16066/127)=255-126=129
-        // Due to rounding: the exact value may differ by 1.
-        assert!((fwd[255] as i32 - 128).abs() <= 1);
+        assert_eq!(fwd[255], 128);
     }
 
     #[test]
@@ -103,10 +103,27 @@ mod tests {
         let pts = [[0, 200], [255, 0]];
         let fwd = build("test", &pts, 256);
         assert_eq!(fwd[0], 200);
-        // End value: interpolation rounding may produce 0 or 1.
-        assert!(fwd[255] <= 1);
+        assert_eq!(fwd[255], 0);
         // Midpoint should be around 100 (±1 for rounding).
         assert!((fwd[128] as i32 - 100).abs() <= 1);
+    }
+
+    #[test]
+    fn interpolates_increasing_across_full_u16_range() {
+        let pts = [[0, 0], [65535, 65535]];
+        let fwd = build("test", &pts, 65536);
+        assert_eq!(fwd[0], 0);
+        assert_eq!(fwd[32768], 32768);
+        assert_eq!(fwd[65535], 65535);
+    }
+
+    #[test]
+    fn interpolates_decreasing_across_full_u16_range() {
+        let pts = [[0, 65535], [65535, 0]];
+        let fwd = build("test", &pts, 65536);
+        assert_eq!(fwd[0], 65535);
+        assert_eq!(fwd[32768], 32767);
+        assert_eq!(fwd[65535], 0);
     }
 
     #[test]
