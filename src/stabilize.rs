@@ -7,6 +7,8 @@
 //! detector family: they latch application-level boolean decisions from
 //! sample-count cadence only, without GPIO or wall-clock ownership.
 
+use crate::round::div_nearest_ties_away;
+
 mod sealed {
     pub trait Sealed {}
 }
@@ -170,7 +172,7 @@ impl<T: TemporalSample, const N: usize> TemporalFilter<T> for MovingAverage<T, N
                 required: N,
             }
         } else {
-            FilterOutput::Ready(T::from_i64(round_div_nearest(self.sum, N as i64)))
+            FilterOutput::Ready(T::from_i64(div_nearest_ties_away(self.sum, N as i64)))
         }
     }
 
@@ -317,7 +319,7 @@ impl<T: TemporalSample> TemporalFilter<T> for ExponentialSmoother<T> {
 
         let current = self.value.to_i64();
         let delta = value.to_i64() - current;
-        let adjustment = round_div_nearest(delta * i64::from(self.alpha), i64::from(u16::MAX));
+        let adjustment = div_nearest_ties_away(delta * i64::from(self.alpha), i64::from(u16::MAX));
         self.value = T::from_i64(current + adjustment);
         FilterOutput::Ready(self.value)
     }
@@ -652,14 +654,6 @@ impl<const N: usize> Debounce<N> {
 impl<const N: usize> Default for Debounce<N> {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-fn round_div_nearest(numerator: i64, denominator: i64) -> i64 {
-    if numerator >= 0 {
-        (numerator + denominator / 2) / denominator
-    } else {
-        -((-numerator + denominator / 2) / denominator)
     }
 }
 

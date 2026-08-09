@@ -84,3 +84,13 @@ pub enum InverseTransferError<P> {
 ## Merge gate
 
 Implementation lives on this branch only; do not merge to `main` without owner decision.
+
+## Boundary policy correction (0.2.0 integration)
+
+The original sketch applied `below` to physical values under `range_min` and `above` to those over `range_max`. That is wrong for decreasing tables, which is the motivating NTC case: the codes above `domain_max` are exactly the ones producing physical values below `range_min`, so a table configured `below = Error, above = Clamp` clamped in the forward direction and errored in the inverse for the same physical situation.
+
+`below` and `above` are declared against the **observation domain**. `PiecewiseLinearTransfer::range_behaviors` maps them onto the physical range through `MonotonicDirection`, swapping them for decreasing tables, and `invert` selects from that. Clamp targets were already correct — only the policy selection was mirrored.
+
+## Composition with calibration
+
+`AffineCalibration<T>` implements `InverseTransferFunction` when `T` does, so a calibrated setpoint is one call. See [affine-calibration.md](./affine-calibration.md).

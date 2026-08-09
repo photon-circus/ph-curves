@@ -7,6 +7,8 @@
 //! Inverse conversion maps a physical setpoint back to an observation using
 //! the same sparse knot tables — no dense physical-domain LUT.
 
+use crate::round::div_nearest_ties_away;
+
 /// A conversion from an observation to a measurement.
 pub trait TransferFunction {
     /// Input observation type.
@@ -34,9 +36,12 @@ pub trait InverseTransferFunction {
 
     /// Invert a physical measurement to an observation.
     ///
-    /// Values outside the table's physical range follow the table's
-    /// [`BoundaryBehavior`] settings, interpreted against the physical
-    /// range (not the observation domain). Transfer inverses never
+    /// Values outside the table's physical range follow the same
+    /// [`BoundaryBehavior`] settings as the forward direction, mapped through
+    /// the table's [`MonotonicDirection`] so both directions agree about the
+    /// same out-of-range condition. On a decreasing table the codes above
+    /// `domain_max` are the ones producing physical values below `range_min`,
+    /// so `above` governs the low-physical side there. Transfer inverses never
     /// extrapolate.
     fn invert(
         &self,
@@ -55,8 +60,12 @@ pub enum MonotonicDirection {
 
 /// Behavior for observations outside one side of a transfer domain.
 ///
-/// For [`InverseTransferFunction`], the same settings apply to physical
-/// values below or above the knot output range.
+/// Both settings are declared against the **observation domain**. For
+/// [`InverseTransferFunction`] they are mapped onto the physical range through
+/// the table's [`MonotonicDirection`], so `below` governs whichever end of the
+/// physical range corresponds to inputs under `domain_min` — the low end on an
+/// increasing table, the high end on a decreasing one. See
+/// [`PiecewiseLinearTransfer::range_behaviors`].
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum BoundaryBehavior {
     /// Return a domain/range error.
@@ -128,6 +137,9 @@ pub enum InverseTransferError<P> {
         /// Largest observation on the flat run.
         high: u16,
     },
+    /// Undoing affine calibration produced a value outside `i32`, or a range
+    /// bound could not be re-expressed in calibrated units.
+    Overflow,
 }
 
 /// Error returned for invalid standalone segment interpolation arguments.
@@ -264,8 +276,9 @@ impl<const N: usize> PiecewiseLinearTransfer<N> {
 
     /// Set independent below-domain and above-domain behavior.
     ///
-    /// For inverse conversion, the same settings apply to physical values
-    /// below or above the knot output range.
+    /// Both are declared against the observation domain. Inverse conversion
+    /// maps them onto the physical range through the table's direction; see
+    /// [`range_behaviors`](Self::range_behaviors).
     pub const fn with_boundaries(
         mut self,
         below: BoundaryBehavior,
@@ -333,6 +346,22 @@ impl<const N: usize> PiecewiseLinearTransfer<N> {
     /// Convenience alias for [`InverseTransferFunction::invert`].
     pub fn invert_physical(&self, physical: i32) -> Result<u16, InverseTransferError<i32>> {
         InverseTransferFunction::invert(self, physical)
+    }
+
+    /// Map the domain policies onto the physical range as
+    /// `(low_physical, high_physical)`.
+    ///
+    /// `below` and `above` are declared against the *observation* domain, so
+    /// on a decreasing table they swap: the codes above `domain_max` are the
+    /// ones that produce physical values below `range_min`. Selecting by
+    /// physical side alone would make a table configured
+    /// `below = Error, above = Clamp` clamp in the forward direction and error
+    /// in the inverse for the very same out-of-range condition.
+    pub const fn range_behaviors(&self) -> (BoundaryBehavior, BoundaryBehavior) {
+        match self.direction {
+            MonotonicDirection::Increasing => (self.below, self.above),
+            MonotonicDirection::Decreasing => (self.above, self.below),
+        }
     }
 
     fn observation_at_physical_end(&self, low_physical: bool) -> u16 {
@@ -457,9 +486,10 @@ impl<const N: usize> InverseTransferFunction for PiecewiseLinearTransfer<N> {
 
     fn invert(&self, physical: i32) -> Result<u16, InverseTransferError<i32>> {
         let (minimum, maximum) = self.physical_range();
+        let (low_physical, high_physical) = self.range_behaviors();
 
         if physical < minimum {
-            return match self.below {
+            return match low_physical {
                 BoundaryBehavior::Error => {
                     Err(InverseTransferError::BelowRange { physical, minimum })
                 }
@@ -467,7 +497,7 @@ impl<const N: usize> InverseTransferFunction for PiecewiseLinearTransfer<N> {
             };
         }
         if physical > maximum {
-            return match self.above {
+            return match high_physical {
                 BoundaryBehavior::Error => {
                     Err(InverseTransferError::AboveRange { physical, maximum })
                 }
@@ -549,25 +579,6 @@ pub fn invert_segment(
     Ok(invert_valid_segment(physical, x0, y0, x1, y1))
 }
 
-/// Divide with nearest rounding, ties away from zero.
-///
-/// `denominator` must be non-zero. Used by both forward and inverse segment
-/// math so rounding cannot drift between directions.
-fn div_nearest_ties_away(numerator: i64, denominator: i64) -> i64 {
-    debug_assert!(denominator != 0);
-    let den_abs = denominator.unsigned_abs();
-    let half = (den_abs / 2) as i64;
-    if numerator >= 0 {
-        let quotient = ((numerator as u64) + (half as u64)) / den_abs;
-        let quotient = quotient as i64;
-        if denominator > 0 { quotient } else { -quotient }
-    } else {
-        let quotient = ((-numerator) as u64 + (half as u64)) / den_abs;
-        let quotient = quotient as i64;
-        if denominator > 0 { -quotient } else { quotient }
-    }
-}
-
 fn interpolate_valid_segment(input: u16, x0: u16, y0: i32, x1: u16, y1: i32) -> i32 {
     let offset = i64::from(input - x0);
     let span = i64::from(x1 - x0);
@@ -595,16 +606,34 @@ fn invert_valid_segment(physical: i32, x0: u16, y0: i32, x1: u16, y1: i32) -> u1
 /// regenerates knot tables, or updates [`TransferMetadata`].
 ///
 /// Identity (modulo rounding when `|scale| ≠ 1`) is `gain = scale` and
-/// `offset = 0`. Negative `scale` is allowed and flips sense. Nesting multiple
-/// wrappers is permitted via [`TransferFunction`], but precision loss and
-/// overflow risk stack with each layer.
+/// `offset = 0`. A negative `gain` or `scale` is allowed and flips sense.
+/// Nesting multiple wrappers is permitted via [`TransferFunction`], but
+/// precision loss and overflow risk stack with each layer.
+///
+/// # Inverse
+///
+/// When the inner type implements [`InverseTransferFunction`], so does the
+/// wrapper: [`invert`](InverseTransferFunction::invert) undoes the affine with
+/// `y = (y' * scale - offset) / gain` and then inverts the inner transfer.
+/// That is what makes a calibrated setpoint — "which ADC code reads 25 °C
+/// *after* this unit's factory calibration?" — a single call.
+///
+/// Because `gain` must be nonzero for the affine to be invertible,
+/// [`AffineCalibration::new`] rejects `gain == 0` outright rather than
+/// deferring the failure to `invert`.
 ///
 /// # Numerical scope
 ///
 /// For any `i32` `y`, `gain`, and `offset`, the product/sum
-/// `y * gain + offset` always fits in `i64`. The checked path still returns
-/// [`TransferError::Overflow`] if rounding or the final cast cannot be
-/// represented in `i32`.
+/// `y * gain + offset` always fits in `i64`; the same holds for
+/// `y' * scale - offset` on the inverse path. Both directions still report
+/// overflow — [`TransferError::Overflow`] forward,
+/// [`InverseTransferError::Overflow`] inverse — when the result does not fit
+/// `i32`.
+///
+/// Both directions round, so a convert-then-invert round trip through a
+/// calibration is bounded, not exact. A calibration that compresses the
+/// physical scale cannot restore what the forward quantization discarded.
 #[derive(Copy, Clone, Debug)]
 pub struct AffineCalibration<T> {
     inner: T,
@@ -618,6 +647,8 @@ pub struct AffineCalibration<T> {
 pub enum AffineCalibrationError {
     /// The scale divisor is zero.
     ZeroScale,
+    /// The gain is zero, which collapses every observation onto one output.
+    ZeroGain,
 }
 
 impl<T> AffineCalibration<T> {
@@ -625,7 +656,10 @@ impl<T> AffineCalibration<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`AffineCalibrationError::ZeroScale`] if `scale == 0`.
+    /// Returns [`AffineCalibrationError::ZeroScale`] if `scale == 0`, or
+    /// [`AffineCalibrationError::ZeroGain`] if `gain == 0`. A zero gain maps
+    /// every observation onto the single value `offset / scale`, discarding
+    /// the sensor and leaving the calibration non-invertible.
     pub fn new(
         inner: T,
         gain: i32,
@@ -634,6 +668,9 @@ impl<T> AffineCalibration<T> {
     ) -> Result<Self, AffineCalibrationError> {
         if scale == 0 {
             return Err(AffineCalibrationError::ZeroScale);
+        }
+        if gain == 0 {
+            return Err(AffineCalibrationError::ZeroGain);
         }
         Ok(Self {
             inner,
@@ -677,6 +714,76 @@ where
     }
 }
 
+impl<T> InverseTransferFunction for AffineCalibration<T>
+where
+    T: InverseTransferFunction<Physical = i32>,
+{
+    type Physical = i32;
+    type Observation = T::Observation;
+
+    /// Undo the calibration, then invert the inner transfer.
+    ///
+    /// Range errors from the inner transfer are re-expressed in calibrated
+    /// units, so `minimum` / `maximum` are directly comparable with the value
+    /// the caller passed in. A calibration with `gain` and `scale` of opposite
+    /// signs reverses orientation, which turns an inner `BelowRange` into an
+    /// `AboveRange` and vice versa.
+    fn invert(&self, physical: i32) -> Result<T::Observation, InverseTransferError<i32>> {
+        let uncalibrated = unapply_affine_i64(physical, self.gain, self.offset, self.scale)?;
+        self.inner
+            .invert(uncalibrated)
+            .map_err(|error| self.recalibrate_error(physical, error))
+    }
+}
+
+impl<T> AffineCalibration<T> {
+    /// True when the calibration preserves the inner transfer's orientation.
+    const fn preserves_orientation(&self) -> bool {
+        (self.gain > 0) == (self.scale > 0)
+    }
+
+    /// Re-express an inner range error in calibrated units.
+    ///
+    /// `physical` is echoed back unchanged — it is what the caller supplied.
+    /// The bound is mapped forward through the affine, and the variant flips
+    /// when the calibration reverses orientation.
+    fn recalibrate_error(
+        &self,
+        physical: i32,
+        error: InverseTransferError<i32>,
+    ) -> InverseTransferError<i32> {
+        let (bound, was_low) = match error {
+            InverseTransferError::BelowRange { minimum, .. } => (minimum, true),
+            InverseTransferError::AboveRange { maximum, .. } => (maximum, false),
+            InverseTransferError::AmbiguousFlat { low, high, .. } => {
+                return InverseTransferError::AmbiguousFlat {
+                    physical,
+                    low,
+                    high,
+                };
+            }
+            InverseTransferError::Overflow => return InverseTransferError::Overflow,
+        };
+
+        let Ok(calibrated) = apply_affine_i64::<i32>(bound, self.gain, self.offset, self.scale)
+        else {
+            return InverseTransferError::Overflow;
+        };
+
+        if was_low == self.preserves_orientation() {
+            InverseTransferError::BelowRange {
+                physical,
+                minimum: calibrated,
+            }
+        } else {
+            InverseTransferError::AboveRange {
+                physical,
+                maximum: calibrated,
+            }
+        }
+    }
+}
+
 /// Apply `y' = (y * gain + offset) / scale` with checked `i64` math.
 ///
 /// Rounding is nearest, ties away from zero. `scale` must be nonzero; callers
@@ -695,38 +802,37 @@ fn apply_affine_i64<I>(
     let numerator = product
         .checked_add(i64::from(offset))
         .ok_or(TransferError::Overflow)?;
-    let scaled = round_div_nearest_checked(numerator, i64::from(scale))?;
+    let scaled = div_nearest_ties_away(numerator, i64::from(scale));
     i32::try_from(scaled).map_err(|_| TransferError::Overflow)
 }
 
-/// Nearest division with ties away from zero; rejects unrepresentable cases.
-fn round_div_nearest_checked<I>(numerator: i64, denominator: i64) -> Result<i64, TransferError<I>> {
-    debug_assert!(denominator != 0);
+/// Undo `y' = (y * gain + offset) / scale`, recovering `y`.
+///
+/// Solves `y = (y' * scale - offset) / gain` with the same nearest,
+/// ties-away rounding. `gain` and `scale` must both be nonzero;
+/// [`AffineCalibration::new`] enforces that.
+///
+/// Both directions round, so `unapply(apply(y))` is bounded rather than exact:
+/// a calibration that compresses the physical scale cannot restore what the
+/// forward quantization discarded.
+fn unapply_affine_i64(
+    calibrated: i32,
+    gain: i32,
+    offset: i32,
+    scale: i32,
+) -> Result<i32, InverseTransferError<i32>> {
+    debug_assert!(gain != 0 && scale != 0);
 
-    // Normalize to a positive divisor so ties-away matches interpolate_segment.
-    let (numerator, denominator) = if denominator < 0 {
-        (
-            numerator.checked_neg().ok_or(TransferError::Overflow)?,
-            denominator.checked_neg().ok_or(TransferError::Overflow)?,
-        )
-    } else {
-        (numerator, denominator)
-    };
-
-    if numerator >= 0 {
-        let adjusted = numerator
-            .checked_add(denominator / 2)
-            .ok_or(TransferError::Overflow)?;
-        Ok(adjusted / denominator)
-    } else {
-        let abs_numerator = numerator.checked_neg().ok_or(TransferError::Overflow)?;
-        let adjusted = abs_numerator
-            .checked_add(denominator / 2)
-            .ok_or(TransferError::Overflow)?;
-        (adjusted / denominator)
-            .checked_neg()
-            .ok_or(TransferError::Overflow)
-    }
+    // `|calibrated * scale|` is at most `2^62`, so neither step can overflow
+    // `i64` for any `i32` operands.
+    let product = i64::from(calibrated)
+        .checked_mul(i64::from(scale))
+        .ok_or(InverseTransferError::Overflow)?;
+    let numerator = product
+        .checked_sub(i64::from(offset))
+        .ok_or(InverseTransferError::Overflow)?;
+    let uncalibrated = div_nearest_ties_away(numerator, i64::from(gain));
+    i32::try_from(uncalibrated).map_err(|_| InverseTransferError::Overflow)
 }
 
 #[cfg(test)]
@@ -991,6 +1097,62 @@ mod tests {
     }
 
     #[test]
+    fn boundary_policy_agrees_between_directions_on_a_decreasing_table() {
+        // NTC-shaped: decreasing, error under domain_min, clamp over domain_max.
+        let transfer =
+            PiecewiseLinearTransfer::new(&INPUTS, &DECREASING, MonotonicDirection::Decreasing)
+                .with_boundaries(BoundaryBehavior::Error, BoundaryBehavior::Clamp);
+
+        // `above` governs codes over domain_max, which are exactly the codes
+        // producing physical values under range_min. Both directions clamp.
+        assert_eq!(transfer.convert(500), Ok(-1_000));
+        assert_eq!(transfer.invert_physical(-2_000), Ok(400));
+
+        // `below` governs codes under domain_min, which produce physical
+        // values over range_max. Both directions error.
+        assert_eq!(
+            transfer.convert(99),
+            Err(TransferError::BelowDomain {
+                input: 99,
+                minimum: 100
+            })
+        );
+        assert_eq!(
+            transfer.invert_physical(3_000),
+            Err(InverseTransferError::AboveRange {
+                physical: 3_000,
+                maximum: 2_000
+            })
+        );
+
+        assert_eq!(
+            transfer.range_behaviors(),
+            (BoundaryBehavior::Clamp, BoundaryBehavior::Error)
+        );
+    }
+
+    #[test]
+    fn boundary_policy_is_unswapped_on_an_increasing_table() {
+        let transfer =
+            PiecewiseLinearTransfer::new(&INPUTS, &OUTPUTS, MonotonicDirection::Increasing)
+                .with_boundaries(BoundaryBehavior::Error, BoundaryBehavior::Clamp);
+
+        assert_eq!(
+            transfer.range_behaviors(),
+            (BoundaryBehavior::Error, BoundaryBehavior::Clamp)
+        );
+        assert_eq!(transfer.convert(500), Ok(2_000));
+        assert_eq!(transfer.invert_physical(3_000), Ok(400));
+        assert_eq!(
+            transfer.invert_physical(-2_000),
+            Err(InverseTransferError::BelowRange {
+                physical: -2_000,
+                minimum: -1_000
+            })
+        );
+    }
+
+    #[test]
     fn invert_range_errors_use_physical_bounds() {
         let transfer =
             PiecewiseLinearTransfer::new(&INPUTS, &OUTPUTS, MonotonicDirection::Increasing);
@@ -1103,5 +1265,148 @@ mod tests {
         assert_eq!(outer.convert(200), Ok(0));
         // y=2000 → 4010 → (4010-10)/2 = 2000
         assert_eq!(outer.convert(400), Ok(2_000));
+    }
+
+    #[test]
+    fn affine_constructor_returns_error_for_zero_gain() {
+        let base = PiecewiseLinearTransfer::new(&INPUTS, &OUTPUTS, MonotonicDirection::Increasing);
+        assert!(matches!(
+            AffineCalibration::new(base, 0, 5, 1),
+            Err(AffineCalibrationError::ZeroGain)
+        ));
+    }
+
+    #[test]
+    fn calibrated_inverse_round_trips_through_the_table() {
+        let base = PiecewiseLinearTransfer::new(&INPUTS, &OUTPUTS, MonotonicDirection::Increasing);
+        let cal = AffineCalibration::new(base, 1_005, -120, 1_000).unwrap();
+
+        // Every in-domain code survives convert-then-invert on this table.
+        for code in INPUTS[0]..=INPUTS[INPUTS.len() - 1] {
+            let calibrated = cal.convert(code).unwrap();
+            let recovered = cal.invert(calibrated).unwrap();
+            assert!(
+                recovered.abs_diff(code) <= 1,
+                "code {code}: convert -> {calibrated} -> invert -> {recovered}"
+            );
+        }
+    }
+
+    #[test]
+    fn calibrated_inverse_undoes_the_affine_before_the_table() {
+        let base = PiecewiseLinearTransfer::new(&INPUTS, &OUTPUTS, MonotonicDirection::Increasing);
+        let identity = AffineCalibration::new(base, 1, 0, 1).unwrap();
+        assert_eq!(identity.invert(-500), Ok(150));
+        assert_eq!(identity.invert(0), Ok(200));
+
+        // Scale by ten: a calibrated -5000 is an uncalibrated -500.
+        let scaled = AffineCalibration::new(base, 10, 0, 1).unwrap();
+        assert_eq!(scaled.invert(-5_000), Ok(150));
+        assert_eq!(scaled.convert(150), Ok(-5_000));
+    }
+
+    #[test]
+    fn calibrated_inverse_reports_bounds_in_calibrated_units() {
+        let base = PiecewiseLinearTransfer::new(&INPUTS, &OUTPUTS, MonotonicDirection::Increasing);
+        // Uncalibrated range is -1000..=2000; at gain 10 that is -10000..=20000.
+        let cal = AffineCalibration::new(base, 10, 0, 1).unwrap();
+
+        // Within half an uncalibrated quantum of the bound, undoing the affine
+        // rounds back into range rather than failing: -10_001 / 10 is -1000.1,
+        // which is the endpoint knot.
+        assert_eq!(cal.invert(-10_001), Ok(100));
+        assert_eq!(cal.invert(20_001), Ok(400));
+
+        // Past that, the bound is reported in calibrated units so the caller
+        // can compare it against the value they passed in.
+        assert_eq!(
+            cal.invert(-10_010),
+            Err(InverseTransferError::BelowRange {
+                physical: -10_010,
+                minimum: -10_000
+            })
+        );
+        assert_eq!(
+            cal.invert(20_010),
+            Err(InverseTransferError::AboveRange {
+                physical: 20_010,
+                maximum: 20_000
+            })
+        );
+    }
+
+    #[test]
+    fn calibrated_inverse_flips_variants_when_orientation_reverses() {
+        let base = PiecewiseLinearTransfer::new(&INPUTS, &OUTPUTS, MonotonicDirection::Increasing);
+        // Negative gain reverses sense: uncalibrated -1000..=2000 becomes
+        // calibrated -2000..=1000, so the inner low bound is the high one here.
+        let flipped = AffineCalibration::new(base, -1, 0, 1).unwrap();
+        assert!(!flipped.preserves_orientation());
+        assert_eq!(flipped.convert(100), Ok(1_000));
+        assert_eq!(flipped.convert(400), Ok(-2_000));
+        assert_eq!(flipped.invert(1_000), Ok(100));
+        assert_eq!(flipped.invert(-2_000), Ok(400));
+
+        // The inner transfer reports BelowRange; calibrated, it is AboveRange.
+        assert_eq!(
+            flipped.invert(1_001),
+            Err(InverseTransferError::AboveRange {
+                physical: 1_001,
+                maximum: 1_000
+            })
+        );
+        assert_eq!(
+            flipped.invert(-2_001),
+            Err(InverseTransferError::BelowRange {
+                physical: -2_001,
+                minimum: -2_000
+            })
+        );
+    }
+
+    #[test]
+    fn calibrated_inverse_honors_clamp_and_flat_policy() {
+        let clamped =
+            PiecewiseLinearTransfer::new(&INPUTS, &OUTPUTS, MonotonicDirection::Increasing)
+                .with_boundaries(BoundaryBehavior::Clamp, BoundaryBehavior::Clamp);
+        let cal = AffineCalibration::new(clamped, 10, 0, 1).unwrap();
+        assert_eq!(cal.invert(-99_999), Ok(100));
+        assert_eq!(cal.invert(99_999), Ok(400));
+
+        let flat = PiecewiseLinearTransfer::new(
+            &FLAT_INPUTS,
+            &FLAT_OUTPUTS,
+            MonotonicDirection::Increasing,
+        )
+        .with_flat_resolution(FlatResolution::Error);
+        let cal = AffineCalibration::new(flat, 2, 0, 1).unwrap();
+        // Flat run sits at uncalibrated 10, i.e. calibrated 20.
+        assert_eq!(
+            cal.invert(20),
+            Err(InverseTransferError::AmbiguousFlat {
+                physical: 20,
+                low: 10,
+                high: 20
+            })
+        );
+    }
+
+    #[test]
+    fn calibrated_inverse_rejects_unrepresentable_input() {
+        let base = PiecewiseLinearTransfer::new(&INPUTS, &OUTPUTS, MonotonicDirection::Increasing);
+        // Undoing a large scale pushes the uncalibrated value outside i32.
+        let cal = AffineCalibration::new(base, 1, 0, i32::MAX).unwrap();
+        assert_eq!(cal.invert(i32::MAX), Err(InverseTransferError::Overflow));
+    }
+
+    #[test]
+    fn nested_calibration_inverts_through_every_layer() {
+        let base = PiecewiseLinearTransfer::new(&INPUTS, &OUTPUTS, MonotonicDirection::Increasing);
+        let inner = AffineCalibration::new(base, 2, 10, 1).unwrap();
+        let outer = AffineCalibration::new(inner, 1, -10, 2).unwrap();
+        assert_eq!(outer.convert(200), Ok(0));
+        assert_eq!(outer.invert(0), Ok(200));
+        assert_eq!(outer.convert(400), Ok(2_000));
+        assert_eq!(outer.invert(2_000), Ok(400));
     }
 }
