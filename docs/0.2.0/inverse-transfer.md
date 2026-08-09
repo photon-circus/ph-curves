@@ -62,7 +62,11 @@ pub enum InverseTransferError<P> {
 
 **Algorithm (runtime only):** binary search knot index by output (respecting direction) → exact flat-run + `FlatResolution`, or `invert_valid_segment` with shared nearest/ties-away `i64` divider matching the forward path. No dense physical→input LUT.
 
-**Metadata (additive):** `range_min` / `range_max`, `strictly_monotonic`, `flat_segment_count`, `flat_resolution`, `achieved_max_inverse_code_error`.
+**Metadata (additive):** `range_min` / `range_max`, `strictly_monotonic`, `flat_segment_count`, `achieved_max_inverse_code_error`.
+
+`achieved_max_inverse_code_error` is measured exhaustively by the generator across the whole input domain, reusing the library's own `interpolate_segment` / `invert_segment` so the host audit rounds exactly the way the runtime does. `tests/ntc_transfer.rs` re-measures the emitted table at runtime and asserts it matches the recorded value, which is what catches drift between the host search and `PiecewiseLinearTransfer::invert`.
+
+`flat_resolution` is deliberately **not** in `TransferMetadata`. It describes a runtime knob that `with_flat_resolution` can change after the table is defined, so a baked-in copy would contradict the live policy on any caller that overrides it. Read `PiecewiseLinearTransfer::flat_resolution()` instead; `TransferMetadata` records only facts about the table itself.
 
 ## Keep-outs / bounds
 

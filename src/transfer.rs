@@ -140,6 +140,17 @@ pub enum InterpolationError {
         /// Segment's upper input.
         maximum: u16,
     },
+    /// Segment outputs are equal, so the segment cannot be inverted uniquely.
+    FlatSegment,
+    /// The physical value is outside the closed segment's output span.
+    OutsidePhysicalSpan {
+        /// Physical value supplied by the caller.
+        physical: i32,
+        /// Segment's lower output.
+        minimum: i32,
+        /// Segment's upper output.
+        maximum: i32,
+    },
 }
 
 /// Compact facts recorded by the host generator for a transfer table.
@@ -171,16 +182,22 @@ pub struct TransferMetadata {
     pub strictly_monotonic: bool,
     /// Count of adjacent knot pairs with equal outputs.
     pub flat_segment_count: usize,
-    /// Flat-run policy baked into the generated const (default PreferLowInput).
-    pub flat_resolution: FlatResolution,
     /// Requested maximum numerical error in output quanta.
     pub requested_max_error: u32,
     /// Exhaustively measured, conservatively rounded-up maximum error.
     pub achieved_max_error: u32,
     /// Input where the achieved maximum error first occurs.
     pub worst_case_input: u16,
-    /// Max `|invert(convert(x)) as i32 − x as i32|` over the input domain
-    /// (host-measured; codes). `0` if not audited.
+    /// Exhaustively host-measured worst
+    /// `|invert(convert(x)) as i32 − x as i32|` over the input domain, in
+    /// codes, under the table's default [`FlatResolution`].
+    ///
+    /// This is a measured round-trip bound, not a promise of identity: a
+    /// nonzero value means some observations do not survive a
+    /// convert-then-invert cycle exactly. Flat runs are resolved with
+    /// [`FlatResolution::PreferLowInput`]; overriding the policy with
+    /// [`PiecewiseLinearTransfer::with_flat_resolution`] can exceed this
+    /// bound on tables where `flat_segment_count` is nonzero.
     pub achieved_max_inverse_code_error: u16,
 }
 
@@ -439,19 +456,17 @@ impl<const N: usize> InverseTransferFunction for PiecewiseLinearTransfer<N> {
 
         if physical < minimum {
             return match self.below {
-                BoundaryBehavior::Error => Err(InverseTransferError::BelowRange {
-                    physical,
-                    minimum,
-                }),
+                BoundaryBehavior::Error => {
+                    Err(InverseTransferError::BelowRange { physical, minimum })
+                }
                 BoundaryBehavior::Clamp => Ok(self.observation_at_physical_end(true)),
             };
         }
         if physical > maximum {
             return match self.above {
-                BoundaryBehavior::Error => Err(InverseTransferError::AboveRange {
-                    physical,
-                    maximum,
-                }),
+                BoundaryBehavior::Error => {
+                    Err(InverseTransferError::AboveRange { physical, maximum })
+                }
                 BoundaryBehavior::Clamp => Ok(self.observation_at_physical_end(false)),
             };
         }
@@ -499,6 +514,37 @@ pub fn interpolate_segment(
     Ok(interpolate_valid_segment(input, x0, y0, x1, y1))
 }
 
+/// Invert one signed integer segment with nearest, ties-away rounding.
+///
+/// The mirror of [`interpolate_segment`]. `physical` must lie within the
+/// closed output span, `x1` must be greater than `x0`, and the segment must
+/// not be flat. All arithmetic uses `i64`; the full `u16`/`i32` ranges are
+/// safe. Host tools use this so a generated round-trip audit measures the
+/// same arithmetic the runtime performs.
+pub fn invert_segment(
+    physical: i32,
+    x0: u16,
+    y0: i32,
+    x1: u16,
+    y1: i32,
+) -> Result<u16, InterpolationError> {
+    if x1 <= x0 {
+        return Err(InterpolationError::InvalidSpan);
+    }
+    if y0 == y1 {
+        return Err(InterpolationError::FlatSegment);
+    }
+    let (minimum, maximum) = if y0 < y1 { (y0, y1) } else { (y1, y0) };
+    if physical < minimum || physical > maximum {
+        return Err(InterpolationError::OutsidePhysicalSpan {
+            physical,
+            minimum,
+            maximum,
+        });
+    }
+    Ok(invert_valid_segment(physical, x0, y0, x1, y1))
+}
+
 /// Divide with nearest rounding, ties away from zero.
 ///
 /// `denominator` must be non-zero. Used by both forward and inverse segment
@@ -510,19 +556,11 @@ fn div_nearest_ties_away(numerator: i64, denominator: i64) -> i64 {
     if numerator >= 0 {
         let quotient = ((numerator as u64) + (half as u64)) / den_abs;
         let quotient = quotient as i64;
-        if denominator > 0 {
-            quotient
-        } else {
-            -quotient
-        }
+        if denominator > 0 { quotient } else { -quotient }
     } else {
         let quotient = ((-numerator) as u64 + (half as u64)) / den_abs;
         let quotient = quotient as i64;
-        if denominator > 0 {
-            -quotient
-        } else {
-            quotient
-        }
+        if denominator > 0 { -quotient } else { quotient }
     }
 }
 
@@ -683,6 +721,49 @@ mod tests {
     }
 
     #[test]
+    fn standalone_inversion_validates_arguments() {
+        assert_eq!(
+            invert_segment(0, 10, 0, 10, 1),
+            Err(InterpolationError::InvalidSpan)
+        );
+        assert_eq!(
+            invert_segment(5, 10, 7, 20, 7),
+            Err(InterpolationError::FlatSegment)
+        );
+        assert_eq!(
+            invert_segment(21, 10, 0, 20, 20),
+            Err(InterpolationError::OutsidePhysicalSpan {
+                physical: 21,
+                minimum: 0,
+                maximum: 20
+            })
+        );
+        // A decreasing segment reports its span low-to-high.
+        assert_eq!(
+            invert_segment(25, 10, 20, 20, 0),
+            Err(InterpolationError::OutsidePhysicalSpan {
+                physical: 25,
+                minimum: 0,
+                maximum: 20
+            })
+        );
+    }
+
+    #[test]
+    fn standalone_inversion_matches_the_table_path() {
+        // Same knots the increasing fixture table uses for its first segment.
+        for physical in -1_000..=0 {
+            assert_eq!(
+                invert_segment(physical, 100, -1_000, 200, 0),
+                Ok(invert_valid_segment(physical, 100, -1_000, 200, 0)),
+                "physical {physical}"
+            );
+        }
+        assert_eq!(invert_segment(-500, 100, -1_000, 200, 0), Ok(150));
+        assert_eq!(invert_segment(1_000, 200, 0, 400, 2_000), Ok(300));
+    }
+
+    #[test]
     fn invert_exact_knots_and_midpoints() {
         let transfer =
             PiecewiseLinearTransfer::new(&INPUTS, &OUTPUTS, MonotonicDirection::Increasing);
@@ -728,8 +809,11 @@ mod tests {
 
     #[test]
     fn flat_resolution_policies() {
-        let base =
-            PiecewiseLinearTransfer::new(&FLAT_INPUTS, &FLAT_OUTPUTS, MonotonicDirection::Increasing);
+        let base = PiecewiseLinearTransfer::new(
+            &FLAT_INPUTS,
+            &FLAT_OUTPUTS,
+            MonotonicDirection::Increasing,
+        );
 
         assert_eq!(
             base.with_flat_resolution(FlatResolution::PreferLowInput)

@@ -168,7 +168,7 @@ pub use tickless::{RepeatMode, Tickless, TicklessDeadline, TicklessIter, Tickles
 pub use transfer::{
     BoundaryBehavior, FlatResolution, InterpolationError, InverseTransferError,
     InverseTransferFunction, MonotonicDirection, PiecewiseLinearTransfer, TransferError,
-    TransferFunction, TransferMetadata, interpolate_segment,
+    TransferFunction, TransferMetadata, interpolate_segment, invert_segment,
 };
 
 #[cfg(test)]

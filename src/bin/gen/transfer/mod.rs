@@ -200,10 +200,139 @@ fn validate_monotonic(name: &str, truth: &[f64]) -> MonotonicDirection {
     direction
 }
 
+/// Exhaustively measure the worst round-trip code error over the input domain.
+///
+/// Returns `max |invert(convert(code)) - code|` for every code in
+/// `inputs[0]..=inputs[last]`, under the default
+/// [`FlatResolution::PreferLowInput`] policy that generated tables carry.
+///
+/// The segment arithmetic comes from `ph_curves::interpolate_segment` and
+/// `ph_curves::invert_segment`, so the host audit rounds exactly the way the
+/// runtime does. `tests/ntc_transfer.rs` re-measures the emitted table at
+/// runtime and asserts it matches the value recorded here, which is what
+/// catches any drift between this search and
+/// `PiecewiseLinearTransfer::invert`.
+pub fn measure_inverse_code_error(
+    inputs: &[u16],
+    outputs: &[i32],
+    direction: MonotonicDirection,
+) -> u16 {
+    let mut worst = 0u16;
+    for code in inputs[0]..=inputs[inputs.len() - 1] {
+        let physical = convert_code(inputs, outputs, code);
+        let recovered = invert_physical(inputs, outputs, direction, physical);
+        worst = worst.max(recovered.abs_diff(code));
+    }
+    worst
+}
+
+/// Forward-convert one in-domain code against the sparse knot table.
+fn convert_code(inputs: &[u16], outputs: &[i32], code: u16) -> i32 {
+    let left = match inputs.binary_search(&code) {
+        Ok(index) => return outputs[index],
+        // `code >= inputs[0]`, so the insertion point is never 0.
+        Err(index) => index - 1,
+    };
+    ph_curves::interpolate_segment(
+        code,
+        inputs[left],
+        outputs[left],
+        inputs[left + 1],
+        outputs[left + 1],
+    )
+    .unwrap_or_else(|error| panic!("internal interpolation error: {error:?}"))
+}
+
+/// Invert one in-range physical value, mirroring the runtime search.
+fn invert_physical(
+    inputs: &[u16],
+    outputs: &[i32],
+    direction: MonotonicDirection,
+    physical: i32,
+) -> u16 {
+    // Largest knot index on the inclusive low-physical side of `physical`.
+    let (mut low, mut high) = (0usize, inputs.len() - 1);
+    while low < high {
+        let middle = low + (high - low).div_ceil(2);
+        let past = match direction {
+            MonotonicDirection::Increasing => outputs[middle] <= physical,
+            MonotonicDirection::Decreasing => outputs[middle] >= physical,
+        };
+        if past {
+            low = middle;
+        } else {
+            high = middle - 1;
+        }
+    }
+
+    if outputs[low] == physical {
+        // FlatResolution::PreferLowInput: walk to the start of the flat run.
+        let mut left = low;
+        while left > 0 && outputs[left - 1] == physical {
+            left -= 1;
+        }
+        return inputs[left];
+    }
+
+    ph_curves::invert_segment(
+        physical,
+        inputs[low],
+        outputs[low],
+        inputs[low + 1],
+        outputs[low + 1],
+    )
+    .unwrap_or_else(|error| panic!("internal inversion error: {error:?}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use model::{DividerTopology, ModelDef};
+
+    #[test]
+    fn inverse_code_error_is_zero_for_a_faithful_table() {
+        // One physical quantum per code: every code survives the round trip.
+        let inputs = [0u16, 100];
+        let outputs = [0i32, 100];
+        assert_eq!(
+            measure_inverse_code_error(&inputs, &outputs, MonotonicDirection::Increasing),
+            0
+        );
+    }
+
+    #[test]
+    fn inverse_code_error_is_measured_on_a_coarse_table() {
+        // 1001 codes share 11 physical values, so most codes land on a
+        // plateau and invert back to that plateau's representative code.
+        let inputs = [0u16, 1000];
+        let outputs = [0i32, 10];
+        let worst = measure_inverse_code_error(&inputs, &outputs, MonotonicDirection::Increasing);
+        assert!(
+            worst > 0,
+            "coarse output scale must report a nonzero round-trip bound"
+        );
+        assert_eq!(worst, 50);
+    }
+
+    #[test]
+    fn inverse_code_error_covers_decreasing_tables() {
+        let inputs = [0u16, 1000];
+        let outputs = [10i32, 0];
+        let worst = measure_inverse_code_error(&inputs, &outputs, MonotonicDirection::Decreasing);
+        assert_eq!(worst, 50);
+    }
+
+    #[test]
+    fn inverse_code_error_reports_flat_run_width() {
+        // A flat run over codes 10..=20 resolves to its low input, so code 20
+        // comes back as 10.
+        let inputs = [0u16, 10, 20, 30];
+        let outputs = [0i32, 10, 10, 20];
+        assert_eq!(
+            measure_inverse_code_error(&inputs, &outputs, MonotonicDirection::Increasing),
+            10
+        );
+    }
 
     fn base_def() -> TransferDef {
         TransferDef {

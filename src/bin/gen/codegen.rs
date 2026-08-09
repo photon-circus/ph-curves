@@ -25,8 +25,8 @@ pub fn generate(
     }
     if !curves_file.transfers.is_empty() {
         out.push_str(
-            "use ph_curves::{\n    BoundaryBehavior, FlatResolution, MonotonicDirection, \
-             PiecewiseLinearTransfer, TransferMetadata,\n};\n\n",
+            "use ph_curves::{BoundaryBehavior, MonotonicDirection, \
+             PiecewiseLinearTransfer, TransferMetadata};\n\n",
         );
     }
 
@@ -170,8 +170,8 @@ fn emit_transfer(
         .filter(|pair| pair[0] == pair[1])
         .count();
     let strictly_monotonic = flat_segment_count == 0;
-    // Host-audited after emit when needed; generator leaves 0 until measured.
-    let achieved_max_inverse_code_error = 0u16;
+    let achieved_max_inverse_code_error =
+        super::transfer::measure_inverse_code_error(&data.inputs, &data.outputs, data.direction);
 
     out.push_str(&format!(
         "/// Metadata for [`{const_name}`].\n\
@@ -187,7 +187,6 @@ fn emit_transfer(
          \x20   knot_count: {knot_count},\n\
          \x20   strictly_monotonic: {strictly_monotonic},\n\
          \x20   flat_segment_count: {flat_segment_count},\n\
-         \x20   flat_resolution: FlatResolution::PreferLowInput,\n\
          \x20   requested_max_error: {requested},\n\
          \x20   achieved_max_error: {achieved},\n\
          \x20   worst_case_input: {worst},\n\
