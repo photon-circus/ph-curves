@@ -22,13 +22,19 @@ pub enum DividerTopology {
     NtcToSupply,
 }
 
-pub fn evaluate(name: &str, model: &ModelDef, output_range: [f64; 2]) -> (u16, Vec<f64>, String) {
-    assert!(
-        output_range[0].is_finite()
-            && output_range[1].is_finite()
-            && output_range[0] < output_range[1],
-        "transfer `{name}`: output_range must contain two increasing finite values"
-    );
+pub fn evaluate(
+    name: &str,
+    model: &ModelDef,
+    output_range: [f64; 2],
+) -> Result<(u16, Vec<f64>, String), String> {
+    if !output_range[0].is_finite()
+        || !output_range[1].is_finite()
+        || output_range[0] >= output_range[1]
+    {
+        return Err(format!(
+            "transfer `{name}`: output_range must contain two increasing finite values"
+        ));
+    }
 
     match model {
         ModelDef::NtcBetaDivider {
@@ -45,25 +51,28 @@ pub fn evaluate(name: &str, model: &ModelDef, output_range: [f64; 2]) -> (u16, V
                 ("nominal_temperature_celsius", nominal_temperature_celsius),
                 ("fixed_resistance_ohms", fixed_resistance_ohms),
             ] {
-                assert!(
-                    value.is_finite(),
-                    "transfer `{name}`: {label} must be finite"
-                );
+                if !value.is_finite() {
+                    return Err(format!("transfer `{name}`: {label} must be finite"));
+                }
             }
-            assert!(
-                *nominal_resistance_ohms > 0.0
-                    && *beta_kelvin > 0.0
-                    && *fixed_resistance_ohms > 0.0,
-                "transfer `{name}`: resistances and beta must be positive"
-            );
-            assert!(
-                *nominal_temperature_celsius > -273.15,
-                "transfer `{name}`: nominal temperature must exceed absolute zero"
-            );
-            assert!(
-                *adc_max_code >= 2,
-                "transfer `{name}`: adc_max_code must be at least 2"
-            );
+            if *nominal_resistance_ohms <= 0.0
+                || *beta_kelvin <= 0.0
+                || *fixed_resistance_ohms <= 0.0
+            {
+                return Err(format!(
+                    "transfer `{name}`: resistances and beta must be positive"
+                ));
+            }
+            if *nominal_temperature_celsius <= -273.15 {
+                return Err(format!(
+                    "transfer `{name}`: nominal temperature must exceed absolute zero"
+                ));
+            }
+            if *adc_max_code < 2 {
+                return Err(format!(
+                    "transfer `{name}`: adc_max_code must be at least 2"
+                ));
+            }
 
             let mut accepted = Vec::new();
             for code in 1..*adc_max_code {
@@ -80,28 +89,26 @@ pub fn evaluate(name: &str, model: &ModelDef, output_range: [f64; 2]) -> (u16, V
                     accepted.push((code, temperature));
                 }
             }
-            assert!(
-                accepted.len() >= 2,
-                "transfer `{name}`: output_range contains fewer than two ADC codes"
-            );
+            if accepted.len() < 2 {
+                return Err(format!(
+                    "transfer `{name}`: output_range contains fewer than two ADC codes"
+                ));
+            }
 
             let minimum = accepted[0].0;
-            let maximum = accepted.last().unwrap().0;
-            assert_eq!(
-                accepted.len(),
-                usize::from(maximum - minimum) + 1,
-                "transfer `{name}`: derived model domain is not contiguous"
-            );
+            let maximum = accepted.last().expect("accepted count checked").0;
+            if accepted.len() != usize::from(maximum - minimum) + 1 {
+                return Err(format!(
+                    "transfer `{name}`: derived model domain is not contiguous"
+                ));
+            }
             let values = accepted.into_iter().map(|(_, value)| value).collect();
             let description = format!(
-                "NTC Beta divider: R0={} ohm, B={} K, T0={} C, fixed={} ohm, ADC max={}, topology={topology:?}",
-                nominal_resistance_ohms,
-                beta_kelvin,
-                nominal_temperature_celsius,
-                fixed_resistance_ohms,
-                adc_max_code
+                "NTC Beta divider: R0={nominal_resistance_ohms} ohm, B={beta_kelvin} K, \
+                 T0={nominal_temperature_celsius} C, fixed={fixed_resistance_ohms} ohm, \
+                 ADC max={adc_max_code}, topology={topology:?}"
             );
-            (minimum, values, description)
+            Ok((minimum, values, description))
         }
     }
 }

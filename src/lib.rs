@@ -94,8 +94,16 @@
 //!
 //! let milli_celsius = NTC_10K_BETA_3950.convert(adc_code)?;
 //! ```
+//!
+//! # Code generation (`gen` feature)
+//!
+//! With `features = ["gen"]`, host tools and `build.rs` can call
+//! [`r#gen::generate_from_toml`] / [`r#gen::generate_to_path`] without
+//! shelling out to the CLI. (The module is spelled `r#gen` because `gen` is
+//! a reserved keyword in Rust 2024.) The firmware runtime API is unchanged
+//! when `gen` is off.
 
-#![no_std]
+#![cfg_attr(not(feature = "gen"), no_std)]
 #![deny(missing_docs)]
 #![allow(unsafe_code)]
 #![deny(unsafe_op_in_unsafe_fn)]
@@ -167,6 +175,9 @@ pub use transfer::{
     BoundaryBehavior, InterpolationError, MonotonicDirection, PiecewiseLinearTransfer,
     TransferError, TransferFunction, TransferMetadata, interpolate_segment,
 };
+
+#[cfg(feature = "gen")]
+pub mod r#gen;
 
 #[cfg(test)]
 mod tests;

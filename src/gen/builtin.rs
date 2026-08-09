@@ -5,11 +5,8 @@
 
 /// Evaluate a builtin curve at normalised position `t` (0.0..=1.0).
 ///
-/// # Panics
-///
-/// Panics if `name` is not a recognised builtin.
-pub fn eval(name: &str, t: f64) -> f64 {
-    match name {
+pub fn eval(name: &str, t: f64) -> Result<f64, String> {
+    let value = match name {
         "linear" => t,
 
         // Quadratic
@@ -68,13 +65,18 @@ pub fn eval(name: &str, t: f64) -> f64 {
             t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
         }
 
-        other => panic!("unknown builtin curve `{other}`"),
-    }
+        other => return Err(format!("unknown builtin curve `{other}`")),
+    };
+    Ok(value)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn eval_ok(name: &str, t: f64) -> f64 {
+        eval(name, t).unwrap()
+    }
 
     fn assert_close(a: f64, b: f64) {
         assert!(
@@ -104,8 +106,8 @@ mod tests {
             "smoother_step",
         ];
         for name in names {
-            assert_close(eval(name, 0.0), 0.0);
-            assert_close(eval(name, 1.0), 1.0);
+            assert_close(eval_ok(name, 0.0), 0.0);
+            assert_close(eval_ok(name, 1.0), 1.0);
         }
     }
 
@@ -113,90 +115,93 @@ mod tests {
     #[test]
     fn legacy_aliases() {
         for t in [0.0, 0.25, 0.5, 0.75, 1.0] {
-            assert_close(eval("ease_in", t), eval("ease_in_quad", t));
-            assert_close(eval("ease_out", t), eval("ease_out_quad", t));
-            assert_close(eval("ease_in_out", t), eval("ease_in_out_quad", t));
+            assert_close(eval_ok("ease_in", t), eval_ok("ease_in_quad", t));
+            assert_close(eval_ok("ease_out", t), eval_ok("ease_out_quad", t));
+            assert_close(eval_ok("ease_in_out", t), eval_ok("ease_in_out_quad", t));
         }
     }
 
     // Midpoint spot checks.
     #[test]
     fn linear_midpoint() {
-        assert_close(eval("linear", 0.5), 0.5);
+        assert_close(eval_ok("linear", 0.5), 0.5);
     }
 
     #[test]
     fn ease_in_quad_midpoint() {
-        assert_close(eval("ease_in_quad", 0.5), 0.25);
+        assert_close(eval_ok("ease_in_quad", 0.5), 0.25);
     }
 
     #[test]
     fn ease_out_quad_midpoint() {
-        assert_close(eval("ease_out_quad", 0.5), 0.75);
+        assert_close(eval_ok("ease_out_quad", 0.5), 0.75);
     }
 
     #[test]
     fn ease_in_out_quad_midpoint() {
-        assert_close(eval("ease_in_out_quad", 0.5), 0.5);
+        assert_close(eval_ok("ease_in_out_quad", 0.5), 0.5);
     }
 
     #[test]
     fn ease_in_cubic_midpoint() {
-        assert_close(eval("ease_in_cubic", 0.5), 0.125);
+        assert_close(eval_ok("ease_in_cubic", 0.5), 0.125);
     }
 
     #[test]
     fn ease_out_cubic_midpoint() {
-        assert_close(eval("ease_out_cubic", 0.5), 0.875);
+        assert_close(eval_ok("ease_out_cubic", 0.5), 0.875);
     }
 
     #[test]
     fn ease_in_out_cubic_midpoint() {
-        assert_close(eval("ease_in_out_cubic", 0.5), 0.5);
+        assert_close(eval_ok("ease_in_out_cubic", 0.5), 0.5);
     }
 
     #[test]
     fn ease_in_quart_quarter() {
         // 0.25^4 = 0.00390625
-        assert_close(eval("ease_in_quart", 0.25), 0.00390625);
+        assert_close(eval_ok("ease_in_quart", 0.25), 0.00390625);
     }
 
     #[test]
     fn ease_out_quart_quarter() {
         // 1 - (1 - 0.25)^4 = 1 - 0.75^4 = 1 - 0.31640625
-        assert_close(eval("ease_out_quart", 0.25), 1.0 - 0.75_f64.powi(4));
+        assert_close(eval_ok("ease_out_quart", 0.25), 1.0 - 0.75_f64.powi(4));
     }
 
     #[test]
     fn ease_in_out_quart_below_half() {
         // t=0.25 < 0.5 → 8 * 0.25^4 = 8 * 0.00390625 = 0.03125
-        assert_close(eval("ease_in_out_quart", 0.25), 0.03125);
+        assert_close(eval_ok("ease_in_out_quart", 0.25), 0.03125);
     }
 
     #[test]
     fn ease_in_out_quart_above_half() {
         // t=0.75 → 1 - (-2*0.75 + 2)^4 / 2 = 1 - 0.5^4 / 2 = 1 - 0.03125
-        assert_close(eval("ease_in_out_quart", 0.75), 1.0 - 0.5_f64.powi(4) / 2.0);
+        assert_close(
+            eval_ok("ease_in_out_quart", 0.75),
+            1.0 - 0.5_f64.powi(4) / 2.0,
+        );
     }
 
     #[test]
     fn ease_in_expo_near_zero() {
-        assert_close(eval("ease_in_expo", 0.0), 0.0);
+        assert_close(eval_ok("ease_in_expo", 0.0), 0.0);
     }
 
     #[test]
     fn ease_out_expo_near_one() {
-        assert_close(eval("ease_out_expo", 1.0), 1.0);
+        assert_close(eval_ok("ease_out_expo", 1.0), 1.0);
     }
 
     #[test]
     fn smoothstep_midpoint() {
-        assert_close(eval("smoothstep", 0.5), 0.5);
+        assert_close(eval_ok("smoothstep", 0.5), 0.5);
     }
 
     #[test]
     fn smoother_step_midpoint() {
-        assert_close(eval("smoother_step", 0.5), 0.5);
+        assert_close(eval_ok("smoother_step", 0.5), 0.5);
     }
 
     // Monotonicity: all builtins should be non-decreasing.
@@ -219,10 +224,10 @@ mod tests {
             "smoother_step",
         ];
         for name in names {
-            let mut prev = eval(name, 0.0);
+            let mut prev = eval_ok(name, 0.0);
             for i in 1..=1000 {
                 let t = i as f64 / 1000.0;
-                let v = eval(name, t);
+                let v = eval_ok(name, t);
                 assert!(
                     v >= prev - 1e-12,
                     "{name} not monotonic at t={t}: {v} < {prev}"
@@ -233,8 +238,10 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "unknown builtin curve")]
-    fn unknown_builtin_panics() {
-        eval("nonexistent", 0.5);
+    fn unknown_builtin_returns_error() {
+        assert_eq!(
+            eval("nonexistent", 0.5).unwrap_err(),
+            "unknown builtin curve `nonexistent`"
+        );
     }
 }

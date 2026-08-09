@@ -16,14 +16,29 @@ use super::{builtin, formula, points, transfer};
 // A curve is defined by exactly ONE of: `builtin`, `formula`, or `points`.
 // ---------------------------------------------------------------------------
 
+/// Parsed TOML definitions for normalized curves and physical transfers.
+///
+/// Construct via [`Self::from_toml_str`] or [`super::generate_from_str`].
+/// Field access is crate-visible; dependents should prefer the `generate_*`
+/// helpers over hand-building schema graphs.
 #[derive(Debug, Deserialize)]
-pub struct CurvesFile {
+pub struct DefinitionsFile {
+    /// Normalized LUT curves keyed by TOML table name.
     #[serde(default)]
-    pub curves: BTreeMap<String, CurveDef>,
+    pub(crate) curves: BTreeMap<String, CurveDef>,
+    /// Sparse physical transfer functions keyed by TOML table name.
     #[serde(default)]
-    pub transfers: BTreeMap<String, transfer::TransferDef>,
+    pub(crate) transfers: BTreeMap<String, transfer::TransferDef>,
 }
 
+impl DefinitionsFile {
+    /// Parse a TOML definitions document.
+    pub fn from_toml_str(toml: &str) -> Result<Self, toml::de::Error> {
+        toml::from_str(toml)
+    }
+}
+
+/// One normalized curve definition from the TOML `[curves]` map.
 #[derive(Debug, Deserialize)]
 pub struct CurveDef {
     /// Name of a built-in curve (e.g. "linear", "ease_in_quad").
@@ -53,30 +68,31 @@ pub struct CurveData {
 /// Build a complete [`CurveData`] (forward LUT + optional inverse) from a
 /// [`CurveDef`].
 ///
-/// # Panics
-///
-/// - If not exactly one of `builtin`, `formula`, or `points` is specified.
-/// - If the curve fails validation (endpoints, monotonicity).
-pub fn build(name: &str, def: &CurveDef, lut_size: usize) -> CurveData {
+pub fn build(name: &str, def: &CurveDef, lut_size: usize) -> Result<CurveData, String> {
     let set_count =
         def.builtin.is_some() as u8 + def.formula.is_some() as u8 + def.points.is_some() as u8;
     if set_count != 1 {
-        panic!(
+        return Err(format!(
             "curve `{name}`: exactly one of `builtin`, `formula`, or `points` \
              must be specified (found {set_count})"
-        );
+        ));
     }
 
     let fwd = if let Some(b) = &def.builtin {
-        build_from_easing(b, lut_size, |t| builtin::eval(b, t))
+        build_from_easing(name, lut_size, |t| builtin::eval(b, t))?
     } else if let Some(f) = &def.formula {
-        let parsed = formula::Formula::parse(f);
-        build_from_easing(f, lut_size, |t| parsed.eval("t", t))
+        let parsed =
+            formula::Formula::parse(f).map_err(|error| format!("curve `{name}`: {error}"))?;
+        build_from_easing(name, lut_size, |t| parsed.eval("t", t))?
     } else {
-        points::build(name, def.points.as_deref().unwrap(), lut_size)
+        points::build(
+            name,
+            def.points.as_deref().expect("source count checked"),
+            lut_size,
+        )?
     };
 
-    validate(name, &fwd, def.monotonic);
+    validate(name, &fwd, def.monotonic)?;
 
     let inv = if def.monotonic {
         Some(invert(&fwd))
@@ -84,7 +100,7 @@ pub fn build(name: &str, def: &CurveDef, lut_size: usize) -> CurveData {
         None
     };
 
-    CurveData { fwd, inv }
+    Ok(CurveData { fwd, inv })
 }
 
 // ---------------------------------------------------------------------------
@@ -92,46 +108,54 @@ pub fn build(name: &str, def: &CurveDef, lut_size: usize) -> CurveData {
 // ---------------------------------------------------------------------------
 
 /// Sample an easing function (builtin or formula) into a forward LUT.
-fn build_from_easing(label: &str, n: usize, f: impl Fn(f64) -> f64) -> Vec<u32> {
+fn build_from_easing(
+    label: &str,
+    n: usize,
+    f: impl Fn(f64) -> Result<f64, String>,
+) -> Result<Vec<u32>, String> {
     // Validate early so we get a clear error on bad names / expressions.
-    let _ = f(0.5);
+    let _ = f(0.5).map_err(|error| format!("curve `{label}`: {error}"))?;
 
     let max = (n - 1) as f64;
     let mut fwd: Vec<u32> = (0..n)
         .map(|u| {
             let t = u as f64 / max;
-            let w = f(t);
-            assert!(
-                w.is_finite(),
-                "curve `{label}`: produced non-finite value at t={t}"
-            );
-            (w * max).round().clamp(0.0, max) as u32
+            let w = f(t).map_err(|error| format!("curve `{label}`: {error}"))?;
+            if !w.is_finite() {
+                return Err(format!(
+                    "curve `{label}`: produced non-finite value at t={t}"
+                ));
+            }
+            Ok((w * max).round().clamp(0.0, max) as u32)
         })
-        .collect();
+        .collect::<Result<_, String>>()?;
     // Pin endpoints.
     fwd[0] = 0;
-    *fwd.last_mut().unwrap() = max as u32;
-    fwd
+    *fwd.last_mut().expect("validated LUT size is nonzero") = max as u32;
+    Ok(fwd)
 }
 
-fn validate(name: &str, fwd: &[u32], monotonic: bool) {
+fn validate(name: &str, fwd: &[u32], monotonic: bool) -> Result<(), String> {
     let max = (fwd.len() - 1) as u32;
-    assert!(
-        fwd[0] == 0 && *fwd.last().unwrap() == max,
-        "curve `{name}` must map 0\u{2192}0 and {max}\u{2192}{max}"
-    );
+    if fwd[0] != 0 || *fwd.last().expect("validated LUT size is nonzero") != max {
+        return Err(format!(
+            "curve `{name}` must map 0\u{2192}0 and {max}\u{2192}{max}"
+        ));
+    }
     if monotonic {
         for i in 1..fwd.len() {
-            assert!(
-                fwd[i] >= fwd[i - 1],
-                "curve `{name}` must be monotonic non-decreasing \
-                 (fwd[{i}]={} < fwd[{}]={})",
-                fwd[i],
-                i - 1,
-                fwd[i - 1],
-            );
+            if fwd[i] < fwd[i - 1] {
+                return Err(format!(
+                    "curve `{name}` must be monotonic non-decreasing \
+                     (fwd[{i}]={} < fwd[{}]={})",
+                    fwd[i],
+                    i - 1,
+                    fwd[i - 1],
+                ));
+            }
         }
     }
+    Ok(())
 }
 
 fn invert(fwd: &[u32]) -> Vec<u32> {
@@ -184,7 +208,7 @@ mod tests {
     #[test]
     fn build_builtin_linear() {
         let def = linear_def();
-        let data = build("linear", &def, 256);
+        let data = build("linear", &def, 256).unwrap();
         assert_eq!(data.fwd.len(), 256);
         assert_eq!(data.fwd[0], 0);
         assert_eq!(data.fwd[255], 255);
@@ -194,7 +218,7 @@ mod tests {
     #[test]
     fn build_formula_identity() {
         let def = formula_def("t");
-        let data = build("ident", &def, 256);
+        let data = build("ident", &def, 256).unwrap();
         for i in 0..256 {
             assert_eq!(data.fwd[i], i as u32);
         }
@@ -203,7 +227,7 @@ mod tests {
     #[test]
     fn build_points_linear() {
         let def = points_def(vec![[0, 0], [255, 255]], true);
-        let data = build("pts", &def, 256);
+        let data = build("pts", &def, 256).unwrap();
         for i in 0..256 {
             assert_eq!(data.fwd[i], i as u32);
         }
@@ -212,43 +236,40 @@ mod tests {
     #[test]
     fn build_non_monotonic_has_no_inv() {
         let def = points_def(vec![[0, 0], [64, 200], [192, 50], [255, 255]], false);
-        let data = build("wave", &def, 256);
+        let data = build("wave", &def, 256).unwrap();
         assert!(data.inv.is_none());
     }
 
     #[test]
-    #[should_panic(expected = "exactly one")]
-    fn build_no_definition_panics() {
+    fn build_no_definition_returns_error() {
         let def = CurveDef {
             builtin: None,
             formula: None,
             points: None,
             monotonic: true,
         };
-        build("empty", &def, 256);
+        assert!(build("empty", &def, 256).is_err());
     }
 
     #[test]
-    #[should_panic(expected = "exactly one")]
-    fn build_multiple_definitions_panics() {
+    fn build_multiple_definitions_returns_error() {
         let def = CurveDef {
             builtin: Some("linear".into()),
             formula: Some("t".into()),
             points: None,
             monotonic: true,
         };
-        build("double", &def, 256);
+        assert!(build("double", &def, 256).is_err());
     }
 
     // ── validate ───────────────────────────────────────────────────
 
     #[test]
-    #[should_panic(expected = "monotonic non-decreasing")]
     fn validate_rejects_non_monotonic_when_required() {
         // Hand-craft a non-monotonic fwd array.
         let mut fwd: Vec<u32> = (0..10).collect();
         fwd[5] = 3; // break monotonicity
-        validate("bad", &fwd, true);
+        assert!(validate("bad", &fwd, true).is_err());
     }
 
     // ── invert ─────────────────────────────────────────────────────
@@ -271,7 +292,7 @@ mod tests {
             points: None,
             monotonic: true,
         };
-        let data = build("eiq", &def, 256);
+        let data = build("eiq", &def, 256).unwrap();
         let inv = data.inv.unwrap();
         for u in 0..256 {
             let w = data.fwd[u] as usize;
@@ -286,14 +307,14 @@ mod tests {
 
     #[test]
     fn build_from_easing_pins_endpoints() {
-        let fwd = build_from_easing("test", 10, |t| t * t);
+        let fwd = build_from_easing("test", 10, |t| Ok(t * t)).unwrap();
         assert_eq!(fwd[0], 0);
         assert_eq!(fwd[9], 9);
     }
 
     #[test]
     fn build_from_easing_values_in_range() {
-        let fwd = build_from_easing("test", 256, |t| t * t * t);
+        let fwd = build_from_easing("test", 256, |t| Ok(t * t * t)).unwrap();
         for (i, &v) in fwd.iter().enumerate() {
             assert!(v <= 255, "fwd[{i}] = {v} out of range");
         }
@@ -307,7 +328,7 @@ mod tests {
 [curves.test]
 builtin = "linear"
 "#;
-        let cf: CurvesFile = toml::from_str(toml).unwrap();
+        let cf: DefinitionsFile = toml::from_str(toml).unwrap();
         assert!(cf.curves.contains_key("test"));
         assert!(cf.curves["test"].monotonic); // default true
     }
@@ -319,7 +340,7 @@ builtin = "linear"
 points = [[0, 0], [128, 255], [255, 0]]
 monotonic = false
 "#;
-        let cf: CurvesFile = toml::from_str(toml).unwrap();
+        let cf: DefinitionsFile = toml::from_str(toml).unwrap();
         assert!(!cf.curves["wave"].monotonic);
     }
 }

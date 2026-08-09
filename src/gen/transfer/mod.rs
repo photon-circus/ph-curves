@@ -4,7 +4,7 @@ mod adaptive;
 mod model;
 mod points;
 
-use ph_curves::MonotonicDirection;
+use crate::MonotonicDirection;
 use serde::Deserialize;
 
 use super::formula;
@@ -60,6 +60,7 @@ pub struct TransferDef {
     pub output_range: Option<[f64; 2]>,
 }
 
+#[derive(Debug)]
 pub struct TransferData {
     pub inputs: Vec<u16>,
     pub outputs: Vec<i32>,
@@ -70,82 +71,95 @@ pub struct TransferData {
     pub provenance: String,
 }
 
-pub fn build(name: &str, def: &TransferDef) -> TransferData {
-    assert!(
-        def.output_scale > 0,
-        "transfer `{name}`: output_scale must be positive"
-    );
-    assert!(
-        (2..=ABSOLUTE_MAX_KNOTS).contains(&def.max_knots),
-        "transfer `{name}`: max_knots must be in 2..={ABSOLUTE_MAX_KNOTS}"
-    );
+pub fn build(name: &str, def: &TransferDef) -> Result<TransferData, String> {
+    if def.output_scale == 0 {
+        return Err(format!("transfer `{name}`: output_scale must be positive"));
+    }
+    if !(2..=ABSOLUTE_MAX_KNOTS).contains(&def.max_knots) {
+        return Err(format!(
+            "transfer `{name}`: max_knots must be in 2..={ABSOLUTE_MAX_KNOTS}"
+        ));
+    }
 
     let source_count =
         def.points.is_some() as u8 + def.formula.is_some() as u8 + def.model.is_some() as u8;
-    assert!(
-        source_count == 1,
-        "transfer `{name}`: exactly one of points, formula, or model must be specified"
-    );
+    if source_count != 1 {
+        return Err(format!(
+            "transfer `{name}`: exactly one of points, formula, or model must be specified"
+        ));
+    }
 
     let (domain_min, truth, provenance) = if let Some(control_points) = &def.points {
-        assert!(
-            def.domain.is_none() && def.output_range.is_none(),
-            "transfer `{name}`: points define their domain; domain and output_range are forbidden"
-        );
-        let (minimum, physical) = points::evaluate(name, control_points);
+        if def.domain.is_some() || def.output_range.is_some() {
+            return Err(format!(
+                "transfer `{name}`: points define their domain; domain and output_range are forbidden"
+            ));
+        }
+        let (minimum, physical) = points::evaluate(name, control_points)?;
         (
             minimum,
-            scale_truth(name, &physical, def.output_scale),
+            scale_truth(name, &physical, def.output_scale)?,
             format!("physical points ({} control points)", control_points.len()),
         )
     } else if let Some(expression) = &def.formula {
-        assert!(
-            def.output_range.is_none(),
-            "transfer `{name}`: output_range is forbidden for formula sources"
-        );
+        if def.output_range.is_some() {
+            return Err(format!(
+                "transfer `{name}`: output_range is forbidden for formula sources"
+            ));
+        }
         let [minimum, maximum] = def
             .domain
-            .unwrap_or_else(|| panic!("transfer `{name}`: formula requires domain = [min, max]"));
-        assert!(
-            minimum < maximum,
-            "transfer `{name}`: domain must be strictly increasing"
-        );
-        let parsed = formula::Formula::parse(expression);
+            .ok_or_else(|| format!("transfer `{name}`: formula requires domain = [min, max]"))?;
+        if minimum >= maximum {
+            return Err(format!(
+                "transfer `{name}`: domain must be strictly increasing"
+            ));
+        }
+        let parsed = formula::Formula::parse(expression)
+            .map_err(|error| format!("transfer `{name}`: {error}"))?;
         let physical: Vec<f64> = (minimum..=maximum)
-            .map(|input| parsed.eval("x", f64::from(input)))
-            .collect();
+            .map(|input| {
+                parsed
+                    .eval("x", f64::from(input))
+                    .map_err(|error| format!("transfer `{name}`: {error}"))
+            })
+            .collect::<Result<_, _>>()?;
         (
             minimum,
-            scale_truth(name, &physical, def.output_scale),
+            scale_truth(name, &physical, def.output_scale)?,
             format!("formula y = {expression}"),
         )
     } else {
-        assert!(
-            def.domain.is_none(),
-            "transfer `{name}`: domain is forbidden for model sources"
-        );
+        if def.domain.is_some() {
+            return Err(format!(
+                "transfer `{name}`: domain is forbidden for model sources"
+            ));
+        }
         let output_range = def
             .output_range
-            .unwrap_or_else(|| panic!("transfer `{name}`: model requires output_range"));
-        let (minimum, physical, description) =
-            model::evaluate(name, def.model.as_ref().unwrap(), output_range);
+            .ok_or_else(|| format!("transfer `{name}`: model requires output_range"))?;
+        let (minimum, physical, description) = model::evaluate(
+            name,
+            def.model.as_ref().expect("source count checked"),
+            output_range,
+        )?;
         (
             minimum,
-            scale_truth(name, &physical, def.output_scale),
+            scale_truth(name, &physical, def.output_scale)?,
             description,
         )
     };
 
-    let direction = validate_monotonic(name, &truth);
+    let direction = validate_monotonic(name, &truth)?;
     let result = adaptive::fit(
         name,
         domain_min,
         &truth,
         def.max_interpolation_error,
         def.max_knots,
-    );
+    )?;
 
-    TransferData {
+    Ok(TransferData {
         inputs: result.inputs,
         outputs: result.outputs,
         direction,
@@ -153,34 +167,37 @@ pub fn build(name: &str, def: &TransferDef) -> TransferData {
         achieved_max_error_exact: result.achieved_max_error_exact,
         worst_case_input: result.worst_case_input,
         provenance,
-    }
+    })
 }
 
-fn scale_truth(name: &str, physical: &[f64], output_scale: u32) -> Vec<f64> {
+fn scale_truth(name: &str, physical: &[f64], output_scale: u32) -> Result<Vec<f64>, String> {
     physical
         .iter()
         .enumerate()
         .map(|(offset, &value)| {
             let scaled = value * f64::from(output_scale);
-            assert!(
-                scaled.is_finite(),
-                "transfer `{name}`: non-finite output at domain offset {offset}"
-            );
-            assert!(
-                scaled.round() >= f64::from(i32::MIN) && scaled.round() <= f64::from(i32::MAX),
-                "transfer `{name}`: output at domain offset {offset} does not fit i32"
-            );
-            scaled
+            if !scaled.is_finite() {
+                return Err(format!(
+                    "transfer `{name}`: non-finite output at domain offset {offset}"
+                ));
+            }
+            if scaled.round() < f64::from(i32::MIN) || scaled.round() > f64::from(i32::MAX) {
+                return Err(format!(
+                    "transfer `{name}`: output at domain offset {offset} does not fit i32"
+                ));
+            }
+            Ok(scaled)
         })
         .collect()
 }
 
-fn validate_monotonic(name: &str, truth: &[f64]) -> MonotonicDirection {
-    assert!(
-        truth.len() >= 2,
-        "transfer `{name}`: domain must contain at least two inputs"
-    );
-    let direction = if truth.last().unwrap() < &truth[0] {
+fn validate_monotonic(name: &str, truth: &[f64]) -> Result<MonotonicDirection, String> {
+    if truth.len() < 2 {
+        return Err(format!(
+            "transfer `{name}`: domain must contain at least two inputs"
+        ));
+    }
+    let direction = if truth.last().expect("truth length checked") < &truth[0] {
         MonotonicDirection::Decreasing
     } else {
         MonotonicDirection::Increasing
@@ -191,13 +208,14 @@ fn validate_monotonic(name: &str, truth: &[f64]) -> MonotonicDirection {
             MonotonicDirection::Increasing => pair[1] >= pair[0],
             MonotonicDirection::Decreasing => pair[1] <= pair[0],
         };
-        assert!(
-            valid,
-            "transfer `{name}`: source is not monotonic at domain offset {}",
-            offset + 1
-        );
+        if !valid {
+            return Err(format!(
+                "transfer `{name}`: source is not monotonic at domain offset {}",
+                offset + 1
+            ));
+        }
     }
-    direction
+    Ok(direction)
 }
 
 #[cfg(test)]
@@ -239,7 +257,7 @@ mod tests {
 
     #[test]
     fn reference_ntc_meets_sparse_error_target() {
-        let data = build("ntc", &ntc_def(DividerTopology::NtcToGround));
+        let data = build("ntc", &ntc_def(DividerTopology::NtcToGround)).unwrap();
         assert_eq!(data.inputs.first(), Some(&142));
         assert_eq!(data.inputs.last(), Some(&3995));
         assert_eq!(data.inputs.len(), 61);
@@ -251,7 +269,7 @@ mod tests {
 
     #[test]
     fn opposite_ntc_topology_reverses_direction() {
-        let data = build("ntc", &ntc_def(DividerTopology::NtcToSupply));
+        let data = build("ntc", &ntc_def(DividerTopology::NtcToSupply)).unwrap();
         assert_eq!(data.inputs.first(), Some(&100));
         assert_eq!(data.inputs.last(), Some(&3953));
         assert_eq!(data.direction, MonotonicDirection::Increasing);
@@ -275,7 +293,8 @@ mod tests {
                 ]),
                 ..base_def()
             },
-        );
+        )
+        .unwrap();
         assert_eq!(data.inputs, vec![100, 200]);
         assert_eq!(data.outputs, vec![-10_000, 40_000]);
     }
@@ -289,7 +308,8 @@ mod tests {
                 domain: Some([20, 100]),
                 ..base_def()
             },
-        );
+        )
+        .unwrap();
         assert_eq!(data.inputs, vec![20, 100]);
         assert_eq!(data.outputs, vec![0, 40_000]);
     }
@@ -303,19 +323,23 @@ mod tests {
                 domain: Some([2, 10]),
                 ..base_def()
             },
-        );
+        )
+        .unwrap();
         assert_eq!(data.inputs, vec![2, 10]);
         assert_eq!(data.outputs, vec![2_000, 10_000]);
     }
 
     #[test]
-    #[should_panic(expected = "greedy fitter did not meet maximum error")]
     fn knot_cap_prevents_full_domain_fallback() {
         let mut def = base_def();
         def.formula = Some("x * x".into());
         def.domain = Some([0, 100]);
         def.max_interpolation_error = 0;
         def.max_knots = 2;
-        build("bounded", &def);
+        assert!(
+            build("bounded", &def)
+                .unwrap_err()
+                .contains("greedy fitter did not meet maximum error")
+        );
     }
 }

@@ -2,12 +2,12 @@
 
 use std::collections::BTreeMap;
 
-use super::curve::{CurveData, CurveDef, CurvesFile};
+use super::curve::{CurveData, CurveDef, DefinitionsFile};
 use super::transfer::{TransferData, TransferDef};
 
 /// Render all curves and transfers as a complete Rust source string.
 pub fn generate(
-    curves_file: &CurvesFile,
+    curves_file: &DefinitionsFile,
     value_type: &str,
     lut_size: usize,
 ) -> Result<String, String> {
@@ -33,23 +33,21 @@ pub fn generate(
     if !curves_file.curves.is_empty() {
         // Type aliases for convenience.
         out.push_str(&format!(
-            "type Lut = CurveLut<{vt}, {vt}, {lut_size}>;\n",
-            vt = value_type,
+            "type Lut = CurveLut<{value_type}, {value_type}, {lut_size}>;\n",
         ));
         out.push_str(&format!(
-            "type MonoLut = MonotonicCurveLut<{vt}, {vt}, {lut_size}>;\n\n",
-            vt = value_type,
+            "type MonoLut = MonotonicCurveLut<{value_type}, {value_type}, {lut_size}>;\n\n",
         ));
     }
 
     for (name, def) in &curves {
-        let data = super::curve::build(name, def, lut_size);
+        let data = super::curve::build(name, def, lut_size)?;
         let const_name = &const_names[*name];
         emit_curve(&mut out, name, const_name, def, &data, value_type, lut_size);
     }
 
     for (name, def) in &transfers {
-        let data = super::transfer::build(name, def);
+        let data = super::transfer::build(name, def)?;
         let const_name = &const_names[*name];
         emit_transfer(&mut out, name, const_name, def, &data);
     }
@@ -112,8 +110,8 @@ fn emit_transfer(
 ) {
     let knot_count = data.inputs.len();
     let direction = match data.direction {
-        ph_curves::MonotonicDirection::Increasing => "MonotonicDirection::Increasing",
-        ph_curves::MonotonicDirection::Decreasing => "MonotonicDirection::Decreasing",
+        crate::MonotonicDirection::Increasing => "MonotonicDirection::Increasing",
+        crate::MonotonicDirection::Decreasing => "MonotonicDirection::Decreasing",
     };
     let domain_min = data.inputs[0];
     let domain_max = *data.inputs.last().unwrap();
@@ -319,7 +317,7 @@ fn format_values<T: core::fmt::Display>(values: &[T]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transfer::{BoundaryDef, PhysicalPoint, TransferDef};
+    use crate::r#gen::transfer::{BoundaryDef, PhysicalPoint, TransferDef};
     use std::collections::BTreeMap;
 
     // ── to_const_name ─────────────────────────────────────────────
@@ -390,7 +388,7 @@ mod tests {
                 monotonic: true,
             },
         );
-        let cf = CurvesFile {
+        let cf = DefinitionsFile {
             curves,
             transfers: BTreeMap::new(),
         };
@@ -413,7 +411,7 @@ mod tests {
                 monotonic: false,
             },
         );
-        let cf = CurvesFile {
+        let cf = DefinitionsFile {
             curves,
             transfers: BTreeMap::new(),
         };
@@ -435,7 +433,7 @@ mod tests {
                 monotonic: true,
             },
         );
-        let cf = CurvesFile {
+        let cf = DefinitionsFile {
             curves,
             transfers: BTreeMap::new(),
         };
@@ -459,7 +457,7 @@ mod tests {
             );
         }
         let error = generate(
-            &CurvesFile {
+            &DefinitionsFile {
                 curves,
                 transfers: BTreeMap::new(),
             },
@@ -486,7 +484,7 @@ mod tests {
             );
         }
         let error = generate(
-            &CurvesFile {
+            &DefinitionsFile {
                 curves,
                 transfers: BTreeMap::new(),
             },
@@ -511,7 +509,7 @@ mod tests {
             },
         );
         let out = generate(
-            &CurvesFile {
+            &DefinitionsFile {
                 curves,
                 transfers: BTreeMap::new(),
             },
@@ -562,7 +560,7 @@ mod tests {
                 output_range: None,
             },
         );
-        let error = generate(&CurvesFile { curves, transfers }, "u8", 256).unwrap_err();
+        let error = generate(&DefinitionsFile { curves, transfers }, "u8", 256).unwrap_err();
         assert!(error.contains("both normalize"));
         assert!(error.contains("`SENSOR`"));
     }
@@ -599,7 +597,7 @@ mod tests {
             );
         }
         let error = generate(
-            &CurvesFile {
+            &DefinitionsFile {
                 curves: BTreeMap::new(),
                 transfers,
             },
@@ -632,7 +630,7 @@ mod tests {
             },
         );
         let out = generate(
-            &CurvesFile {
+            &DefinitionsFile {
                 curves: BTreeMap::new(),
                 transfers,
             },
@@ -649,11 +647,10 @@ mod tests {
 
     #[test]
     fn reference_ntc_matches_golden_output() {
-        let definition: CurvesFile =
-            toml::from_str(include_str!("../../../assets/transfers.toml")).unwrap();
+        let definition: DefinitionsFile =
+            toml::from_str(include_str!("../../assets/transfers.toml")).unwrap();
         let output = generate(&definition, "u8", 256).unwrap();
-        let expected =
-            include_str!("../../../tests/fixtures/ntc_generated.rs").replace("\r\n", "\n");
+        let expected = include_str!("../../tests/fixtures/ntc_generated.rs").replace("\r\n", "\n");
         assert_eq!(output.trim_end(), expected.trim_end());
         assert!(!output.contains("f32"));
         assert!(!output.contains("f64"));
@@ -661,8 +658,8 @@ mod tests {
 
     #[test]
     fn custom_transfer_examples_generate_integer_firmware_code() {
-        let definition: CurvesFile =
-            toml::from_str(include_str!("../../../assets/custom-transfers.toml")).unwrap();
+        let definition: DefinitionsFile =
+            toml::from_str(include_str!("../../assets/custom-transfers.toml")).unwrap();
         let output = generate(&definition, "u8", 256).unwrap();
         assert!(output.contains("pub const PRESSURE_100KPA"));
         assert!(output.contains("pub const TANK_LEVEL"));

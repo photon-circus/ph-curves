@@ -20,12 +20,17 @@ exclude = [
 ]
 
 [features]
-gen = ["dep:serde", "dep:toml", "dep:clap"]
+# Host std marker; pulled in by `gen` for build.rs / tooling.
+std = []
+# Library API for build.rs / host tools (serde + toml; no clap).
+gen = ["std", "dep:serde", "dep:toml"]
+# Enables the `ph-curves-gen` CLI binary.
+gen-cli = ["gen", "dep:clap"]
 
 [dependencies]
 fixed = { version = "1", default-features = false }
 
-# Only pulled in by the `gen` feature for the CLI binary.
+# Host-only deps for the `gen` / `gen-cli` features.
 serde = { version = "1", features = ["derive"], optional = true }
 toml = { version = "0.8", optional = true }
 clap = { version = "4", features = ["derive"], optional = true }
@@ -33,4 +38,4 @@ clap = { version = "4", features = ["derive"], optional = true }
 [[bin]]
 name = "ph-curves-gen"
 path = "src/bin/gen/main.rs"
-required-features = ["gen"]
+required-features = ["gen-cli"]
