@@ -1,7 +1,7 @@
 # Hysteresis + Debounce (design)
 
 **Branch:** `feature/0.2.0-decision-primitives`  
-**Status:** Design documentation only. Implementation lives on this branch only; do not merge to `main` without owner decision.
+**Status:** Implemented on this branch (`Hysteresis`, `Debounce` / `DebounceOutput` in `stabilize`). Do not merge to `main` without owner decision.
 
 ## Motivation
 
