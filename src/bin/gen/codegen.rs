@@ -25,8 +25,8 @@ pub fn generate(
     }
     if !curves_file.transfers.is_empty() {
         out.push_str(
-            "use ph_curves::{BoundaryBehavior, FlatResolution, MonotonicDirection, \
-             PiecewiseLinearTransfer, TransferMetadata};\n\n",
+            "use ph_curves::{\n    BoundaryBehavior, FlatResolution, MonotonicDirection, \
+             PiecewiseLinearTransfer, TransferMetadata,\n};\n\n",
         );
     }
 
