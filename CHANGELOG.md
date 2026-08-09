@@ -7,13 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-09
+
 ### Added
 
+- `InverseTransferFunction` and `PiecewiseLinearTransfer::invert`, mapping a
+  physical setpoint back to an observation on the same sparse knots with no
+  dense physical-domain LUT. `FlatResolution` selects how a value landing on a
+  flat (non-unique) output run resolves; `InverseTransferError` reports
+  out-of-range and ambiguous-flat cases against the physical range.
+- `invert_segment`, the public mirror of `interpolate_segment`, so host tools
+  and the runtime share one rounding implementation.
+- Transfer metadata now records `range_min` / `range_max`,
+  `strictly_monotonic`, `flat_segment_count`, and an exhaustively measured
+  `achieved_max_inverse_code_error` round-trip bound.
 - `AffineCalibration` wrapper that applies caller-supplied `i32`
   gain/offset/scale after any `TransferFunction<Output = i32>` using checked
   `i64` math (nearest, ties-away). Overflow surfaces as
   `TransferError::Overflow`; `scale == 0` returns
   `AffineCalibrationError::ZeroScale` at construction.
+- `Hysteresis` and `Debounce` decision primitives beside the temporal filters.
+  Both are sample-count only: they read no clock and touch no GPIO.
+- `ph_curves::r#gen`, a `build.rs` / host-tool library API behind the `gen`
+  feature, exposing `generate_from_toml`, `generate_from_str`,
+  `generate_to_path`, `generate`, `GenerateOptions`, and `ValueType`.
+  Generator validation now returns `Error` values instead of panicking.
 - Sparse, integer-only `PiecewiseLinearTransfer` support for physical
   ADC-to-measurement conversion with signed outputs, explicit below/above
   policies, and no extrapolation.
@@ -35,18 +53,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   before the generator evaluates the declared input domain.
 - Signed transfer interpolation rounds the complete result at half-way ties,
   matching the documented ties-away-from-zero behavior.
+- The generator emitted `achieved_max_inverse_code_error: 0` unconditionally
+  rather than measuring it, so any table whose codes do not survive a
+  convert-then-invert cycle shipped a false round-trip bound. It is now swept
+  exhaustively over the input domain.
+- `TransferMetadata` no longer carries a `flat_resolution` copy. Codegen always
+  baked in `PreferLowInput`, so metadata contradicted the live policy for any
+  caller using `with_flat_resolution`. Read `flat_resolution()` instead.
 
 ### Changed
 
+- **Breaking (CLI/features):** the `gen` feature is now the library API only
+  and no longer builds the `ph-curves-gen` binary; the CLI moved behind the
+  new `gen-cli` feature, which implies `gen`. *Migration:* replace
+  `--features gen` with `--features gen-cli` in any invocation that runs or
+  installs the binary. Build scripts calling the library want plain `gen`,
+  which no longer pulls in `clap`.
+- Enabling `gen` turns off `#![no_std]`, because the generator needs
+  `std::fs`. Firmware crates must keep the feature off. Cargo's build-dependency
+  resolution keeps a `build.rs` use separate from the runtime dependency, but a
+  *normal* dependency that enables `ph-curves/gen` will unify the feature and
+  make the firmware build `std`.
 - Exhausting the greedy transfer fitter's knot budget now reports the
   heuristic limitation without claiming that no alternative knot placement
   could satisfy the requested error.
 
 ### Notes
 
-- Remote GitHub Actions remain disabled on the ADC transfer-functions feature
-  branch (`.github/ci.yml.disabled`). Use `scripts/local-ci.ps1` until Actions
-  are restored before merge.
+- Remote GitHub Actions remain disabled (`.github/ci.yml.disabled`).
+  `scripts/local-ci.ps1` is the validated gate and now covers `gen-cli`
+  alongside `gen`. Restoring `.github/workflows/ci.yml` is an outstanding
+  owner decision and blocks landing this release on `main`.
 
 ## [0.1.2] - 2026-08-09
 
