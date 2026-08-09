@@ -105,10 +105,11 @@
 //! # Code generation (`gen` feature)
 //!
 //! With `features = ["gen"]`, host tools and `build.rs` can call
-//! [`r#gen::generate_from_toml`] / [`r#gen::generate_to_path`] without
-//! shelling out to the CLI. (The module is spelled `r#gen` because `gen` is
-//! a reserved keyword in Rust 2024.) The firmware runtime API is unchanged
-//! when `gen` is off.
+//! `r#gen::generate_from_toml` / `r#gen::generate_to_path` without shelling
+//! out to the CLI. (The module is spelled `r#gen` because `gen` is a reserved
+//! keyword in Rust 2024; raw identifiers cannot appear in intra-doc links,
+//! so these are plain code spans rather than links.) The firmware runtime API
+//! is unchanged when `gen` is off.
 
 #![cfg_attr(not(feature = "gen"), no_std)]
 #![deny(missing_docs)]

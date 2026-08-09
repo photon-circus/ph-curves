@@ -1,4 +1,7 @@
-//! CLI front-end for [`ph_curves::r#gen`].
+//! CLI front-end for the `ph_curves::r#gen` module.
+//!
+//! Not an intra-doc link: raw identifiers such as `r#gen` do not resolve in
+//! doc links, and rustdoc parses `ph_curves::r` out of the attempt.
 //!
 //! # Usage
 //!
