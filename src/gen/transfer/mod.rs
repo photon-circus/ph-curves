@@ -224,8 +224,8 @@ fn validate_monotonic(name: &str, truth: &[f64]) -> Result<MonotonicDirection, S
 /// `inputs[0]..=inputs[last]`, under the default
 /// [`FlatResolution::PreferLowInput`] policy that generated tables carry.
 ///
-/// The segment arithmetic comes from `ph_curves::interpolate_segment` and
-/// `ph_curves::invert_segment`, so the host audit rounds exactly the way the
+/// The segment arithmetic comes from the crate's own `interpolate_segment`
+/// and `invert_segment`, so the host audit rounds exactly the way the
 /// runtime does. `tests/ntc_transfer.rs` re-measures the emitted table at
 /// runtime and asserts it matches the value recorded here, which is what
 /// catches any drift between this search and
@@ -251,7 +251,7 @@ fn convert_code(inputs: &[u16], outputs: &[i32], code: u16) -> i32 {
         // `code >= inputs[0]`, so the insertion point is never 0.
         Err(index) => index - 1,
     };
-    ph_curves::interpolate_segment(
+    crate::interpolate_segment(
         code,
         inputs[left],
         outputs[left],
@@ -292,7 +292,7 @@ fn invert_physical(
         return inputs[left];
     }
 
-    ph_curves::invert_segment(
+    crate::invert_segment(
         physical,
         inputs[low],
         outputs[low],
