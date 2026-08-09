@@ -41,13 +41,13 @@ pub fn generate(
     }
 
     for (name, def) in &curves {
-        let data = super::curve::build(name, def, lut_size);
+        let data = super::curve::build(name, def, lut_size)?;
         let const_name = &const_names[*name];
         emit_curve(&mut out, name, const_name, def, &data, value_type, lut_size);
     }
 
     for (name, def) in &transfers {
-        let data = super::transfer::build(name, def);
+        let data = super::transfer::build(name, def)?;
         let const_name = &const_names[*name];
         emit_transfer(&mut out, name, const_name, def, &data);
     }

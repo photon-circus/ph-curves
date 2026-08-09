@@ -2,26 +2,29 @@
 
 use super::PhysicalPoint;
 
-pub fn evaluate(name: &str, points: &[PhysicalPoint]) -> (u16, Vec<f64>) {
-    assert!(
-        points.len() >= 2,
-        "transfer `{name}`: points must contain at least two entries"
-    );
+pub fn evaluate(name: &str, points: &[PhysicalPoint]) -> Result<(u16, Vec<f64>), String> {
+    if points.len() < 2 {
+        return Err(format!(
+            "transfer `{name}`: points must contain at least two entries"
+        ));
+    }
     for (index, point) in points.iter().enumerate() {
-        assert!(
-            point.output.is_finite(),
-            "transfer `{name}`: point {index} has a non-finite output"
-        );
+        if !point.output.is_finite() {
+            return Err(format!(
+                "transfer `{name}`: point {index} has a non-finite output"
+            ));
+        }
     }
     for pair in points.windows(2) {
-        assert!(
-            pair[1].input > pair[0].input,
-            "transfer `{name}`: point inputs must be strictly increasing"
-        );
+        if pair[1].input <= pair[0].input {
+            return Err(format!(
+                "transfer `{name}`: point inputs must be strictly increasing"
+            ));
+        }
     }
 
     let minimum = points[0].input;
-    let maximum = points.last().unwrap().input;
+    let maximum = points.last().expect("point count checked").input;
     let mut segment = 0usize;
     let mut values = Vec::with_capacity(usize::from(maximum - minimum) + 1);
 
@@ -35,5 +38,5 @@ pub fn evaluate(name: &str, points: &[PhysicalPoint]) -> (u16, Vec<f64>) {
         values.push(left.output + fraction * (right.output - left.output));
     }
 
-    (minimum, values)
+    Ok((minimum, values))
 }

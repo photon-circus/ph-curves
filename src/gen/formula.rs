@@ -36,7 +36,7 @@ enum Token {
     Caret,
 }
 
-fn tokenize(expr: &str) -> Vec<Token> {
+fn tokenize(expr: &str) -> Result<Vec<Token>, String> {
     let mut tokens = Vec::new();
     let mut chars = expr.chars().peekable();
 
@@ -92,11 +92,10 @@ fn tokenize(expr: &str) -> Vec<Token> {
                         break;
                     }
                 }
-                tokens.push(Token::Num(
-                    num_str
-                        .parse::<f64>()
-                        .unwrap_or_else(|_| panic!("invalid number `{num_str}`")),
-                ));
+                let number = num_str
+                    .parse::<f64>()
+                    .map_err(|_| format!("invalid number `{num_str}`"))?;
+                tokens.push(Token::Num(number));
             }
             c if c.is_ascii_alphabetic() || c == '_' => {
                 let mut ident = String::new();
@@ -110,10 +109,10 @@ fn tokenize(expr: &str) -> Vec<Token> {
                 }
                 tokens.push(Token::Ident(ident));
             }
-            other => panic!("unexpected character `{other}` in formula"),
+            other => return Err(format!("unexpected character `{other}` in formula")),
         }
     }
-    tokens
+    Ok(tokens)
 }
 
 // ---------------------------------------------------------------------------
@@ -147,76 +146,79 @@ impl<'a> Evaluator<'a> {
         tok
     }
 
-    fn expect(&mut self, expected: &Token) {
+    fn expect(&mut self, expected: &Token) -> Result<(), String> {
         let got = self.next_token();
-        assert!(got == Some(expected), "expected {expected:?}, got {got:?}");
+        if got != Some(expected) {
+            return Err(format!("expected {expected:?}, got {got:?}"));
+        }
+        Ok(())
     }
 
     // ── Grammar rules ──────────────────────────────────────────────────
 
-    fn expr(&mut self) -> f64 {
-        let mut left = self.term();
+    fn expr(&mut self) -> Result<f64, String> {
+        let mut left = self.term()?;
         loop {
             match self.peek() {
                 Some(Token::Plus) => {
                     self.next_token();
-                    left += self.term();
+                    left += self.term()?;
                 }
                 Some(Token::Minus) => {
                     self.next_token();
-                    left -= self.term();
+                    left -= self.term()?;
                 }
                 _ => break,
             }
         }
-        left
+        Ok(left)
     }
 
-    fn term(&mut self) -> f64 {
-        let mut left = self.power();
+    fn term(&mut self) -> Result<f64, String> {
+        let mut left = self.power()?;
         loop {
             match self.peek() {
                 Some(Token::Star) => {
                     self.next_token();
-                    left *= self.power();
+                    left *= self.power()?;
                 }
                 Some(Token::Slash) => {
                     self.next_token();
-                    left /= self.power();
+                    left /= self.power()?;
                 }
                 _ => break,
             }
         }
-        left
+        Ok(left)
     }
 
-    fn power(&mut self) -> f64 {
-        let base = self.unary();
+    fn power(&mut self) -> Result<f64, String> {
+        let base = self.unary()?;
         if let Some(Token::Caret) = self.peek() {
             self.next_token();
-            let exp = self.power(); // right-associative
-            base.powf(exp)
+            let exp = self.power()?; // right-associative
+            Ok(base.powf(exp))
         } else {
-            base
+            Ok(base)
         }
     }
 
-    fn unary(&mut self) -> f64 {
+    fn unary(&mut self) -> Result<f64, String> {
         if let Some(Token::Minus) = self.peek() {
             self.next_token();
-            -self.unary()
+            Ok(-self.unary()?)
         } else {
             self.atom()
         }
     }
 
-    fn atom(&mut self) -> f64 {
+    fn atom(&mut self) -> Result<f64, String> {
         match self.next_token().cloned() {
-            Some(Token::Num(n)) => n,
+            Some(Token::Num(n)) => Ok(n),
             Some(Token::LParen) => {
-                let val = self.expr();
-                self.expect(&Token::RParen);
-                val
+                let val = self.expr()?;
+                self.expect(&Token::RParen)?;
+                Ok(val)
             }
             Some(Token::Ident(name)) => {
                 if self.peek() == Some(&Token::LParen) {
@@ -225,92 +227,103 @@ impl<'a> Evaluator<'a> {
                     self.resolve_var(&name)
                 }
             }
-            other => panic!("unexpected token {other:?} in formula"),
+            other => Err(format!("unexpected token {other:?} in formula")),
         }
     }
 
     // ── Variables & functions ──────────────────────────────────────────
 
-    fn resolve_var(&self, name: &str) -> f64 {
+    fn resolve_var(&self, name: &str) -> Result<f64, String> {
         match name {
-            "pi" | "PI" => std::f64::consts::PI,
-            "e" | "E" => std::f64::consts::E,
-            variable if variable == self.variable_name => self.variable_value,
-            other => {
-                panic!(
-                    "unknown variable `{other}` in formula (only `{}`, `pi`, `e` allowed)",
-                    self.variable_name
-                )
-            }
+            "pi" | "PI" => Ok(std::f64::consts::PI),
+            "e" | "E" => Ok(std::f64::consts::E),
+            variable if variable == self.variable_name => Ok(self.variable_value),
+            other => Err(format!(
+                "unknown variable `{other}` in formula (only `{}`, `pi`, `e` allowed)",
+                self.variable_name
+            )),
         }
     }
 
-    fn parse_args(&mut self) -> Vec<f64> {
-        self.expect(&Token::LParen);
+    fn parse_args(&mut self) -> Result<Vec<f64>, String> {
+        self.expect(&Token::LParen)?;
         let mut args = Vec::new();
         if self.peek() != Some(&Token::RParen) {
-            args.push(self.expr());
+            args.push(self.expr()?);
             while self.peek() == Some(&Token::Comma) {
                 self.next_token();
-                args.push(self.expr());
+                args.push(self.expr()?);
             }
         }
-        self.expect(&Token::RParen);
-        args
+        self.expect(&Token::RParen)?;
+        Ok(args)
     }
 
-    fn call_func(&mut self, name: &str) -> f64 {
-        let args = self.parse_args();
+    fn call_func(&mut self, name: &str) -> Result<f64, String> {
+        let args = self.parse_args()?;
+        let require_arity = |expected| {
+            if args.len() == expected {
+                Ok(())
+            } else {
+                Err(format!(
+                    "{name}() takes {expected} argument{}",
+                    if expected == 1 { "" } else { "s" }
+                ))
+            }
+        };
         match name {
             "pow" => {
-                assert!(args.len() == 2, "pow() takes 2 arguments");
-                args[0].powf(args[1])
+                require_arity(2)?;
+                Ok(args[0].powf(args[1]))
             }
             "sqrt" => {
-                assert!(args.len() == 1, "sqrt() takes 1 argument");
-                args[0].sqrt()
+                require_arity(1)?;
+                Ok(args[0].sqrt())
             }
             "abs" => {
-                assert!(args.len() == 1, "abs() takes 1 argument");
-                args[0].abs()
+                require_arity(1)?;
+                Ok(args[0].abs())
             }
             "sin" => {
-                assert!(args.len() == 1, "sin() takes 1 argument");
-                args[0].sin()
+                require_arity(1)?;
+                Ok(args[0].sin())
             }
             "cos" => {
-                assert!(args.len() == 1, "cos() takes 1 argument");
-                args[0].cos()
+                require_arity(1)?;
+                Ok(args[0].cos())
             }
             "tan" => {
-                assert!(args.len() == 1, "tan() takes 1 argument");
-                args[0].tan()
+                require_arity(1)?;
+                Ok(args[0].tan())
             }
             "exp" => {
-                assert!(args.len() == 1, "exp() takes 1 argument");
-                args[0].exp()
+                require_arity(1)?;
+                Ok(args[0].exp())
             }
             "ln" => {
-                assert!(args.len() == 1, "ln() takes 1 argument");
-                args[0].ln()
+                require_arity(1)?;
+                Ok(args[0].ln())
             }
             "log2" => {
-                assert!(args.len() == 1, "log2() takes 1 argument");
-                args[0].log2()
+                require_arity(1)?;
+                Ok(args[0].log2())
             }
             "min" => {
-                assert!(args.len() == 2, "min() takes 2 arguments");
-                args[0].min(args[1])
+                require_arity(2)?;
+                Ok(args[0].min(args[1]))
             }
             "max" => {
-                assert!(args.len() == 2, "max() takes 2 arguments");
-                args[0].max(args[1])
+                require_arity(2)?;
+                Ok(args[0].max(args[1]))
             }
             "clamp" => {
-                assert!(args.len() == 3, "clamp() takes 3 arguments");
-                args[0].clamp(args[1], args[2])
+                require_arity(3)?;
+                if args[1] > args[2] {
+                    return Err("clamp() minimum exceeds maximum".to_string());
+                }
+                Ok(args[0].clamp(args[1], args[2]))
             }
-            other => panic!("unknown function `{other}()` in formula"),
+            other => Err(format!("unknown function `{other}()` in formula")),
         }
     }
 }
@@ -329,28 +342,29 @@ impl Formula {
     ///
     /// Evaluation performs syntax and semantic validation because some valid
     /// operations depend on the caller-provided variable value.
-    pub fn parse(expr: &str) -> Self {
-        let tokens = tokenize(expr);
-        Self { tokens }
+    pub fn parse(expr: &str) -> Result<Self, String> {
+        let tokens = tokenize(expr)?;
+        Ok(Self { tokens })
     }
 
     /// Evaluate the expression using `variable_name = variable_value`.
-    pub fn eval(&self, variable_name: &str, variable_value: f64) -> f64 {
+    pub fn eval(&self, variable_name: &str, variable_value: f64) -> Result<f64, String> {
         let mut evaluator = Evaluator::new(&self.tokens, variable_name, variable_value);
-        let result = evaluator.expr();
-        assert!(
-            evaluator.pos == self.tokens.len(),
-            "trailing tokens in formula: {:?}",
-            &self.tokens[evaluator.pos..]
-        );
-        result
+        let result = evaluator.expr()?;
+        if evaluator.pos != self.tokens.len() {
+            return Err(format!(
+                "trailing tokens in formula: {:?}",
+                &self.tokens[evaluator.pos..]
+            ));
+        }
+        Ok(result)
     }
 }
 
 /// Evaluate `expr` for a given `t` value (0.0..=1.0).
 #[cfg(test)]
 pub fn eval(expr: &str, t: f64) -> f64 {
-    Formula::parse(expr).eval("t", t)
+    Formula::parse(expr).unwrap().eval("t", t).unwrap()
 }
 
 // ===========================================================================
@@ -785,12 +799,12 @@ mod tests {
 
     #[test]
     fn tokenize_empty() {
-        assert!(tokenize("").is_empty());
+        assert!(tokenize("").unwrap().is_empty());
     }
 
     #[test]
     fn tokenize_all_operators() {
-        let tokens = tokenize("+ - * / ^ ( ) ,");
+        let tokens = tokenize("+ - * / ^ ( ) ,").unwrap();
         assert_eq!(
             tokens,
             vec![
@@ -808,20 +822,20 @@ mod tests {
 
     #[test]
     fn tokenize_double_star() {
-        let tokens = tokenize("**");
+        let tokens = tokenize("**").unwrap();
         assert_eq!(tokens, vec![Token::Caret]);
     }
 
     #[test]
     fn tokenize_ident_with_underscores() {
-        let tokens = tokenize("my_var_2");
+        let tokens = tokenize("my_var_2").unwrap();
         assert_eq!(tokens, vec![Token::Ident("my_var_2".to_string())]);
     }
 
     #[test]
     fn tokenize_number_then_ident() {
         // "2t" should be two tokens, not one
-        let tokens = tokenize("2t");
+        let tokens = tokenize("2t").unwrap();
         assert_eq!(tokens, vec![Token::Num(2.0), Token::Ident("t".to_string())]);
     }
 
