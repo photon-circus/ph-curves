@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `AffineCalibration` wrapper that applies caller-supplied `i32`
+  gain/offset/scale after any `TransferFunction<Output = i32>` using checked
+  `i64` math (nearest, ties-away). Overflow surfaces as
+  `TransferError::Overflow`; `scale == 0` returns
+  `AffineCalibrationError::ZeroScale` at construction.
 - Sparse, integer-only `PiecewiseLinearTransfer` support for physical
   ADC-to-measurement conversion with signed outputs, explicit below/above
   policies, and no extrapolation.

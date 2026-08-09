@@ -79,7 +79,8 @@ pub enum FlatResolution {
     Error,
 }
 
-/// Error returned when an observation is outside a transfer domain.
+/// Error returned when an observation is outside a transfer domain, or when
+/// affine calibration arithmetic cannot be represented.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum TransferError<I> {
     /// The observation is below the minimum supported input.
@@ -96,6 +97,9 @@ pub enum TransferError<I> {
         /// Largest supported input.
         maximum: I,
     },
+    /// Affine calibration overflowed `i64` intermediates or the final `i32`
+    /// result. Domain policy from the inner transfer is unchanged.
+    Overflow,
 }
 
 /// Error returned when a physical value cannot be inverted uniquely.
@@ -583,6 +587,148 @@ fn invert_valid_segment(physical: i32, x0: u16, y0: i32, x1: u16, y1: i32) -> u1
     result.clamp(i64::from(x0), i64::from(x1)) as u16
 }
 
+/// Runtime/factory gain-and-offset wrapper around an inner transfer.
+///
+/// Applies `y' = (y * gain + offset) / scale` with `i64` intermediates and
+/// nearest, ties-away-from-zero rounding. The caller supplies the integer
+/// triple (for example from EEPROM or flash); this type never reads NVM,
+/// regenerates knot tables, or updates [`TransferMetadata`].
+///
+/// Identity (modulo rounding when `|scale| ≠ 1`) is `gain = scale` and
+/// `offset = 0`. Negative `scale` is allowed and flips sense. Nesting multiple
+/// wrappers is permitted via [`TransferFunction`], but precision loss and
+/// overflow risk stack with each layer.
+///
+/// # Numerical scope
+///
+/// For any `i32` `y`, `gain`, and `offset`, the product/sum
+/// `y * gain + offset` always fits in `i64`. The checked path still returns
+/// [`TransferError::Overflow`] if rounding or the final cast cannot be
+/// represented in `i32`.
+#[derive(Copy, Clone, Debug)]
+pub struct AffineCalibration<T> {
+    inner: T,
+    gain: i32,
+    offset: i32,
+    scale: i32,
+}
+
+/// Error returned when affine calibration constants are invalid.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum AffineCalibrationError {
+    /// The scale divisor is zero.
+    ZeroScale,
+}
+
+impl<T> AffineCalibration<T> {
+    /// Wrap `inner` with affine calibration constants.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AffineCalibrationError::ZeroScale`] if `scale == 0`.
+    pub fn new(
+        inner: T,
+        gain: i32,
+        offset: i32,
+        scale: i32,
+    ) -> Result<Self, AffineCalibrationError> {
+        if scale == 0 {
+            return Err(AffineCalibrationError::ZeroScale);
+        }
+        Ok(Self {
+            inner,
+            gain,
+            offset,
+            scale,
+        })
+    }
+
+    /// Return a reference to the inner transfer.
+    pub const fn inner(&self) -> &T {
+        &self.inner
+    }
+
+    /// Return the gain coefficient.
+    pub const fn gain(&self) -> i32 {
+        self.gain
+    }
+
+    /// Return the offset term.
+    pub const fn offset(&self) -> i32 {
+        self.offset
+    }
+
+    /// Return the nonzero scale divisor.
+    pub const fn scale(&self) -> i32 {
+        self.scale
+    }
+}
+
+impl<T> TransferFunction for AffineCalibration<T>
+where
+    T: TransferFunction<Output = i32>,
+{
+    type Input = T::Input;
+    type Output = i32;
+
+    fn convert(&self, input: Self::Input) -> Result<i32, TransferError<Self::Input>> {
+        let y = self.inner.convert(input)?;
+        apply_affine_i64(y, self.gain, self.offset, self.scale)
+    }
+}
+
+/// Apply `y' = (y * gain + offset) / scale` with checked `i64` math.
+///
+/// Rounding is nearest, ties away from zero. `scale` must be nonzero; callers
+/// such as [`AffineCalibration::new`] validate that before invocation.
+fn apply_affine_i64<I>(
+    y: i32,
+    gain: i32,
+    offset: i32,
+    scale: i32,
+) -> Result<i32, TransferError<I>> {
+    debug_assert!(scale != 0);
+
+    let product = i64::from(y)
+        .checked_mul(i64::from(gain))
+        .ok_or(TransferError::Overflow)?;
+    let numerator = product
+        .checked_add(i64::from(offset))
+        .ok_or(TransferError::Overflow)?;
+    let scaled = round_div_nearest_checked(numerator, i64::from(scale))?;
+    i32::try_from(scaled).map_err(|_| TransferError::Overflow)
+}
+
+/// Nearest division with ties away from zero; rejects unrepresentable cases.
+fn round_div_nearest_checked<I>(numerator: i64, denominator: i64) -> Result<i64, TransferError<I>> {
+    debug_assert!(denominator != 0);
+
+    // Normalize to a positive divisor so ties-away matches interpolate_segment.
+    let (numerator, denominator) = if denominator < 0 {
+        (
+            numerator.checked_neg().ok_or(TransferError::Overflow)?,
+            denominator.checked_neg().ok_or(TransferError::Overflow)?,
+        )
+    } else {
+        (numerator, denominator)
+    };
+
+    if numerator >= 0 {
+        let adjusted = numerator
+            .checked_add(denominator / 2)
+            .ok_or(TransferError::Overflow)?;
+        Ok(adjusted / denominator)
+    } else {
+        let abs_numerator = numerator.checked_neg().ok_or(TransferError::Overflow)?;
+        let adjusted = abs_numerator
+            .checked_add(denominator / 2)
+            .ok_or(TransferError::Overflow)?;
+        (adjusted / denominator)
+            .checked_neg()
+            .ok_or(TransferError::Overflow)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     extern crate std;
@@ -750,6 +896,63 @@ mod tests {
     }
 
     #[test]
+    fn affine_identity_and_factory_scale() {
+        let base = PiecewiseLinearTransfer::new(&INPUTS, &OUTPUTS, MonotonicDirection::Increasing);
+        let identity = AffineCalibration::new(base, 1, 0, 1).unwrap();
+        assert_eq!(identity.convert(150), Ok(-500));
+        assert_eq!(identity.gain(), 1);
+        assert_eq!(identity.offset(), 0);
+        assert_eq!(identity.scale(), 1);
+        assert_eq!(identity.inner().convert(150), Ok(-500));
+
+        let cal = AffineCalibration::new(base, 1005, -120, 1000).unwrap();
+        // (-500 * 1005 + -120) / 1000 = -502.62 → -503 (ties-away / nearest)
+        assert_eq!(cal.convert(150), Ok(-503));
+        // (0 * 1005 + -120) / 1000 = -0.12 → 0
+        assert_eq!(cal.convert(200), Ok(0));
+        // (2000 * 1005 + -120) / 1000 = 2009.88 → 2010
+        assert_eq!(cal.convert(400), Ok(2_010));
+    }
+
+    #[test]
+    fn affine_rounding_ties_away_and_negative_scale() {
+        let base = PiecewiseLinearTransfer::new(&INPUTS, &OUTPUTS, MonotonicDirection::Increasing);
+        let half_up = AffineCalibration::new(base, 1, 0, 2).unwrap();
+        // 2000 / 2 = 1000 exact; 0 / 2 = 0; -1000 / 2 = -500
+        assert_eq!(half_up.convert(400), Ok(1_000));
+        assert_eq!(half_up.convert(200), Ok(0));
+
+        // 1/2 → 1 and -1/2 → -1 (ties away from zero)
+        assert_eq!(apply_affine_i64::<u16>(1, 1, 0, 2), Ok(1));
+        assert_eq!(apply_affine_i64::<u16>(-1, 1, 0, 2), Ok(-1));
+        assert_eq!(apply_affine_i64::<u16>(1, 1, 0, -2), Ok(-1));
+        assert_eq!(apply_affine_i64::<u16>(-1, 1, 0, -2), Ok(1));
+        assert_eq!(apply_affine_i64::<u16>(3, 1, 0, 2), Ok(2));
+        assert_eq!(apply_affine_i64::<u16>(-3, 1, 0, 2), Ok(-2));
+    }
+
+    #[test]
+    fn affine_propagates_domain_errors_and_rejects_overflow() {
+        let base = PiecewiseLinearTransfer::new(&INPUTS, &OUTPUTS, MonotonicDirection::Increasing);
+        let cal = AffineCalibration::new(base, 1, 0, 1).unwrap();
+        assert_eq!(
+            cal.convert(99),
+            Err(TransferError::BelowDomain {
+                input: 99,
+                minimum: 100
+            })
+        );
+
+        // Large gain maps an in-domain knot outside i32.
+        let overflow = AffineCalibration::new(base, i32::MAX, 0, 1).unwrap();
+        assert_eq!(overflow.convert(400), Err(TransferError::Overflow));
+        assert_eq!(
+            apply_affine_i64::<u16>(i32::MAX, 2, 0, 1),
+            Err(TransferError::Overflow)
+        );
+    }
+
+    #[test]
     fn standalone_inversion_matches_the_table_path() {
         // Same knots the increasing fixture table uses for its first segment.
         for physical in -1_000..=0 {
@@ -880,5 +1083,25 @@ mod tests {
         assert_eq!(div_nearest_ties_away(-1, -2), 1);
         assert_eq!(div_nearest_ties_away(3, 2), 2);
         assert_eq!(div_nearest_ties_away(-3, 2), -2);
+    }
+
+    #[test]
+    fn affine_constructor_returns_error_for_zero_scale() {
+        let base = PiecewiseLinearTransfer::new(&INPUTS, &OUTPUTS, MonotonicDirection::Increasing);
+        assert!(matches!(
+            AffineCalibration::new(base, 1, 0, 0),
+            Err(AffineCalibrationError::ZeroScale)
+        ));
+    }
+
+    #[test]
+    fn affine_nesting_composes() {
+        let base = PiecewiseLinearTransfer::new(&INPUTS, &OUTPUTS, MonotonicDirection::Increasing);
+        let inner = AffineCalibration::new(base, 2, 10, 1).unwrap();
+        let outer = AffineCalibration::new(inner, 1, -10, 2).unwrap();
+        // y=0 → (0*2+10)=10 → (10-10)/2 = 0
+        assert_eq!(outer.convert(200), Ok(0));
+        // y=2000 → 4010 → (4010-10)/2 = 2000
+        assert_eq!(outer.convert(400), Ok(2_000));
     }
 }

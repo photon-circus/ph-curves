@@ -50,7 +50,8 @@
 //!   [`TicklessSchedule`], and the [`TicklessIter`] iterator.
 //! - **Physical transfer functions** — [`TransferFunction`] /
 //!   [`InverseTransferFunction`] and the sparse, integer-only
-//!   [`PiecewiseLinearTransfer`] for ADC ↔ measurement conversion.
+//!   [`PiecewiseLinearTransfer`] for ADC ↔ measurement conversion, plus
+//!   [`AffineCalibration`] for caller-supplied gain/offset.
 //! - **Temporal stabilization** — [`MovingAverage`], [`MedianFilter`],
 //!   [`ExponentialSmoother`], [`StabilityDetector`], [`Hysteresis`], and
 //!   [`Debounce`] over caller-supplied integer samples.
@@ -84,9 +85,11 @@
 //! models without adding sensor-specific runtime code.
 //!
 //! The transfer layer is intentionally limited to one static `u16` input and
-//! one monotonic `i32` output, with runtime inverse on the same knots. It does
-//! not provide nonmonotonic maps, multidimensional compensation, dynamic
-//! calibration, sensor fusion, or device policy. Those concerns belong in
+//! one monotonic `i32` output, with runtime inverse on the same knots.
+//! [`AffineCalibration`] applies a caller-supplied integer gain/offset/scale
+//! after the table without regenerating knots or touching NVM. The crate does
+//! not provide nonmonotonic maps, multidimensional compensation, calibration
+//! discovery, sensor fusion, or device policy. Those concerns belong in
 //! application or domain-specific crates that compose with this crate's
 //! generic primitives.
 //!
@@ -176,9 +179,10 @@ pub use stabilize::{
 };
 pub use tickless::{RepeatMode, Tickless, TicklessDeadline, TicklessIter, TicklessSchedule};
 pub use transfer::{
-    BoundaryBehavior, FlatResolution, InterpolationError, InverseTransferError,
-    InverseTransferFunction, MonotonicDirection, PiecewiseLinearTransfer, TransferError,
-    TransferFunction, TransferMetadata, interpolate_segment, invert_segment,
+    AffineCalibration, AffineCalibrationError, BoundaryBehavior, FlatResolution,
+    InterpolationError, InverseTransferError, InverseTransferFunction, MonotonicDirection,
+    PiecewiseLinearTransfer, TransferError, TransferFunction, TransferMetadata,
+    interpolate_segment, invert_segment,
 };
 
 #[cfg(feature = "gen")]
