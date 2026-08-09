@@ -265,6 +265,12 @@ impl<T: TemporalSample, const N: usize> TemporalFilter<T> for MedianFilter<T, N>
 /// `alpha` is an unsigned Q0.16-like blend weight: `0` retains the initialized
 /// value and `65535` follows each new sample exactly. The first sample
 /// initializes the smoother and is immediately ready.
+///
+/// Updates use nearest integer division:
+/// `adjustment = round(delta * alpha / 65535)`.
+/// When `|delta| * alpha < 32768`, the adjustment is zero, so light smoothing
+/// can ignore small steps until the gap is large enough. Choose `alpha` with
+/// that quantization floor in mind.
 #[derive(Copy, Clone, Debug)]
 pub struct ExponentialSmoother<T: TemporalSample> {
     alpha: u16,
@@ -508,6 +514,16 @@ mod tests {
         assert_eq!(filter.update(1000), FilterOutput::Ready(500));
         assert_eq!(filter.update(1000), FilterOutput::Ready(750));
         assert_eq!(filter.value(), Some(750));
+    }
+
+    #[test]
+    fn exponential_smoother_quantization_floor_ignores_small_steps() {
+        let mut filter = ExponentialSmoother::<i32>::new(100);
+        filter.update(0);
+        // |delta| * alpha = 327 * 100 = 32700 < 32768, so adjustment rounds to 0.
+        assert_eq!(filter.update(327), FilterOutput::Ready(0));
+        // |delta| * alpha = 328 * 100 = 32800 >= 32768, so adjustment becomes 1.
+        assert_eq!(filter.update(328), FilterOutput::Ready(1));
     }
 
     #[test]

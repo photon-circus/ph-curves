@@ -1,5 +1,7 @@
 # Disabled on the ADC transfer-functions feature branch.
-# Run scripts/local-ci.ps1 instead. Re-enabling remote CI is owner-controlled.
+# Run scripts/local-ci.ps1 instead.
+# Restore this file to .github/workflows/ci.yml before merging to main.
+# Re-enabling remote CI is an owner-controlled merge gate, not automatic.
 name: CI
 
 on:

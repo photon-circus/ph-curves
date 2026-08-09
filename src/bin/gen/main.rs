@@ -71,6 +71,10 @@
 //!
 //! Point coordinates are in the LUT's index range (0..lut_size-1).
 //! The first point must start at u=0 and the last must end at u=lut_size-1.
+//! Curve and transfer names are normalized to uppercase Rust identifiers.
+//! Names with no ASCII letters or digits, names that normalize to the same
+//! identifier, and names that collide with generated companions (`_FWD`,
+//! `_INV`, `_INPUTS`, `_OUTPUTS`, `_METADATA`) are rejected.
 //!
 //! ## Common options
 //!
@@ -173,7 +177,11 @@ fn main() {
     let curves_file: curve::CurvesFile =
         toml::from_str(&toml_str).unwrap_or_else(|e| panic!("invalid TOML: {e}"));
 
-    let output = codegen::generate(&curves_file, &cli.value_type, cli.lut_size);
+    let output =
+        codegen::generate(&curves_file, &cli.value_type, cli.lut_size).unwrap_or_else(|error| {
+            eprintln!("{error}");
+            std::process::exit(1);
+        });
 
     match cli.output {
         Some(path) => {

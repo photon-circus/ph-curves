@@ -18,6 +18,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed-memory integer moving-average, median, and exponential filters plus a
   separate range-based stability detector for caller-supplied sample series.
 
+### Fixed
+
+- `ph-curves-gen` rejects curve/transfer names that normalize to the same Rust
+  identifier or collide with generated companions (`_FWD`, `_INV`, `_INPUTS`,
+  `_OUTPUTS`, `_METADATA`).
+- Generated `///` docs Debug-escape curve/transfer names, provenance, and unit
+  strings so TOML text cannot break out of line comments.
+
+### Notes
+
+- Remote GitHub Actions remain disabled on the ADC transfer-functions feature
+  branch (`.github/ci.yml.disabled`). Use `scripts/local-ci.ps1` until Actions
+  are restored before merge.
+
 ## [0.1.1] - 2026-02-12
 
 ### Fixed

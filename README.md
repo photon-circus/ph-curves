@@ -66,6 +66,10 @@ Each curve uses exactly **one** of three definition styles:
 | `points`   | Piecewise-linear control points `[input, output]`         |
 
 Set `monotonic = false` to skip inverse-LUT generation (default is `true`).
+Curve and transfer names are normalized to uppercase Rust identifiers. Names
+with no ASCII letters or digits, names that normalize to the same identifier,
+and names that collide with generated companions (`_FWD`, `_INV`, `_INPUTS`,
+`_OUTPUTS`, `_METADATA`) are rejected.
 
 ### 2. Generate Rust source
 
@@ -307,7 +311,10 @@ Available primitives:
 - `MovingAverage<T, N>`: `O(1)` exact fixed-window mean with explicit warm-up.
 - `MedianFilter<T, N>`: robust isolated-spike rejection for small odd windows.
 - `ExponentialSmoother<T>`: constant-memory smoothing with an explicit integer
-  blend coefficient.
+  blend coefficient (`alpha` in `0..=65535`). Because the update is quantized
+  as `round(delta * alpha / 65535)`, small steps can produce a zero adjustment
+  when `|delta| * alpha < 32768`. Prefer a larger `alpha`, or a moving average /
+  median, when tracking fine ADC or milli-unit noise.
 - `StabilityDetector<T, N>`: reports warming, stable, or unstable from the
   recent range; it never substitutes a stale last-good value.
 
@@ -416,6 +423,18 @@ Rust **1.92.0** (edition 2024).
 
 Contributions are welcome! Please read the [contributing guide](CONTRIBUTING.md)
 before opening a pull request.
+
+### Local CI on this feature branch
+
+GitHub Actions are intentionally disabled while ADC transfer work is in review
+(`.github/ci.yml.disabled`). Validate with:
+
+```powershell
+./scripts/local-ci.ps1
+```
+
+Restore `.github/workflows/ci.yml` before merging to `main`. Remote CI restore
+and merge remain explicit owner decisions.
 
 This project follows the
 [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.md). By participating you
