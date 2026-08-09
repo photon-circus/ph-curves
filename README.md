@@ -47,6 +47,8 @@ Each curve uses exactly **one** of three definition styles:
 | `points`   | Piecewise-linear control points `[input, output]`         |
 
 Set `monotonic = false` to skip inverse-LUT generation (default is `true`).
+Curve names are normalized to uppercase Rust identifiers; names with no ASCII
+letters or digits and names that normalize to the same identifier are rejected.
 
 ### 2. Generate Rust source
 
@@ -57,7 +59,8 @@ ph-curves-gen --input assets/curves.toml --output src/curves.rs
 ```
 
 This produces a `.rs` file with `static` arrays and `const` curve values
-ready to `include!` or copy into your crate.
+ready to `include!` or copy into your crate. LUTs must cover the complete value
+domain: `u8` uses exactly 256 entries and `u16` uses exactly 65,536 entries.
 
 For 16-bit resolution:
 

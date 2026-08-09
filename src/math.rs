@@ -77,19 +77,14 @@ impl UnitValue for u8 {
         if elapsed_ms == 0 {
             return 0;
         }
-        let frac = U16F16::from_num(elapsed_ms) / U16F16::from_num(duration_ms);
-        let u = frac * U16F16::from_num(255u16);
-        u.to_num::<u32>().min(255) as u8
+        (u64::from(elapsed_ms) * 255 / u64::from(duration_ms)) as u8
     }
 
     fn to_time_offset(self, duration_ms: u32) -> u32 {
         if duration_ms == 0 {
             return 0;
         }
-        let frac = U16F16::from_num(self) / U16F16::from_num(255u16);
-        (frac * U16F16::from_num(duration_ms))
-            .ceil()
-            .to_num::<u32>()
+        (u64::from(self) * u64::from(duration_ms)).div_ceil(255) as u32
     }
 
     fn lerp_u16(self, a: u16, b: u16) -> u16 {
