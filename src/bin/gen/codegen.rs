@@ -341,25 +341,22 @@ mod tests {
 
     #[test]
     fn const_name_rejects_empty() {
-        assert!(
-            to_const_name("")
-                .unwrap_err()
-                .contains("cannot be normalized")
-        );
+        let error = to_const_name("").unwrap_err();
+        assert!(error.contains("cannot be normalized"));
+        assert!(error.contains("ASCII letter or digit"));
     }
 
     #[test]
     fn const_name_rejects_special_chars_only() {
-        assert!(
-            to_const_name("---")
-                .unwrap_err()
-                .contains("cannot be normalized")
-        );
+        let error = to_const_name("---").unwrap_err();
+        assert!(error.contains("cannot be normalized"));
+        assert!(error.contains("Rust identifier"));
     }
 
     #[test]
     fn const_name_prefixes_leading_digit() {
         assert_eq!(to_const_name("2bit").unwrap(), "CURVE_2BIT");
+        assert_eq!(to_const_name("123 curve").unwrap(), "CURVE_123_CURVE");
     }
 
     // ── format_array ──────────────────────────────────────────────
@@ -499,6 +496,31 @@ mod tests {
         .unwrap_err();
         assert!(error.contains("duplicate Rust identifier"));
         assert!(error.contains("`LINEAR_FWD`"));
+    }
+
+    #[test]
+    fn generate_escapes_curve_names_in_doc_comments() {
+        let mut curves = BTreeMap::new();
+        curves.insert(
+            "line\nbreak".to_string(),
+            CurveDef {
+                builtin: Some("linear".into()),
+                formula: None,
+                points: None,
+                monotonic: true,
+            },
+        );
+        let out = generate(
+            &CurvesFile {
+                curves,
+                transfers: BTreeMap::new(),
+            },
+            "u8",
+            256,
+        )
+        .unwrap();
+        assert!(out.contains(r#"/// "line\nbreak" — monotonic curve."#));
+        assert!(!out.contains("/// \"line\nbreak"));
     }
 
     #[test]

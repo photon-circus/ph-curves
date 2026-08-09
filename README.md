@@ -80,7 +80,8 @@ ph-curves-gen --input assets/curves.toml --output src/curves.rs
 ```
 
 This produces a `.rs` file with `static` arrays and `const` curve values
-ready to `include!` or copy into your crate.
+ready to `include!` or copy into your crate. LUTs must cover the complete value
+domain: `u8` uses exactly 256 entries and `u16` uses exactly 65,536 entries.
 
 For 16-bit resolution:
 
