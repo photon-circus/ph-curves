@@ -52,8 +52,8 @@
 //!   integer-only [`PiecewiseLinearTransfer`] for ADC-to-measurement
 //!   conversion.
 //! - **Temporal stabilization** — [`MovingAverage`], [`MedianFilter`],
-//!   [`ExponentialSmoother`], and [`StabilityDetector`] over caller-supplied
-//!   integer samples.
+//!   [`ExponentialSmoother`], [`StabilityDetector`], [`Hysteresis`], and
+//!   [`Debounce`] over caller-supplied integer samples.
 //! - **Math helpers** — [`UnitValue`] trait, [`lerp_u8`], [`lerp_u16`],
 //!   [`map_u8_to_u16`], [`quantize`], and [`next_target_value`].
 //!
@@ -70,7 +70,9 @@
 //! Filters consume samples supplied by the caller and retain bounded,
 //! const-generic state. Windowed filters return [`FilterOutput::WarmingUp`]
 //! until ready. Stability classification is separate from smoothing so a
-//! filtered value is not implicitly treated as settled.
+//! filtered value is not implicitly treated as settled. [`Hysteresis`] and
+//! [`Debounce`] latch application decisions from sample-count cadence only;
+//! they do not live inside [`TransferFunction`] and never own GPIO or clocks.
 //!
 //! # Physical measurements
 //!
@@ -167,8 +169,8 @@ pub use math::{
     Rounding, UnitValue, lerp_u8, lerp_u16, map_u8_to_u16, next_target_value, quantize,
 };
 pub use stabilize::{
-    ExponentialSmoother, FilterOutput, MedianFilter, MovingAverage, Stability, StabilityDetector,
-    TemporalFilter, TemporalSample,
+    Debounce, DebounceOutput, ExponentialSmoother, FilterOutput, Hysteresis, MedianFilter,
+    MovingAverage, Stability, StabilityDetector, TemporalFilter, TemporalSample,
 };
 pub use tickless::{RepeatMode, Tickless, TicklessDeadline, TicklessIter, TicklessSchedule};
 pub use transfer::{

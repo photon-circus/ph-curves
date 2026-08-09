@@ -2,6 +2,10 @@
 //!
 //! These primitives are deterministic data processors. They do not acquire
 //! samples, read clocks, choose a sampling cadence, or interact with hardware.
+//!
+//! Decision helpers [`Hysteresis`] and [`Debounce`] sit beside the filter /
+//! detector family: they latch application-level boolean decisions from
+//! sample-count cadence only, without GPIO or wall-clock ownership.
 
 mod sealed {
     pub trait Sealed {}
@@ -447,6 +451,210 @@ impl<T: TemporalSample, const N: usize> StabilityDetector<T, N> {
     }
 }
 
+/// Schmitt-trigger latch over integer samples.
+///
+/// Values at or above `high` latch on; values at or below `low` latch off.
+/// Samples strictly between the thresholds hold the previous latch. When
+/// `low == high`, the band collapses to a simple threshold with no hold
+/// region. Cadence is caller-driven sample count — this type never reads a
+/// clock or GPIO.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct Hysteresis<T: TemporalSample> {
+    low: T,
+    high: T,
+    latched: bool,
+    initial: bool,
+}
+
+impl Hysteresis<i32> {
+    /// Construct a hysteresis latch that starts off.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `low > high`.
+    pub const fn new(low: i32, high: i32) -> Self {
+        assert!(low <= high);
+        Self {
+            low,
+            high,
+            latched: false,
+            initial: false,
+        }
+    }
+}
+
+impl Hysteresis<u16> {
+    /// Construct a hysteresis latch that starts off.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `low > high`.
+    pub const fn new(low: u16, high: u16) -> Self {
+        assert!(low <= high);
+        Self {
+            low,
+            high,
+            latched: false,
+            initial: false,
+        }
+    }
+}
+
+impl<T: TemporalSample> Hysteresis<T> {
+    /// Set the initial latch used before the first crossing and after
+    /// [`reset`](Self::reset).
+    pub const fn with_initial(mut self, on: bool) -> Self {
+        self.latched = on;
+        self.initial = on;
+        self
+    }
+
+    /// Return the configured low threshold.
+    pub const fn low(&self) -> T {
+        self.low
+    }
+
+    /// Return the configured high threshold.
+    pub const fn high(&self) -> T {
+        self.high
+    }
+
+    /// Push one sample and return the current latched level.
+    ///
+    /// The first sample inside the open band `(low, high)` holds the initial
+    /// latch (default `false`). Applications that need an explicit unknown
+    /// state should track `Option` separately.
+    pub fn update(&mut self, value: T) -> bool {
+        if value >= self.high {
+            self.latched = true;
+        } else if value <= self.low {
+            self.latched = false;
+        }
+        self.latched
+    }
+
+    /// Return the current latched level without consuming a sample.
+    pub const fn state(&self) -> bool {
+        self.latched
+    }
+
+    /// Restore the latch to the value supplied by [`with_initial`](Self::with_initial)
+    /// (or `false` when that builder was not used).
+    pub fn reset(&mut self) {
+        self.latched = self.initial;
+    }
+}
+
+/// Output from a sample-count [`Debounce`].
+///
+/// No latched level is reported until `N` consecutive agreeing samples have
+/// been observed. After arming, [`Steady`](DebounceOutput::Steady) holds the
+/// previous latch while a new candidate accumulates, and
+/// [`Edge`](DebounceOutput::Edge) reports only confirmed level changes.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum DebounceOutput {
+    /// Fewer than `N` consecutive agreeing samples have been seen since start
+    /// or the last candidate change, and no level has latched yet.
+    WarmingUp {
+        /// Consecutive samples agreeing on the current candidate.
+        streak: usize,
+        /// Samples required to latch (`N`).
+        required: usize,
+    },
+    /// Latched level is unchanged on this sample.
+    Steady(bool),
+    /// Latched level changed on this sample (including the first latch).
+    Edge {
+        /// Newly latched level.
+        level: bool,
+    },
+}
+
+/// Sample-count contact debounce for boolean inputs.
+///
+/// Latches after `N` consecutive agreeing samples. A candidate flip mid-streak
+/// resets the streak to one on the new candidate. Timing is entirely in sample
+/// counts — callers that think in milliseconds must convert duration to `N`
+/// themselves. This type never owns GPIO, EXTI, or clocks.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct Debounce<const N: usize> {
+    candidate: bool,
+    streak: usize,
+    latched: bool,
+    armed: bool,
+}
+
+impl<const N: usize> Debounce<N> {
+    /// Construct an unarmed debounce.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `N == 0`.
+    pub const fn new() -> Self {
+        assert!(N > 0);
+        Self {
+            candidate: false,
+            streak: 0,
+            latched: false,
+            armed: false,
+        }
+    }
+
+    /// Push one boolean sample and return the debounce state.
+    pub fn update(&mut self, sample: bool) -> DebounceOutput {
+        if self.streak == 0 || sample != self.candidate {
+            self.candidate = sample;
+            self.streak = 1;
+        } else if self.streak < N {
+            self.streak += 1;
+        }
+
+        if self.streak < N {
+            if self.armed {
+                DebounceOutput::Steady(self.latched)
+            } else {
+                DebounceOutput::WarmingUp {
+                    streak: self.streak,
+                    required: N,
+                }
+            }
+        } else if !self.armed {
+            self.armed = true;
+            self.latched = self.candidate;
+            DebounceOutput::Edge {
+                level: self.latched,
+            }
+        } else if self.candidate != self.latched {
+            self.latched = self.candidate;
+            DebounceOutput::Edge {
+                level: self.latched,
+            }
+        } else {
+            DebounceOutput::Steady(self.latched)
+        }
+    }
+
+    /// Return the latched level after the first confirmed latch, or `None`
+    /// while still warming up.
+    pub const fn state(&self) -> Option<bool> {
+        if self.armed { Some(self.latched) } else { None }
+    }
+
+    /// Discard streak and latch state.
+    pub fn reset(&mut self) {
+        self.candidate = false;
+        self.streak = 0;
+        self.latched = false;
+        self.armed = false;
+    }
+}
+
+impl<const N: usize> Default for Debounce<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 fn round_div_nearest(numerator: i64, denominator: i64) -> i64 {
     if numerator >= 0 {
         (numerator + denominator / 2) / denominator
@@ -584,5 +792,128 @@ mod tests {
         assert!(std::panic::catch_unwind(MovingAverage::<i32, 0>::new).is_err());
         assert!(std::panic::catch_unwind(MedianFilter::<i32, 2>::new).is_err());
         assert!(std::panic::catch_unwind(|| StabilityDetector::<i32, 0>::new(0)).is_err());
+    }
+
+    #[test]
+    fn hysteresis_latches_with_hold_band() {
+        let mut hyst = Hysteresis::<i32>::new(10, 20);
+        assert!(!hyst.update(15));
+        assert!(hyst.update(20));
+        assert!(hyst.update(15));
+        assert!(!hyst.update(10));
+        assert!(!hyst.update(15));
+    }
+
+    #[test]
+    fn hysteresis_equal_thresholds_are_simple_threshold() {
+        let mut hyst = Hysteresis::<u16>::new(100, 100);
+        assert!(!hyst.update(99));
+        // `value >= high` wins when low == high, so the threshold itself latches on.
+        assert!(hyst.update(100));
+        assert!(hyst.update(100));
+        assert!(!hyst.update(99));
+    }
+
+    #[test]
+    fn hysteresis_with_initial_and_reset() {
+        let mut hyst = Hysteresis::<i32>::new(-5, 5).with_initial(true);
+        assert!(hyst.state());
+        assert!(hyst.update(0));
+        assert!(!hyst.update(-5));
+        hyst.reset();
+        assert!(hyst.state());
+    }
+
+    #[test]
+    fn hysteresis_rejects_inverted_band() {
+        assert!(std::panic::catch_unwind(|| Hysteresis::<i32>::new(2, 1)).is_err());
+        assert!(std::panic::catch_unwind(|| Hysteresis::<u16>::new(2, 1)).is_err());
+    }
+
+    #[test]
+    fn debounce_warms_up_then_edges_on_change() {
+        let mut deb = Debounce::<3>::new();
+        assert_eq!(
+            deb.update(true),
+            DebounceOutput::WarmingUp {
+                streak: 1,
+                required: 3
+            }
+        );
+        assert_eq!(
+            deb.update(true),
+            DebounceOutput::WarmingUp {
+                streak: 2,
+                required: 3
+            }
+        );
+        assert_eq!(deb.update(true), DebounceOutput::Edge { level: true });
+        assert_eq!(deb.state(), Some(true));
+        assert_eq!(deb.update(true), DebounceOutput::Steady(true));
+        assert_eq!(deb.update(false), DebounceOutput::Steady(true));
+        assert_eq!(deb.update(false), DebounceOutput::Steady(true));
+        assert_eq!(deb.update(false), DebounceOutput::Edge { level: false });
+        assert_eq!(deb.update(false), DebounceOutput::Steady(false));
+    }
+
+    #[test]
+    fn debounce_candidate_flip_resets_streak() {
+        let mut deb = Debounce::<3>::new();
+        assert!(matches!(
+            deb.update(true),
+            DebounceOutput::WarmingUp { streak: 1, .. }
+        ));
+        assert!(matches!(
+            deb.update(false),
+            DebounceOutput::WarmingUp { streak: 1, .. }
+        ));
+        assert!(matches!(
+            deb.update(false),
+            DebounceOutput::WarmingUp { streak: 2, .. }
+        ));
+        assert_eq!(deb.update(false), DebounceOutput::Edge { level: false });
+    }
+
+    #[test]
+    fn debounce_n_one_is_passthrough_with_edges() {
+        let mut deb = Debounce::<1>::new();
+        assert_eq!(deb.update(false), DebounceOutput::Edge { level: false });
+        assert_eq!(deb.update(false), DebounceOutput::Steady(false));
+        assert_eq!(deb.update(true), DebounceOutput::Edge { level: true });
+        assert_eq!(deb.update(true), DebounceOutput::Steady(true));
+    }
+
+    #[test]
+    fn debounce_reset_returns_to_warmup() {
+        let mut deb = Debounce::<2>::new();
+        deb.update(true);
+        deb.update(true);
+        assert_eq!(deb.state(), Some(true));
+        deb.reset();
+        assert_eq!(deb.state(), None);
+        assert!(matches!(
+            deb.update(false),
+            DebounceOutput::WarmingUp { .. }
+        ));
+    }
+
+    #[test]
+    fn debounce_rejects_zero_window() {
+        assert!(std::panic::catch_unwind(Debounce::<0>::new).is_err());
+    }
+
+    #[test]
+    fn hysteresis_into_debounce_composition() {
+        let mut hyst = Hysteresis::<i32>::new(10, 20);
+        let mut deb = Debounce::<2>::new();
+        let mut edges = 0u8;
+        for sample in [0, 25, 25, 15, 5, 5, 5] {
+            let level = hyst.update(sample);
+            if matches!(deb.update(level), DebounceOutput::Edge { .. }) {
+                edges += 1;
+            }
+        }
+        assert_eq!(edges, 2);
+        assert_eq!(deb.state(), Some(false));
     }
 }
