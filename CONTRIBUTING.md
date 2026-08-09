@@ -11,6 +11,7 @@ Thanks for your interest in contributing! This document covers the basics.
 ```sh
 cargo test
 cargo test --features gen
+cargo build --features gen-cli --bin ph-curves-gen
 ```
 
 ## Making changes

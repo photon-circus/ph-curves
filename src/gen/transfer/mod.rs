@@ -4,7 +4,7 @@ mod adaptive;
 mod model;
 mod points;
 
-use ph_curves::MonotonicDirection;
+use crate::MonotonicDirection;
 use serde::Deserialize;
 
 use super::formula;

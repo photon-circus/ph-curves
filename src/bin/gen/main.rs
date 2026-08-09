@@ -1,4 +1,4 @@
-//! CLI tool for generating static curve LUTs from a TOML definition file.
+//! CLI front-end for [`ph_curves::r#gen`].
 //!
 //! # Usage
 //!
@@ -7,128 +7,16 @@
 //! ph-curves-gen --input curves.toml --value-type u16 --lut-size 65536
 //! ```
 //!
-//! The generated `.rs` file contains `static` arrays and `const` curve values
-//! ready to be included in a `no_std` crate via `include!` or copied directly.
-//!
-//! # Curve definition formats
-//!
-//! Each normalized curve in the TOML file can be defined in one of three ways.
-//! Set exactly **one** of `builtin`, `formula`, or `points`.
-//!
-//! ## 1. Builtin name
-//!
-//! ```toml
-//! [curves.my_curve]
-//! builtin = "ease_in_quad"
-//! ```
-//!
-//! Available builtins (all are monotonic):
-//!
-//! | Name                 | Formula                 | Description                      |
-//! |----------------------|-------------------------|----------------------------------|
-//! | `linear`             | `t`                     | Identity / straight line         |
-//! | `ease_in_quad`       | `t²`                    | Quadratic ease-in                |
-//! | `ease_out_quad`      | `1-(1-t)²`              | Quadratic ease-out               |
-//! | `ease_in_out_quad`   | piecewise quadratic     | Quadratic ease-in-out            |
-//! | `ease_in_cubic`      | `t³`                    | Cubic ease-in                    |
-//! | `ease_out_cubic`     | `1-(1-t)³`              | Cubic ease-out                   |
-//! | `ease_in_out_cubic`  | piecewise cubic         | Cubic ease-in-out                |
-//! | `ease_in_quart`      | `t⁴`                    | Quartic ease-in                  |
-//! | `ease_out_quart`     | `1-(1-t)⁴`              | Quartic ease-out                 |
-//! | `ease_in_out_quart`  | piecewise quartic       | Quartic ease-in-out              |
-//! | `ease_in_expo`       | `2^(10(t-1))`           | Exponential ease-in              |
-//! | `ease_out_expo`      | `1-2^(-10t)`            | Exponential ease-out             |
-//! | `smoothstep`         | `3t²-2t³`               | Hermite smoothstep               |
-//! | `smoother_step`      | `6t⁵-15t⁴+10t³`        | Ken Perlin's improved smoothstep |
-//!
-//! Legacy aliases: `ease_in` = `ease_in_quad`, `ease_out` = `ease_out_quad`,
-//! `ease_in_out` = `ease_in_out_quad`.
-//!
-//! ## 2. Formula (math expression over `t` in 0..1)
-//!
-//! ```toml
-//! [curves.gamma_22]
-//! formula = "pow(t, 2.2)"
-//! ```
-//!
-//! The variable `t` ranges from 0.0 to 1.0. The expression must evaluate to
-//! a value in 0.0..=1.0. Supported operators: `+`, `-`, `*`, `/`, `^` (or
-//! `**`), unary `-`, and parentheses.
-//!
-//! Functions: `pow(x,y)`, `sqrt(x)`, `abs(x)`, `min(x,y)`, `max(x,y)`,
-//! `clamp(x,lo,hi)`, `sin(x)`, `cos(x)`, `tan(x)`, `exp(x)`, `ln(x)`,
-//! `log2(x)`.
-//!
-//! Constants: `pi`, `e`.
-//!
-//! ## 3. Points (piecewise-linear control points)
-//!
-//! ```toml
-//! [curves.custom]
-//! monotonic = false
-//! points = [[0, 0], [64, 200], [192, 50], [255, 255]]
-//! ```
-//!
-//! Point coordinates are in the LUT's index range (0..lut_size-1).
-//! The first point must start at u=0 and the last must end at u=lut_size-1.
-//! Curve and transfer names are normalized to uppercase Rust identifiers.
-//! Names with no ASCII letters or digits, names that normalize to the same
-//! identifier, and names that collide with generated companions (`_FWD`,
-//! `_INV`, `_INPUTS`, `_OUTPUTS`, `_METADATA`) are rejected.
-//!
-//! ## Common options
-//!
-//! - `monotonic` (bool, default `true`): when `true` an inverse LUT is
-//!   generated and the curve is emitted as a `MonotonicCurveLut`.
-//!
-//! # Physical transfer functions
-//!
-//! A sibling `[transfers]` map generates sparse `u16` to `i32`
-//! piecewise-linear transfer functions. Floating-point formulas, models,
-//! adaptive fitting, and error analysis run only in this host binary; emitted
-//! firmware code contains integer arrays and arithmetic.
-//!
-//! ```toml
-//! [transfers.ntc]
-//! input_unit = "adc_code"
-//! output_unit = "degree_celsius"
-//! output_scale = 1000
-//! max_interpolation_error = 50
-//! max_knots = 256
-//! output_range = [-40.0, 125.0]
-//!
-//! [transfers.ntc.model]
-//! kind = "ntc_beta_divider"
-//! nominal_resistance_ohms = 10000.0
-//! beta_kelvin = 3950.0
-//! nominal_temperature_celsius = 25.0
-//! fixed_resistance_ohms = 10000.0
-//! adc_max_code = 4095
-//! topology = "ntc_to_ground"
-//! ```
-//!
-//! Transfers accept exactly one of `points`, `formula`, or `model`. Formula
-//! sources use `x` and require `domain = [min, max]`. Physical point entries
-//! use `{ input = 123, output = -4.5 }` and define their domain. Models require
-//! `output_range`. `below` and `above` independently select `"error"` (the
-//! default) or `"clamp"`; extrapolation is never generated.
-//!
-//! See `assets/custom-transfers.toml` for complete formula and empirical-point
-//! examples. Transfer sources must be monotonic. Models requiring multiple
-//! inputs or dynamic/device policy should be evaluated by a dedicated host
-//! tool which emits physical points, rather than added to the firmware API.
-
-mod builtin;
-mod codegen;
-mod curve;
-mod formula;
-mod points;
-mod transfer;
+//! Generation logic lives in the library behind `features = ["gen"]`. This
+//! binary only parses CLI flags and writes the result. See `ph_curves::r#gen`
+//! module docs for TOML schema details and `build.rs` usage.
 
 use std::fs;
 use std::path::PathBuf;
+use std::process;
 
 use clap::Parser;
+use ph_curves::r#gen::{Error, GenerateOptions, ValueType, generate_from_toml};
 
 /// Generate static Rust curve LUTs from a TOML definition file.
 #[derive(Parser, Debug)]
@@ -154,22 +42,35 @@ struct Cli {
 fn main() {
     let cli = Cli::parse();
 
-    if let Err(error) = validate_lut_size(&cli.value_type, cli.lut_size) {
-        eprintln!("{error}");
-        std::process::exit(1);
-    }
+    let value_type = match ValueType::parse(&cli.value_type) {
+        Ok(value_type) => value_type,
+        Err(_) => {
+            eprintln!(
+                "unsupported --value-type `{}` (expected `u8` or `u16`)",
+                cli.value_type
+            );
+            process::exit(1);
+        }
+    };
 
-    let toml_str = fs::read_to_string(&cli.input)
-        .unwrap_or_else(|e| panic!("failed to read {}: {e}", cli.input.display()));
+    let opts = GenerateOptions {
+        value_type,
+        lut_size: cli.lut_size,
+    };
 
-    let curves_file: curve::CurvesFile =
-        toml::from_str(&toml_str).unwrap_or_else(|e| panic!("invalid TOML: {e}"));
-
-    let output =
-        codegen::generate(&curves_file, &cli.value_type, cli.lut_size).unwrap_or_else(|error| {
-            eprintln!("{error}");
-            std::process::exit(1);
-        });
+    let output = match generate_from_toml(&cli.input, &opts) {
+        Ok(output) => output,
+        Err(Error::Io(error)) => {
+            panic!("failed to read {}: {error}", cli.input.display());
+        }
+        Err(Error::Toml(error)) => {
+            panic!("invalid TOML: {error}");
+        }
+        Err(Error::Validation(message)) => {
+            eprintln!("{message}");
+            process::exit(1);
+        }
+    };
 
     match cli.output {
         Some(path) => {
@@ -178,49 +79,5 @@ fn main() {
             eprintln!("wrote {}", path.display());
         }
         None => print!("{output}"),
-    }
-}
-
-fn validate_lut_size(value_type: &str, lut_size: usize) -> Result<(), String> {
-    let required_lut_size = match value_type {
-        "u8" => 256,
-        "u16" => 65_536,
-        other => {
-            return Err(format!(
-                "unsupported --value-type `{other}` (expected `u8` or `u16`)"
-            ));
-        }
-    };
-    if lut_size != required_lut_size {
-        return Err(format!(
-            "--lut-size must be {required_lut_size} for --value-type {value_type} \
-             (the LUT must cover the full {value_type} domain)"
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::validate_lut_size;
-
-    #[test]
-    fn lut_size_must_cover_full_u8_domain() {
-        assert!(validate_lut_size("u8", 256).is_ok());
-        assert_eq!(
-            validate_lut_size("u8", 255).unwrap_err(),
-            "--lut-size must be 256 for --value-type u8 \
-             (the LUT must cover the full u8 domain)"
-        );
-    }
-
-    #[test]
-    fn lut_size_must_cover_full_u16_domain() {
-        assert!(validate_lut_size("u16", 65_536).is_ok());
-        assert_eq!(
-            validate_lut_size("u16", 256).unwrap_err(),
-            "--lut-size must be 65536 for --value-type u16 \
-             (the LUT must cover the full u16 domain)"
-        );
     }
 }

@@ -4,7 +4,7 @@
 //! verification proves the emitted table meets the requested error, but
 //! exhausting `max_knots` does not prove that no other knot placement could.
 
-use ph_curves::interpolate_segment;
+use crate::interpolate_segment;
 
 pub struct AdaptiveResult {
     pub inputs: Vec<u16>,

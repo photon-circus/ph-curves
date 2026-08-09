@@ -74,7 +74,7 @@ and names that collide with generated companions (`_FWD`, `_INV`, `_INPUTS`,
 ### 2. Generate Rust source
 
 ```sh
-cargo install --path . --features gen
+cargo install --path . --features gen-cli
 
 ph-curves-gen --input assets/curves.toml --output src/curves.rs
 ```
@@ -289,9 +289,35 @@ thermistor and resistor tolerance, ADC/reference error, self-heating, wiring,
 and calibration uncertainty.
 
 All floating-point formulas, models, fitting, and error analysis are compiled
-only into `ph-curves-gen` behind the `gen` feature. The library and generated
-firmware code contain integer arrays, binary search, and `i64` interpolation
-only.
+only behind the host `gen` feature (library API) / `gen-cli` (binary). The
+default library and generated firmware code contain integer arrays, binary
+search, and `i64` interpolation only.
+
+### `build.rs` integration
+
+```toml
+[build-dependencies]
+ph-curves = { version = "0.2", features = ["gen"] }
+```
+
+```rust
+// build.rs
+use std::env;
+use std::path::PathBuf;
+use ph_curves::r#gen::{generate_to_path, GenerateOptions};
+
+fn main() {
+    let out = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("curves.rs");
+    generate_to_path("assets/curves.toml", &out, &GenerateOptions::default())
+        .expect("ph-curves gen");
+    println!("cargo:rerun-if-changed=assets/curves.toml");
+}
+```
+
+```rust
+// firmware lib.rs — no `gen` feature
+include!(concat!(env!("OUT_DIR"), "/curves.rs"));
+```
 
 ## Temporal stabilization
 

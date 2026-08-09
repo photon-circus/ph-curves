@@ -16,14 +16,29 @@ use super::{builtin, formula, points, transfer};
 // A curve is defined by exactly ONE of: `builtin`, `formula`, or `points`.
 // ---------------------------------------------------------------------------
 
+/// Parsed TOML definitions for normalized curves and physical transfers.
+///
+/// Construct via [`Self::from_toml_str`] or [`super::generate_from_str`].
+/// Field access is crate-visible; dependents should prefer the `generate_*`
+/// helpers over hand-building schema graphs.
 #[derive(Debug, Deserialize)]
-pub struct CurvesFile {
+pub struct DefinitionsFile {
+    /// Normalized LUT curves keyed by TOML table name.
     #[serde(default)]
-    pub curves: BTreeMap<String, CurveDef>,
+    pub(crate) curves: BTreeMap<String, CurveDef>,
+    /// Sparse physical transfer functions keyed by TOML table name.
     #[serde(default)]
-    pub transfers: BTreeMap<String, transfer::TransferDef>,
+    pub(crate) transfers: BTreeMap<String, transfer::TransferDef>,
 }
 
+impl DefinitionsFile {
+    /// Parse a TOML definitions document.
+    pub fn from_toml_str(toml: &str) -> Result<Self, toml::de::Error> {
+        toml::from_str(toml)
+    }
+}
+
+/// One normalized curve definition from the TOML `[curves]` map.
 #[derive(Debug, Deserialize)]
 pub struct CurveDef {
     /// Name of a built-in curve (e.g. "linear", "ease_in_quad").
@@ -60,12 +75,11 @@ pub struct CurveData {
 pub fn build(name: &str, def: &CurveDef, lut_size: usize) -> CurveData {
     let set_count =
         def.builtin.is_some() as u8 + def.formula.is_some() as u8 + def.points.is_some() as u8;
-    if set_count != 1 {
-        panic!(
-            "curve `{name}`: exactly one of `builtin`, `formula`, or `points` \
-             must be specified (found {set_count})"
-        );
-    }
+    assert!(
+        set_count == 1,
+        "curve `{name}`: exactly one of `builtin`, `formula`, or `points` \
+         must be specified (found {set_count})"
+    );
 
     let fwd = if let Some(b) = &def.builtin {
         build_from_easing(b, lut_size, |t| builtin::eval(b, t))
@@ -307,7 +321,7 @@ mod tests {
 [curves.test]
 builtin = "linear"
 "#;
-        let cf: CurvesFile = toml::from_str(toml).unwrap();
+        let cf: DefinitionsFile = toml::from_str(toml).unwrap();
         assert!(cf.curves.contains_key("test"));
         assert!(cf.curves["test"].monotonic); // default true
     }
@@ -319,7 +333,7 @@ builtin = "linear"
 points = [[0, 0], [128, 255], [255, 0]]
 monotonic = false
 "#;
-        let cf: CurvesFile = toml::from_str(toml).unwrap();
+        let cf: DefinitionsFile = toml::from_str(toml).unwrap();
         assert!(!cf.curves["wave"].monotonic);
     }
 }

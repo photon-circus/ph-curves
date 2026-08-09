@@ -1,7 +1,7 @@
 # Gen build-script library API (design)
 
 **Branch:** `feature/0.2.0-gen-build-api`  
-**Status:** Design documentation only. Implementation lives on this branch only; do not merge to `main` without owner decision.
+**Status:** Implemented on this branch. Do not merge to `main` without owner decision.
 
 ## Motivation
 
@@ -29,7 +29,7 @@ Today `ph-curves-gen` is a CLI binary; embedded crates want `build.rs` integrati
 **Public entry points**
 
 ```rust
-// ph_curves::gen
+// ph_curves::r#gen  (`gen` is a Rust 2024 keyword; use the raw identifier)
 pub fn generate_from_toml(path: impl AsRef<Path>, opts: &GenerateOptions)
     -> Result<String, Error>;
 pub fn generate_from_str(toml: &str, opts: &GenerateOptions)
@@ -43,7 +43,7 @@ pub struct GenerateOptions { /* value_type, lut_size; CLI-compatible defaults */
 pub enum Error { Io(...), Toml(...), Validation(...) }
 ```
 
-**Module layout (target):** `src/gen/{mod,api,codegen,curve,builtin,formula,points,transfer/*}.rs`; `src/bin/gen/main.rs` becomes thin clap → lib API.
+**Module layout (target):** `src/gen/{mod,api,codegen,curve,builtin,formula,points,transfer/*}.rs` exposed as `ph_curves::r#gen`; `src/bin/gen/main.rs` becomes thin clap → lib API.
 
 **Consumer sketch**
 

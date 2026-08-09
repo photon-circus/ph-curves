@@ -94,12 +94,9 @@ pub fn evaluate(name: &str, model: &ModelDef, output_range: [f64; 2]) -> (u16, V
             );
             let values = accepted.into_iter().map(|(_, value)| value).collect();
             let description = format!(
-                "NTC Beta divider: R0={} ohm, B={} K, T0={} C, fixed={} ohm, ADC max={}, topology={topology:?}",
-                nominal_resistance_ohms,
-                beta_kelvin,
-                nominal_temperature_celsius,
-                fixed_resistance_ohms,
-                adc_max_code
+                "NTC Beta divider: R0={nominal_resistance_ohms} ohm, B={beta_kelvin} K, \
+                 T0={nominal_temperature_celsius} C, fixed={fixed_resistance_ohms} ohm, \
+                 ADC max={adc_max_code}, topology={topology:?}"
             );
             (minimum, values, description)
         }
