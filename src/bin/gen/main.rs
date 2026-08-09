@@ -12,7 +12,7 @@
 //!
 //! # Curve definition formats
 //!
-//! Each curve in the TOML file can be defined in one of three ways.
+//! Each normalized curve in the TOML file can be defined in one of three ways.
 //! Set exactly **one** of `builtin`, `formula`, or `points`.
 //!
 //! ## 1. Builtin name
@@ -76,12 +76,45 @@
 //!
 //! - `monotonic` (bool, default `true`): when `true` an inverse LUT is
 //!   generated and the curve is emitted as a `MonotonicCurveLut`.
+//!
+//! # Physical transfer functions
+//!
+//! A sibling `[transfers]` map generates sparse `u16` to `i32`
+//! piecewise-linear transfer functions. Floating-point formulas, models,
+//! adaptive fitting, and error analysis run only in this host binary; emitted
+//! firmware code contains integer arrays and arithmetic.
+//!
+//! ```toml
+//! [transfers.ntc]
+//! input_unit = "adc_code"
+//! output_unit = "degree_celsius"
+//! output_scale = 1000
+//! max_interpolation_error = 50
+//! max_knots = 256
+//! output_range = [-40.0, 125.0]
+//!
+//! [transfers.ntc.model]
+//! kind = "ntc_beta_divider"
+//! nominal_resistance_ohms = 10000.0
+//! beta_kelvin = 3950.0
+//! nominal_temperature_celsius = 25.0
+//! fixed_resistance_ohms = 10000.0
+//! adc_max_code = 4095
+//! topology = "ntc_to_ground"
+//! ```
+//!
+//! Transfers accept exactly one of `points`, `formula`, or `model`. Formula
+//! sources use `x` and require `domain = [min, max]`. Physical point entries
+//! use `{ input = 123, output = -4.5 }` and define their domain. Models require
+//! `output_range`. `below` and `above` independently select `"error"` (the
+//! default) or `"clamp"`; extrapolation is never generated.
 
 mod builtin;
 mod codegen;
 mod curve;
 mod formula;
 mod points;
+mod transfer;
 
 use std::fs;
 use std::path::PathBuf;

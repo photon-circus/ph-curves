@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Sparse, integer-only `PiecewiseLinearTransfer` support for physical
+  ADC-to-measurement conversion with signed outputs, explicit below/above
+  policies, and no extrapolation.
+- Host-side adaptive transfer generation from physical points, formulas, and
+  an NTC Beta-divider model, with exhaustive discrete-domain error reporting
+  and bounded knot counts.
+
 ## [0.1.1] - 2026-02-12
 
 ### Fixed

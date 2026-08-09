@@ -1,5 +1,5 @@
-//! `no_std`, zero-allocation curve lookup tables and tickless scheduling for
-//! embedded Rust.
+//! `no_std`, zero-allocation curve lookup tables, physical transfer functions,
+//! and tickless scheduling for embedded Rust.
 //!
 //! `ph-curves` stores pre-computed forward (and optionally inverse) lookup
 //! tables as `static` arrays so that curve evaluation reduces to a single
@@ -48,8 +48,26 @@
 //!   [`CurveLut`] / [`MonotonicCurveLut`] types.
 //! - **Tickless scheduling** — [`Tickless`] extension trait,
 //!   [`TicklessSchedule`], and the [`TicklessIter`] iterator.
+//! - **Physical transfer functions** — [`TransferFunction`] and the sparse,
+//!   integer-only [`PiecewiseLinearTransfer`] for ADC-to-measurement
+//!   conversion.
 //! - **Math helpers** — [`UnitValue`] trait, [`lerp_u8`], [`lerp_u16`],
 //!   [`map_u8_to_u16`], [`quantize`], and [`next_target_value`].
+//!
+//! # Physical measurements
+//!
+//! Transfer functions are deliberately separate from normalized curves. The
+//! host-only generator may use floating point to fit a physical model, but it
+//! emits only `u16` input knots and signed `i32` output knots. Firmware
+//! conversion uses binary search and checked-range `i64` interpolation.
+//!
+//! ```ignore
+//! use ph_curves::TransferFunction;
+//!
+//! include!("ntc_transfer.rs");
+//!
+//! let milli_celsius = NTC_10K_BETA_3950.convert(adc_code)?;
+//! ```
 
 #![no_std]
 #![deny(missing_docs)]
@@ -104,6 +122,7 @@
 mod curve;
 mod math;
 mod tickless;
+mod transfer;
 
 pub use curve::{
     Curve, CurveLut, CurveLut256, CurveLut65536, MonotonicCurve, MonotonicCurveLut,
@@ -113,6 +132,10 @@ pub use math::{
     Rounding, UnitValue, lerp_u8, lerp_u16, map_u8_to_u16, next_target_value, quantize,
 };
 pub use tickless::{RepeatMode, Tickless, TicklessDeadline, TicklessIter, TicklessSchedule};
+pub use transfer::{
+    BoundaryBehavior, InterpolationError, MonotonicDirection, PiecewiseLinearTransfer,
+    TransferError, TransferFunction, TransferMetadata, interpolate_segment,
+};
 
 #[cfg(test)]
 mod tests;

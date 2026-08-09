@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
-use super::{builtin, formula, points};
+use super::{builtin, formula, points, transfer};
 
 // ---------------------------------------------------------------------------
 // TOML schema
@@ -18,7 +18,10 @@ use super::{builtin, formula, points};
 
 #[derive(Debug, Deserialize)]
 pub struct CurvesFile {
+    #[serde(default)]
     pub curves: BTreeMap<String, CurveDef>,
+    #[serde(default)]
+    pub transfers: BTreeMap<String, transfer::TransferDef>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -67,7 +70,8 @@ pub fn build(name: &str, def: &CurveDef, lut_size: usize) -> CurveData {
     let fwd = if let Some(b) = &def.builtin {
         build_from_easing(b, lut_size, |t| builtin::eval(b, t))
     } else if let Some(f) = &def.formula {
-        build_from_easing(f, lut_size, |t| formula::eval(f, t))
+        let parsed = formula::Formula::parse(f, "t");
+        build_from_easing(f, lut_size, |t| parsed.eval("t", t))
     } else {
         points::build(name, def.points.as_deref().unwrap(), lut_size)
     };

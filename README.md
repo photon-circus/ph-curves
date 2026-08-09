@@ -7,8 +7,8 @@
 [![MSRV](https://img.shields.io/badge/MSRV-1.92.0-blue)](rust-toolchain.toml)
 [![no_std](https://img.shields.io/badge/no__std-yes-green)](src/lib.rs)
 
-`no_std`, zero-allocation curve lookup tables and tickless scheduling for
-embedded Rust.
+`no_std`, zero-allocation curve lookup tables, ADC-to-measurement transfer
+functions, and tickless scheduling for embedded Rust.
 
 ## Features
 
@@ -20,6 +20,9 @@ embedded Rust.
   quantized output value changes, so your firmware can sleep instead of polling.
 - **Code-gen CLI** — a companion binary (`ph-curves-gen`) reads a simple TOML
   file and emits the Rust source for all your curves.
+- **Physical transfer functions** — sparse adaptive knots convert integer ADC
+  observations to signed, scaled measurements with explicit range behavior.
+  Firmware uses only integer math; physical modeling and fitting are host-only.
 
 ## Quick start
 
@@ -93,6 +96,73 @@ for deadline in schedule.iter(0) {
 }
 ```
 
+## ADC-to-measurement transfer functions
+
+Transfer functions are separate from normalized easing curves and
+`UnitValue`. They accept a real `u16` input domain (raw ADC codes or explicitly
+scaled voltage-like integers) and return signed `i32` measurement quanta.
+
+The included `assets/transfers.toml` reference models a 10 kOhm, Beta 3950 NTC
+thermistor in a 10 kOhm ratiometric divider on a 12-bit ADC:
+
+```toml
+[transfers.ntc_10k_beta_3950]
+input_unit = "adc_code"
+output_unit = "degree_celsius"
+output_scale = 1000
+max_interpolation_error = 50
+max_knots = 256
+below = "error"
+above = "error"
+output_range = [-40.0, 125.0]
+
+[transfers.ntc_10k_beta_3950.model]
+kind = "ntc_beta_divider"
+nominal_resistance_ohms = 10000.0
+beta_kelvin = 3950.0
+nominal_temperature_celsius = 25.0
+fixed_resistance_ohms = 10000.0
+adc_max_code = 4095
+topology = "ntc_to_ground"
+```
+
+Generate and use it:
+
+```sh
+ph-curves-gen --input assets/transfers.toml --output ntc_transfer.rs
+```
+
+```rust
+use ph_curves::TransferFunction;
+
+include!("ntc_transfer.rs");
+
+let milli_celsius = NTC_10K_BETA_3950.convert(adc_code)?;
+```
+
+The reference generates 61 nonuniform knots over ADC codes `142..=3995`:
+366 bytes of array payload rather than a 4,096- or 65,536-entry LUT. The
+generator checks every integer ADC code and reports a measured worst-case
+numerical error. Adaptive fitting defaults to at most 256 knots (configurable
+up to an absolute 4,096-knot safety limit) and fails rather than silently
+emitting a full domain table.
+
+`below` and `above` independently select `"error"` (the default) or `"clamp"`.
+Transfer functions never extrapolate.
+
+### Accuracy scope
+
+The generated error bound covers integer output quantization and interpolation
+against the configured ideal formula, point set, or model. It is **not** total
+sensor accuracy. For an NTC system, separately account for Beta-model error,
+thermistor and resistor tolerance, ADC/reference error, self-heating, wiring,
+and calibration uncertainty.
+
+All floating-point formulas, models, fitting, and error analysis are compiled
+only into `ph-curves-gen` behind the `gen` feature. The library and generated
+firmware code contain integer arrays, binary search, and `i64` interpolation
+only.
+
 ## Built-in curves
 
 | Name                 | Formula              | Description                      |
@@ -143,6 +213,8 @@ formula = "pow((t + 0.16) / 1.16, 3.0)"
 | `MonotonicCurveLut256` | Type alias: `MonotonicCurveLut<u8, u8, 256>`        |
 | `CurveLut65536`        | Type alias: `CurveLut<u16, u16, 65536>`             |
 | `MonotonicCurveLut65536` | Type alias: `MonotonicCurveLut<u16, u16, 65536>`  |
+| `PiecewiseLinearTransfer<N>` | Sparse integer ADC-to-measurement transfer |
+| `TransferMetadata`       | Units, scale, domain, direction, and error bound  |
 
 ### Traits
 
@@ -151,6 +223,8 @@ formula = "pow((t + 0.16) / 1.16, 3.0)"
 - **`Tickless<T>`** — adds `tickless_schedule(...)` to any `MonotonicCurve`.
 - **`UnitValue`** — implemented for `u8` and `u16`; maps the unit interval
   onto a discrete integer range with fixed-point helpers.
+- **`TransferFunction`** — checked physical conversion with explicit
+  below/above-domain behavior and no extrapolation.
 
 ### Tickless scheduling
 

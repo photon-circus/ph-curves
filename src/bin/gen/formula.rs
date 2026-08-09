@@ -123,12 +123,18 @@ fn tokenize(expr: &str) -> Vec<Token> {
 struct Evaluator<'a> {
     tokens: &'a [Token],
     pos: usize,
-    t: f64,
+    variable_name: &'a str,
+    variable_value: f64,
 }
 
 impl<'a> Evaluator<'a> {
-    fn new(tokens: &'a [Token], t: f64) -> Self {
-        Self { tokens, pos: 0, t }
+    fn new(tokens: &'a [Token], variable_name: &'a str, variable_value: f64) -> Self {
+        Self {
+            tokens,
+            pos: 0,
+            variable_name,
+            variable_value,
+        }
     }
 
     fn peek(&self) -> Option<&Token> {
@@ -227,11 +233,14 @@ impl<'a> Evaluator<'a> {
 
     fn resolve_var(&self, name: &str) -> f64 {
         match name {
-            "t" => self.t,
             "pi" | "PI" => std::f64::consts::PI,
             "e" | "E" => std::f64::consts::E,
+            variable if variable == self.variable_name => self.variable_value,
             other => {
-                panic!("unknown variable `{other}` in formula (only `t`, `pi`, `e` allowed)")
+                panic!(
+                    "unknown variable `{other}` in formula (only `{}`, `pi`, `e` allowed)",
+                    self.variable_name
+                )
             }
         }
     }
@@ -310,17 +319,42 @@ impl<'a> Evaluator<'a> {
 // Public API
 // ---------------------------------------------------------------------------
 
+/// A parsed formula that can be evaluated repeatedly without tokenizing again.
+pub struct Formula {
+    tokens: Vec<Token>,
+}
+
+impl Formula {
+    /// Parse and validate an expression.
+    pub fn parse(expr: &str, variable_name: &str) -> Self {
+        let tokens = tokenize(expr);
+        let mut evaluator = Evaluator::new(&tokens, variable_name, 0.5);
+        let _ = evaluator.expr();
+        assert!(
+            evaluator.pos == tokens.len(),
+            "trailing tokens in formula: {:?}",
+            &tokens[evaluator.pos..]
+        );
+        Self { tokens }
+    }
+
+    /// Evaluate the expression using `variable_name = variable_value`.
+    pub fn eval(&self, variable_name: &str, variable_value: f64) -> f64 {
+        let mut evaluator = Evaluator::new(&self.tokens, variable_name, variable_value);
+        let result = evaluator.expr();
+        assert!(
+            evaluator.pos == self.tokens.len(),
+            "trailing tokens in formula: {:?}",
+            &self.tokens[evaluator.pos..]
+        );
+        result
+    }
+}
+
 /// Evaluate `expr` for a given `t` value (0.0..=1.0).
+#[cfg(test)]
 pub fn eval(expr: &str, t: f64) -> f64 {
-    let tokens = tokenize(expr);
-    let mut evaluator = Evaluator::new(&tokens, t);
-    let result = evaluator.expr();
-    assert!(
-        evaluator.pos == tokens.len(),
-        "trailing tokens in formula: {:?}",
-        &tokens[evaluator.pos..]
-    );
-    result
+    Formula::parse(expr, "t").eval("t", t)
 }
 
 // ===========================================================================
