@@ -83,3 +83,23 @@ Identity: `gain = scale`, `offset = 0` → passthrough (modulo rounding when `|s
 ## Merge gate
 
 Implementation lives on this branch only; do not merge to `main` without owner decision.
+
+## Inverse (added during 0.2.0 integration)
+
+`AffineCalibration<T>` implements `InverseTransferFunction` whenever `T` does, closing the composition gap between this companion and `feature/0.2.0-inverse-transfer`. Without it, a calibrated setpoint required the caller to hand-roll the affine inverse and get the rounding right.
+
+```rust
+let trimmed = AffineCalibration::new(NTC_10K_BETA_3950, 1_005, -120, 1_000)?;
+let code = trimmed.invert(25_000)?;   // calibrated setpoint -> ADC code
+```
+
+- Solves `y = (y' * scale - offset) / gain` with the same nearest, ties-away rounding as the forward path, then delegates to the inner `invert`.
+- `gain == 0` is rejected by `new` with `AffineCalibrationError::ZeroGain`: it collapses every observation onto `offset / scale`, so the affine has no inverse. This is a deliberate tightening of the constructor rather than a deferred failure in `invert`.
+- Inner range errors are re-expressed in **calibrated** units, so `minimum` / `maximum` are comparable with the value the caller passed. When `gain` and `scale` have opposite signs the calibration reverses orientation, and an inner `BelowRange` surfaces as `AboveRange`.
+- `InverseTransferError::Overflow` covers an undone value that does not fit `i32`, and a range bound that cannot be re-expressed.
+
+### Round-trip bound
+
+Both directions round, so `invert(convert(x))` through a calibration is bounded, not exact. A calibration that compresses the physical scale cannot restore what the forward quantization discarded. A calibrated value within half an *uncalibrated* quantum of a range endpoint rounds back into range rather than erroring.
+
+`TransferMetadata::achieved_max_inverse_code_error` describes the uncalibrated table only; wrapping in `AffineCalibration` can widen it.

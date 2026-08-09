@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   out-of-range and ambiguous-flat cases against the physical range.
 - `invert_segment`, the public mirror of `interpolate_segment`, so host tools
   and the runtime share one rounding implementation.
+- `AffineCalibration` implements `InverseTransferFunction` when its inner
+  transfer does, so a calibrated setpoint — "which ADC code reads 25 °C after
+  this unit's factory trim?" — is a single `invert` call. Range errors are
+  re-expressed in calibrated units, and a calibration whose `gain` and `scale`
+  have opposite signs flips `BelowRange` and `AboveRange` accordingly.
+- `PiecewiseLinearTransfer::range_behaviors` reports how the domain boundary
+  policies map onto the physical range.
 - Transfer metadata now records `range_min` / `range_max`,
   `strictly_monotonic`, `flat_segment_count`, and an exhaustively measured
   `achieved_max_inverse_code_error` round-trip bound.
@@ -60,9 +67,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `TransferMetadata` no longer carries a `flat_resolution` copy. Codegen always
   baked in `PreferLowInput`, so metadata contradicted the live policy for any
   caller using `with_flat_resolution`. Read `flat_resolution()` instead.
+- Inverse conversion selected its boundary policy by physical side alone, so on
+  a decreasing table — the NTC reference case — a table configured
+  `below = Error, above = Clamp` clamped in the forward direction and errored
+  in the inverse for the same out-of-range condition. `below` and `above` are
+  declared against the observation domain and are now mapped onto the physical
+  range through the table's direction, so both directions agree.
 
 ### Changed
 
+- **Breaking:** `AffineCalibration::new` rejects `gain == 0` with the new
+  `AffineCalibrationError::ZeroGain`. A zero gain collapses every observation
+  onto `offset / scale`, discarding the sensor and leaving the calibration
+  non-invertible. *Migration:* a zero gain was already a bug; supply the real
+  trim constants.
+- The crate's three near-duplicate nearest/ties-away division helpers are now
+  one shared implementation, so a quantized value cannot drift depending on
+  which module produced it.
 - **Breaking (CLI/features):** the `gen` feature is now the library API only
   and no longer builds the `ph-curves-gen` binary; the CLI moved behind the
   new `gen-cli` feature, which implies `gen`. *Migration:* replace

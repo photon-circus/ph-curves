@@ -23,10 +23,15 @@ Merge order was #7 → #6 → #4 → #5. Only #4 ↔ #5 conflicted, in `src/tran
 - **GitHub Actions are still disabled** (`.github/ci.yml.disabled`). Merging this branch to `main` would land `main` without remote CI. Restoring `.github/workflows/ci.yml` — and updating it for the `gen` / `gen-cli` split — is an owner decision that blocks the merge.
 - No crates.io publish is implied. `Cargo.toml` is at `0.2.0` and `CHANGELOG.md` has a dated `[0.2.0]` section so the release PR is self-describing; publishing remains a separate step.
 
-## Known gaps carried into the release
+## Integration gaps found and closed
 
-Neither blocks the merge, but both are real and undocumented elsewhere:
+Three gaps surfaced while packing the train. None came from a single companion — each only became visible once the features sat together — and all three are now fixed on this branch:
 
-- **No calibrated inverse.** `AffineCalibration` implements `TransferFunction` but not `InverseTransferFunction`, so a setpoint-to-code conversion with factory calibration applied does not compose. Inverting the affine step before delegating to the inner transfer would close this.
-- **Boundary policy is mirrored, not corresponding, on decreasing tables.** `invert` applies `below` to low-physical values. On a decreasing table — the NTC reference case — codes above `domain_max` correspond to physical values below `range_min`, so a table configured `below = Error, above = Clamp` clamps in the forward direction and errors in the inverse for the same physical situation. Documented in the trait, but the two directions still disagree.
-- **Three near-duplicate rounding helpers** now coexist: `stabilize::round_div_nearest`, `transfer::div_nearest_ties_away`, and `transfer::round_div_nearest_checked`. Same ties-away semantics, one of them unchecked.
+- **Calibrated inverse.** `AffineCalibration` implemented `TransferFunction` but not `InverseTransferFunction`, so setpoint-to-code with factory calibration applied did not compose — arguably the main reason to ship #4 and #5 together. It now undoes the affine with `y = (y' * scale - offset) / gain` and delegates, re-expressing inner range errors in calibrated units and flipping `BelowRange` / `AboveRange` when the calibration reverses orientation. `gain == 0` is rejected at construction, since it makes the affine non-invertible.
+- **Boundary policy on decreasing tables.** `invert` selected its policy by physical side alone. On a decreasing table — the NTC reference case — codes above `domain_max` produce physical values below `range_min`, so a table configured `below = Error, above = Clamp` clamped forward and errored inverse for the same condition. `below` and `above` are declared against the observation domain and are now mapped onto the physical range through the table's direction; see `range_behaviors`.
+- **Duplicate rounding.** `stabilize::round_div_nearest`, `transfer::div_nearest_ties_away`, and `transfer::round_div_nearest_checked` were three implementations of the same nearest/ties-away rule, one of them unchecked. They are now one shared `crate::round` helper, so a quantized value cannot drift depending on which module produced it.
+
+## Notes on behavior at the margins
+
+- A convert-then-invert round trip through a calibration is **bounded, not exact**: both directions round. A value within half an uncalibrated quantum of a range endpoint rounds back into range rather than erroring, which is correct — the calibrated scale can be finer than the table can represent.
+- `achieved_max_inverse_code_error` describes the **uncalibrated** table. Wrapping a table in `AffineCalibration` can widen the round-trip bound.
