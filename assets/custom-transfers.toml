@@ -1,0 +1,34 @@
+# Custom transfer examples. These are pure mathematical descriptions; firmware
+# remains responsible for acquiring and validating each observation.
+
+# Formula model: a 10%-to-90% ratiometric pressure sensor represented directly
+# in ADC codes. The output is kPa scaled by 1000 (milli-kPa).
+[transfers.pressure_100kpa]
+input_unit = "adc_code"
+output_unit = "kilopascal"
+output_scale = 1000
+max_interpolation_error = 1
+max_knots = 32
+below = "error"
+above = "error"
+domain = [410, 3686]
+formula = "(x - 410) * 100.0 / 3276.0"
+
+# Empirical model: measured calibration points for a nonlinear level sensor.
+# The output is percent scaled by 100 (basis points).
+[transfers.tank_level]
+input_unit = "millivolt"
+output_unit = "percent"
+output_scale = 100
+max_interpolation_error = 5
+max_knots = 32
+below = "clamp"
+above = "clamp"
+points = [
+  { input = 500, output = 0.0 },
+  { input = 850, output = 10.0 },
+  { input = 1200, output = 28.0 },
+  { input = 1600, output = 55.0 },
+  { input = 2050, output = 82.0 },
+  { input = 2500, output = 100.0 },
+]

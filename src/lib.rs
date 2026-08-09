@@ -78,6 +78,14 @@
 //! host-only generator may use floating point to fit a physical model, but it
 //! emits only `u16` input knots and signed `i32` output knots. Firmware
 //! conversion uses binary search and checked-range `i64` interpolation.
+//! Formula and empirical-point sources let users describe custom monotonic
+//! models without adding sensor-specific runtime code.
+//!
+//! The transfer layer is intentionally limited to one static `u16` input and
+//! one monotonic `i32` output. It does not provide inverse conversion,
+//! nonmonotonic maps, multidimensional compensation, dynamic calibration,
+//! sensor fusion, or device policy. Those concerns belong in application or
+//! domain-specific crates that compose with this crate's generic primitives.
 //!
 //! ```ignore
 //! use ph_curves::TransferFunction;

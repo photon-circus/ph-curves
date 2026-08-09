@@ -367,4 +367,16 @@ mod tests {
         assert!(!output.contains("f32"));
         assert!(!output.contains("f64"));
     }
+
+    #[test]
+    fn custom_transfer_examples_generate_integer_firmware_code() {
+        let definition: CurvesFile =
+            toml::from_str(include_str!("../../../assets/custom-transfers.toml")).unwrap();
+        let output = generate(&definition, "u8", 256);
+        assert!(output.contains("pub const PRESSURE_100KPA"));
+        assert!(output.contains("pub const TANK_LEVEL"));
+        assert!(output.contains("PiecewiseLinearTransfer"));
+        assert!(!output.contains("f32"));
+        assert!(!output.contains("f64"));
+    }
 }

@@ -108,6 +108,11 @@
 //! use `{ input = 123, output = -4.5 }` and define their domain. Models require
 //! `output_range`. `below` and `above` independently select `"error"` (the
 //! default) or `"clamp"`; extrapolation is never generated.
+//!
+//! See `assets/custom-transfers.toml` for complete formula and empirical-point
+//! examples. Transfer sources must be monotonic. Models requiring multiple
+//! inputs or dynamic/device policy should be evaluated by a dedicated host
+//! tool which emits physical points, rather than added to the firmware API.
 
 mod builtin;
 mod codegen;

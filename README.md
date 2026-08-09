@@ -166,6 +166,108 @@ emitting a full domain table.
 `below` and `above` independently select `"error"` (the default) or `"clamp"`.
 Transfer functions never extrapolate.
 
+### What transfer functions enable
+
+The transfer API is a good fit when all of the following are true:
+
+- One `u16` integer observation determines one signed, scaled `i32` result.
+- The relationship is static and monotonic, either increasing or decreasing.
+- A formula, empirical calibration points, or a supported host model can
+  describe the ideal relationship.
+- Endpoint errors or clamps are sufficient outside the generated domain.
+- Numerical interpolation error can be bounded independently from real-world
+  sensor accuracy.
+
+Examples include ADC code or integer millivolts to temperature, pressure,
+resistance, illuminance, position, calibrated voltage, tank level, or a rough
+user-facing battery charge estimate. The same primitives work for any unit;
+the crate does not attach sensor-specific behavior to unit labels.
+
+The strongest supported pipeline is:
+
+`one integer observation -> one monotonic physical result -> optional temporal stabilization`
+
+### Honest limitations
+
+The transfer layer does **not** currently provide:
+
+- Signed or wider-than-`u16` input domains, or outputs wider than `i32`.
+- Nonmonotonic forward maps.
+- Physical-value-to-input inverse conversion.
+- Multidimensional compensation such as measurement by temperature or load.
+- Runtime/factory gain-and-offset calibration wrappers.
+- Automatic chaining or unit conversion between transfer functions.
+- Sensor fusion, state estimation, hysteretic application decisions, or
+  missing/invalid-sample policy.
+- A plugin interface for arbitrary host model code.
+
+Only the NTC Beta-divider has a built-in physical model. Other devices should
+normally use a formula or empirical points. Dedicated crates may provide
+domain-specific models and policies while emitting or consuming generic
+`ph-curves` transfers.
+
+### Writing a custom transfer
+
+Use `assets/custom-transfers.toml` as a complete guide. A custom transfer has
+six design steps:
+
+1. Choose the integer input representation firmware already has, such as raw
+   ADC code or millivolts. Include divider/reference calibration in the model
+   if it is static.
+2. Choose an output unit and integer scale. For example,
+   `output_unit = "kilopascal"` with `output_scale = 1000` emits milli-kPa.
+3. Define the valid input domain and explicit below/above behavior.
+4. Select either a formula over `x` or increasing-input physical points.
+5. Set the numerical error target and a bounded knot budget.
+6. Generate the table, inspect its reported domain/knot/error metadata, and
+   validate it against independent reference measurements.
+
+For an analytical sensor, use a formula:
+
+```toml
+[transfers.pressure_100kpa]
+input_unit = "adc_code"
+output_unit = "kilopascal"
+output_scale = 1000
+domain = [410, 3686]
+formula = "(x - 410) * 100.0 / 3276.0"
+max_interpolation_error = 1
+max_knots = 32
+```
+
+The formula is evaluated only by the host generator. `x` is the integer input;
+the existing formula operators/functions are available. The generated
+firmware table contains no floating point.
+
+For an empirical or piecewise model, use physical points:
+
+```toml
+[transfers.tank_level]
+input_unit = "millivolt"
+output_unit = "percent"
+output_scale = 100
+max_interpolation_error = 5
+max_knots = 32
+below = "clamp"
+above = "clamp"
+points = [
+  { input = 500, output = 0.0 },
+  { input = 1200, output = 28.0 },
+  { input = 2050, output = 82.0 },
+  { input = 2500, output = 100.0 },
+]
+```
+
+Point inputs must be strictly increasing and outputs must be monotonic.
+Endpoints define the valid domain; unlike normalized easing curves, physical
+points do not need to start at zero or end at full scale.
+
+If a model needs conditionals, multiple independent inputs, dynamic
+calibration, temperature/load compensation, or domain-specific state, compute
+calibration points in a dedicated host tool/crate and feed those points to the
+generic generator. Do not turn `ph-curves` into a device driver or an
+open-ended sensor-model catalog.
+
 ### Accuracy scope
 
 The generated error bound covers integer output quantization and interpolation
