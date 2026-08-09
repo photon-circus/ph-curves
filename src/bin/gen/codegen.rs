@@ -25,7 +25,7 @@ pub fn generate(
     }
     if !curves_file.transfers.is_empty() {
         out.push_str(
-            "use ph_curves::{BoundaryBehavior, MonotonicDirection, \
+            "use ph_curves::{BoundaryBehavior, FlatResolution, MonotonicDirection, \
              PiecewiseLinearTransfer, TransferMetadata};\n\n",
         );
     }
@@ -155,6 +155,24 @@ fn emit_transfer(
         below = def.below.rust_name(),
         above = def.above.rust_name(),
     ));
+    let (range_min, range_max) = {
+        let first = data.outputs[0];
+        let last = *data.outputs.last().unwrap();
+        if first <= last {
+            (first, last)
+        } else {
+            (last, first)
+        }
+    };
+    let flat_segment_count = data
+        .outputs
+        .windows(2)
+        .filter(|pair| pair[0] == pair[1])
+        .count();
+    let strictly_monotonic = flat_segment_count == 0;
+    // Host-audited after emit when needed; generator leaves 0 until measured.
+    let achieved_max_inverse_code_error = 0u16;
+
     out.push_str(&format!(
         "/// Metadata for [`{const_name}`].\n\
          pub const {const_name}_METADATA: TransferMetadata = TransferMetadata {{\n\
@@ -163,11 +181,17 @@ fn emit_transfer(
          \x20   output_scale: {output_scale},\n\
          \x20   domain_min: {domain_min},\n\
          \x20   domain_max: {domain_max},\n\
+         \x20   range_min: {range_min},\n\
+         \x20   range_max: {range_max},\n\
          \x20   direction: {direction},\n\
          \x20   knot_count: {knot_count},\n\
+         \x20   strictly_monotonic: {strictly_monotonic},\n\
+         \x20   flat_segment_count: {flat_segment_count},\n\
+         \x20   flat_resolution: FlatResolution::PreferLowInput,\n\
          \x20   requested_max_error: {requested},\n\
          \x20   achieved_max_error: {achieved},\n\
          \x20   worst_case_input: {worst},\n\
+         \x20   achieved_max_inverse_code_error: {inverse_error},\n\
          }};\n\n",
         input_unit = def.input_unit,
         output_unit = def.output_unit,
@@ -175,6 +199,7 @@ fn emit_transfer(
         requested = def.max_interpolation_error,
         achieved = data.achieved_max_error,
         worst = data.worst_case_input,
+        inverse_error = achieved_max_inverse_code_error,
     ));
 
     eprintln!(

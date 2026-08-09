@@ -48,9 +48,9 @@
 //!   [`CurveLut`] / [`MonotonicCurveLut`] types.
 //! - **Tickless scheduling** — [`Tickless`] extension trait,
 //!   [`TicklessSchedule`], and the [`TicklessIter`] iterator.
-//! - **Physical transfer functions** — [`TransferFunction`] and the sparse,
-//!   integer-only [`PiecewiseLinearTransfer`] for ADC-to-measurement
-//!   conversion.
+//! - **Physical transfer functions** — [`TransferFunction`] /
+//!   [`InverseTransferFunction`] and the sparse, integer-only
+//!   [`PiecewiseLinearTransfer`] for ADC ↔ measurement conversion.
 //! - **Temporal stabilization** — [`MovingAverage`], [`MedianFilter`],
 //!   [`ExponentialSmoother`], and [`StabilityDetector`] over caller-supplied
 //!   integer samples.
@@ -82,17 +82,19 @@
 //! models without adding sensor-specific runtime code.
 //!
 //! The transfer layer is intentionally limited to one static `u16` input and
-//! one monotonic `i32` output. It does not provide inverse conversion,
-//! nonmonotonic maps, multidimensional compensation, dynamic calibration,
-//! sensor fusion, or device policy. Those concerns belong in application or
-//! domain-specific crates that compose with this crate's generic primitives.
+//! one monotonic `i32` output, with runtime inverse on the same knots. It does
+//! not provide nonmonotonic maps, multidimensional compensation, dynamic
+//! calibration, sensor fusion, or device policy. Those concerns belong in
+//! application or domain-specific crates that compose with this crate's
+//! generic primitives.
 //!
 //! ```ignore
-//! use ph_curves::TransferFunction;
+//! use ph_curves::{InverseTransferFunction, TransferFunction};
 //!
 //! include!("ntc_transfer.rs");
 //!
 //! let milli_celsius = NTC_10K_BETA_3950.convert(adc_code)?;
+//! let setpoint_code = NTC_10K_BETA_3950.invert(25_000)?;
 //! ```
 
 #![no_std]
@@ -164,8 +166,9 @@ pub use stabilize::{
 };
 pub use tickless::{RepeatMode, Tickless, TicklessDeadline, TicklessIter, TicklessSchedule};
 pub use transfer::{
-    BoundaryBehavior, InterpolationError, MonotonicDirection, PiecewiseLinearTransfer,
-    TransferError, TransferFunction, TransferMetadata, interpolate_segment,
+    BoundaryBehavior, FlatResolution, InterpolationError, InverseTransferError,
+    InverseTransferFunction, MonotonicDirection, PiecewiseLinearTransfer, TransferError,
+    TransferFunction, TransferMetadata, interpolate_segment,
 };
 
 #[cfg(test)]

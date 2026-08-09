@@ -1,7 +1,7 @@
 # Inverse transfer (design)
 
 **Branch:** `feature/0.2.0-inverse-transfer`  
-**Status:** Design documentation only. Implementation lives on this branch only; do not merge to `main` without owner decision.
+**Status:** Implemented on this branch (runtime API). Do not merge to `main` without owner decision.
 
 ## Motivation
 
@@ -40,10 +40,13 @@ impl<const N: usize> InverseTransferFunction for PiecewiseLinearTransfer<N> {
 impl<const N: usize> PiecewiseLinearTransfer<N> {
     pub fn invert_physical(&self, physical: i32)
         -> Result<u16, InverseTransferError<i32>>;
+    pub const fn with_flat_resolution(self, policy: FlatResolution) -> Self;
+    pub const fn physical_range(&self) -> (i32, i32);
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Default)]
 pub enum FlatResolution {
+    #[default]
     PreferLowInput,  // default
     PreferHighInput,
     Midpoint,
