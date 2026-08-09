@@ -48,9 +48,9 @@
 //!   [`CurveLut`] / [`MonotonicCurveLut`] types.
 //! - **Tickless scheduling** — [`Tickless`] extension trait,
 //!   [`TicklessSchedule`], and the [`TicklessIter`] iterator.
-//! - **Physical transfer functions** — [`TransferFunction`] and the sparse,
+//! - **Physical transfer functions** — [`TransferFunction`], the sparse,
 //!   integer-only [`PiecewiseLinearTransfer`] for ADC-to-measurement
-//!   conversion.
+//!   conversion, and [`AffineCalibration`] for caller-supplied gain/offset.
 //! - **Temporal stabilization** — [`MovingAverage`], [`MedianFilter`],
 //!   [`ExponentialSmoother`], and [`StabilityDetector`] over caller-supplied
 //!   integer samples.
@@ -82,10 +82,12 @@
 //! models without adding sensor-specific runtime code.
 //!
 //! The transfer layer is intentionally limited to one static `u16` input and
-//! one monotonic `i32` output. It does not provide inverse conversion,
-//! nonmonotonic maps, multidimensional compensation, dynamic calibration,
-//! sensor fusion, or device policy. Those concerns belong in application or
-//! domain-specific crates that compose with this crate's generic primitives.
+//! one monotonic `i32` output. [`AffineCalibration`] applies a caller-supplied
+//! integer gain/offset/scale after the table without regenerating knots or
+//! touching NVM. The crate still does not provide inverse conversion,
+//! nonmonotonic maps, multidimensional compensation, sensor fusion, or device
+//! policy. Those concerns belong in application or domain-specific crates that
+//! compose with this crate's generic primitives.
 //!
 //! ```ignore
 //! use ph_curves::TransferFunction;
@@ -164,8 +166,9 @@ pub use stabilize::{
 };
 pub use tickless::{RepeatMode, Tickless, TicklessDeadline, TicklessIter, TicklessSchedule};
 pub use transfer::{
-    BoundaryBehavior, InterpolationError, MonotonicDirection, PiecewiseLinearTransfer,
-    TransferError, TransferFunction, TransferMetadata, interpolate_segment,
+    AffineCalibration, BoundaryBehavior, InterpolationError, MonotonicDirection,
+    PiecewiseLinearTransfer, TransferError, TransferFunction, TransferMetadata,
+    interpolate_segment,
 };
 
 #[cfg(test)]

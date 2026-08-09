@@ -1,7 +1,7 @@
-# AffineCalibration (design)
+# AffineCalibration
 
 **Branch:** `feature/0.2.0-affine-calibration`  
-**Status:** Design documentation only. Implementation lives on this branch only; do not merge to `main` without owner decision.
+**Status:** Implemented on this branch only; do not merge to `main` without owner decision.
 
 ## Motivation
 
