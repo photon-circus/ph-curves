@@ -47,6 +47,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `from_time_frac` inputs (1/65535 of range) and ~0.01% of `to_time_offset`
   inputs (1 ms). `to_time_offset` still rounds up as documented and still never
   exceeds `duration_ms`, so schedules cannot overshoot a segment.
+- `to_time_offset` splits the duration to stay in 32-bit arithmetic instead of
+  dividing in 64 bits, avoiding a software 64-bit divide on cores without a
+  hardware divider. Measured on Cortex-M0 under emulation (instructions
+  retired, mean over a realistic ramp workload) against 0.1.1: `u8` 193 → 129,
+  `u16` 495 → 160. `from_time_frac` is also cheaper than 0.1.1 (`u8` 320 → 206,
+  `u16` 2782 → 258), because the fixed-point path it replaced already went
+  through a 64-bit divide.
 - Generated doc comments quote the curve name with `Debug` escaping, so a name
   containing newlines or quotes can no longer break the emitted source.
 

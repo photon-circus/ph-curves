@@ -84,7 +84,15 @@ impl UnitValue for u8 {
         if duration_ms == 0 {
             return 0;
         }
-        (u64::from(self) * u64::from(duration_ms)).div_ceil(255) as u32
+        // Splitting `duration_ms` as `255 * k + r` keeps this in 32-bit
+        // arithmetic: `ceil(v * d / 255) == v * k + ceil(v * r / 255)`.
+        // `v * k` peaks at exactly `u32::MAX` and `v * r` at 255 * 254, so
+        // neither term overflows, and the sum is still bounded by
+        // `duration_ms`.  A 64-bit divide costs ~2.3x as much on Cortex-M0.
+        let v = u32::from(self);
+        let k = duration_ms / 255;
+        let r = duration_ms % 255;
+        v * k + (v * r).div_ceil(255)
     }
 
     fn lerp_u16(self, a: u16, b: u16) -> u16 {
@@ -141,9 +149,13 @@ impl UnitValue for u16 {
         if duration_ms == 0 {
             return 0;
         }
-        // Rounds up, as documented; the product is at most
-        // `65535 * u32::MAX`, so the result never exceeds `duration_ms`.
-        (u64::from(self) * u64::from(duration_ms)).div_ceil(65535) as u32
+        // As for `u8`: `ceil(v * d / 65535) == v * k + ceil(v * r / 65535)`
+        // where `d == 65535 * k + r`.  `v * k` peaks at exactly `u32::MAX`
+        // and `v * r` at `65535 * 65534`, so both stay in 32 bits.
+        let v = u32::from(self);
+        let k = duration_ms / 65535;
+        let r = duration_ms % 65535;
+        v * k + (v * r).div_ceil(65535)
     }
 
     fn lerp_u16(self, a: u16, b: u16) -> u16 {
