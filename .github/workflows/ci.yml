@@ -1,16 +1,24 @@
 name: CI
 
+# `push` is limited to the default branch on purpose. A branch that also has
+# an open PR fires both `push` and `pull_request`, and those carry different
+# `github.ref` values (`refs/heads/...` vs `refs/pull/N/merge`), so a
+# concurrency group cannot collapse them -- they are simply two runs of the
+# same commit. Building the matrix twice doubled the simultaneous
+# unauthenticated GitHub API calls from the Xtensa toolchain installer, which
+# tripped anonymous rate limiting (403) and reported a green commit as red.
+#
+# Every non-default branch is therefore covered by its pull request, which is
+# the merge gate anyway. A release branch with no PR open does not build; open
+# the PR to get coverage.
 on:
   push:
-    branches: [main, "release/**"]
+    branches: [main]
   pull_request:
     branches: [main, "release/**"]
 
-# A push to a release branch that also has an open PR fires both the `push`
-# and `pull_request` events, so the same commit was building twice. That
-# doubled cost and, more importantly, doubled the number of simultaneous
-# unauthenticated GitHub API calls from the Xtensa toolchain installer, which
-# tripped anonymous rate limiting (403) and failed a green commit.
+# Supersede in-flight runs when a branch or PR is pushed again. This does not
+# deduplicate push-vs-pull_request (see above); it stops rapid pushes stacking.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
