@@ -24,6 +24,16 @@ them, it is not ready.
 
 - [ ] `main` contains the release commit, and CI is green on it.
 - [ ] `Cargo.toml` `version` is the version being released.
+- [ ] **`Cargo.toml` `description` still describes the crate.** This is the
+      text crates.io shows, and it is frozen into the published version — it
+      cannot be corrected without releasing again. It drifts silently because
+      the README tagline gets updated when features land and the manifest does
+      not; 0.2.0 shipped describing only curves and scheduling, with no mention
+      of transfer functions, calibration, or filtering. Read it against the
+      README's opening line and against the `## Features` list.
+- [ ] `keywords` and `categories` are still accurate, and `categories` are
+      valid crates.io slugs — an invalid slug fails the upload, not the
+      dry run.
 - [ ] `CHANGELOG.md` has a dated `## [x.y.z] - YYYY-MM-DD` section — no
       entries left under `## [Unreleased]`. **Date it in UTC**, using the day
       you actually publish. crates.io records the publish time in UTC and the
@@ -74,8 +84,19 @@ git push origin v0.2.0
 cargo publish
 ```
 
-Then create the GitHub release from the tag, using the `CHANGELOG.md` section
-as the body.
+Then create the GitHub release from the tag. `--verify-tag` refuses to invent
+a tag if you mistyped it:
+
+```bash
+gh release create v0.2.0 --title "v0.2.0 — short summary" --notes-file notes.md --verify-tag
+```
+
+Build `notes.md` from that version's `CHANGELOG.md` section. Lead with a few
+highlights and the compatibility statement, since the changelog body is
+organised by change type rather than by importance. If the tag also contains
+repository-only work that is excluded from the package — docs, agent
+instructions, CI config — say so, so the notes are not read as describing the
+published artifact.
 
 ## After publishing
 
@@ -86,6 +107,10 @@ as the body.
 - [ ] Confirm the README badges resolve on crates.io — version, docs.rs, CI,
       license, MSRV, `no_std`.
 - [ ] Add a fresh empty `## [Unreleased]` section to `CHANGELOG.md`.
+- [ ] Refresh the GitHub repository description and topics if the release
+      changed what the crate does. Unlike the manifest description, these are
+      mutable at any time — but they drift for the same reason, so check them
+      while the release is fresh.
 
 ## Version choice
 
