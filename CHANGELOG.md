@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `Cargo.toml` `description` now covers transfer functions, calibration, and
+  filtering. 0.2.0 published describing only curves and tickless scheduling,
+  because the README tagline was updated when those features landed and the
+  manifest was not. The manifest text is what crates.io displays and is frozen
+  per version, so 0.2.0's listing cannot be corrected — this takes effect on
+  the next release. `RELEASING.md` now checks it.
 - Documentation reorganised by kind rather than by version: `docs/design/` for
   per-feature design records and `docs/compatibility.md` for the durable
   compatibility policy. The former `docs/0.2.0/` pinned durable policy to a
