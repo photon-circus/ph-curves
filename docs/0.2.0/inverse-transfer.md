@@ -1,7 +1,7 @@
 # Inverse transfer (design)
 
 **Branch:** `feature/0.2.0-inverse-transfer`  
-**Status:** Implemented on this branch (runtime API). Do not merge to `main` without owner decision.
+**Status:** Shipped in 0.2.0 — `InverseTransferFunction` and `PiecewiseLinearTransfer::invert`. Retained as the design record; the code and its rustdoc are authoritative.
 
 ## Motivation
 
@@ -79,11 +79,6 @@ pub enum InverseTransferError<P> {
 
 - Multidimensional / temp-compensated inverse
 - Wider domains (`u32` / `i64`) in this design
-- Landing on `main`, version bumps, or crates.io release from this branch
-
-## Merge gate
-
-Implementation lives on this branch only; do not merge to `main` without owner decision.
 
 ## Boundary policy correction (0.2.0 integration)
 
