@@ -1,7 +1,6 @@
 # Hysteresis + Debounce (design)
 
-**Branch:** `feature/0.2.0-decision-primitives`  
-**Status:** Shipped in 0.2.0 — `Hysteresis` and `Debounce` in `stabilize`. Retained as the design record; the code and its rustdoc are authoritative.
+**Status:** Shipped in 0.2.0 — `Hysteresis` and `Debounce` in `stabilize`. Design rationale only; the code and its rustdoc are authoritative.
 
 ## Motivation
 

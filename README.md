@@ -4,7 +4,7 @@
 [![docs.rs](https://img.shields.io/docsrs/ph-curves)](https://docs.rs/ph-curves)
 [![CI](https://github.com/photon-circus/ph-curves/actions/workflows/ci.yml/badge.svg)](https://github.com/photon-circus/ph-curves/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/crates/l/ph-curves)](LICENSE.md)
-[![MSRV](https://img.shields.io/badge/MSRV-1.92.0-blue)](rust-toolchain.toml)
+[![MSRV](https://img.shields.io/badge/MSRV-1.92.0-blue)](https://github.com/photon-circus/ph-curves/blob/main/rust-toolchain.toml)
 [![no_std](https://img.shields.io/badge/no__std-yes-green)](src/lib.rs)
 
 `no_std`, zero-allocation curve lookup tables, ADC-to-measurement transfer
@@ -23,8 +23,13 @@ functions, and tickless scheduling for embedded Rust.
 - **Physical transfer functions** — sparse adaptive knots convert integer ADC
   observations to signed, scaled measurements with explicit range behavior.
   Firmware uses only integer math; physical modeling and fitting are host-only.
+- **Runtime calibration** — `AffineCalibration` applies a caller-supplied
+  integer gain/offset/scale on top of any transfer, in both directions, without
+  regenerating tables or touching NVM.
 - **Temporal stabilization** — fixed-memory integer moving-average, median,
   exponential smoothing, and stability detection for caller-supplied samples.
+- **Decision primitives** — `Hysteresis` and `Debounce` latch application
+  decisions from sample-count cadence alone; no clock, no GPIO.
 
 ## Scope and non-goals
 
@@ -337,6 +342,39 @@ fn main() {
 include!(concat!(env!("OUT_DIR"), "/curves.rs"));
 ```
 
+### Runtime calibration
+
+Per-unit trim lives outside the generated table. `AffineCalibration` applies a
+caller-supplied integer triple — read from EEPROM, flash, or a test fixture —
+as `y' = (y * gain + offset) / scale`, with the same nearest, ties-away
+rounding as the table itself. It never reads NVM, regenerates knots, or edits
+`TransferMetadata`.
+
+```rust
+use ph_curves::{AffineCalibration, InverseTransferFunction, TransferFunction};
+
+// +0.5 % gain, -120 milli-Celsius offset, from this unit's factory trim.
+let trimmed = AffineCalibration::new(NTC_10K_BETA_3950, 1_005, -120, 1_000)?;
+
+let milli_celsius = trimmed.convert(adc_code)?;   // calibrated reading
+let setpoint_code = trimmed.invert(25_000)?;      // calibrated setpoint
+```
+
+Inversion undoes the affine and then inverts the table, so a calibrated
+setpoint is one call rather than hand-rolled arithmetic. Range errors are
+reported in *calibrated* units so the bounds are comparable with the value you
+passed in, and a calibration whose `gain` and `scale` have opposite signs
+reverses orientation, flipping `BelowRange` and `AboveRange` accordingly.
+`gain == 0` is rejected at construction — it collapses every observation onto
+one value and has no inverse.
+
+Both directions round, so a convert-then-invert round trip is bounded rather
+than exact. Anything `convert` produces is guaranteed invertible; a value
+within half an uncalibrated quantum of a range endpoint clamps to that endpoint
+instead of failing. `TransferMetadata::achieved_max_inverse_code_error`
+describes the *uncalibrated* table — wrapping it in a calibration can widen
+that bound.
+
 ## Temporal stabilization
 
 A transfer function converts one observation. Meaningful measurements often
@@ -382,6 +420,33 @@ Window sizes count caller-supplied valid samples. Sampling cadence, invalid
 sample policy, transfer errors, and whether instability resets application
 state remain caller responsibilities. The crate does not read timestamps or
 silently assume a sample rate.
+
+### Decision primitives
+
+Filters smooth a value; deciding what to *do* is separate. `Hysteresis` and
+`Debounce` latch boolean decisions from sample-count cadence only — they read
+no clock and own no GPIO.
+
+```rust
+use ph_curves::{Debounce, DebounceOutput, Hysteresis};
+
+// Fan on at 60 C, off at 55 C. The 5 C band stops chatter at the threshold.
+let mut fan = Hysteresis::<i32>::new(55_000, 60_000);
+let fan_on = fan.update(milli_celsius);
+
+// Require 3 consecutive agreeing samples before acting on a fault line.
+let mut fault = Debounce::<3>::new();
+match fault.update(raw_fault) {
+    DebounceOutput::Edge { level } => latch_fault(level),
+    DebounceOutput::Steady(_) | DebounceOutput::WarmingUp { .. } => {}
+}
+```
+
+`Hysteresis` needs `low <= high`; equal thresholds degrade to a plain
+comparison. `Debounce` reports `WarmingUp` until it has seen `N` consecutive
+matching samples, then `Edge` exactly once per confirmed transition and
+`Steady` otherwise, so callers can act on changes rather than re-applying a
+level every sample.
 
 ## Built-in curves
 
@@ -436,10 +501,13 @@ formula = "pow((t + 0.16) / 1.16, 3.0)"
 | `PiecewiseLinearTransfer<N>` | Sparse integer ADC↔measurement transfer (forward + inverse) |
 | `TransferMetadata`       | Units, scale, domain/range, flats, and error bounds |
 | `FlatResolution`         | Policy for non-unique (flat) inverse outputs      |
+| `AffineCalibration<T>`   | Gain/offset/scale wrapper over any transfer, invertible |
 | `MovingAverage<T,N>`     | Exact fixed-window integer mean                  |
 | `MedianFilter<T,N>`      | Small fixed-window outlier rejection             |
 | `ExponentialSmoother<T>` | Constant-memory integer smoothing                |
 | `StabilityDetector<T,N>` | Independent recent-range stability classification |
+| `Hysteresis<T>`          | Dual-threshold latch with a hold band             |
+| `Debounce<N>`            | N-consecutive-sample confirmation, with edge reporting |
 
 ### Traits
 
@@ -464,6 +532,12 @@ sleep between value changes instead of polling at a fixed tick rate.
 
 Supports `RepeatMode::Once`, `RepeatMode::Repeat`, and `RepeatMode::PingPong`.
 
+### Segment helpers
+
+- `interpolate_segment(input, x0, y0, x1, y1)` — one signed segment forward.
+- `invert_segment(physical, x0, y0, x1, y1)` — its mirror. Host tools use it so
+  a generated round-trip audit rounds exactly the way the runtime does.
+
 ### Math helpers
 
 - `lerp_u8(a, b, w)` / `lerp_u16(a, b, w)` — interpolate with `u8` weight.
@@ -480,17 +554,24 @@ Rust **1.92.0** (edition 2024).
 Contributions are welcome! Please read the [contributing guide](CONTRIBUTING.md)
 before opening a pull request.
 
-### Local CI on this feature branch
+### CI
 
-GitHub Actions are intentionally disabled while ADC transfer work is in review
-(`.github/ci.yml.disabled`). Validate with:
+Every pull request runs [`.github/workflows/ci.yml`](https://github.com/photon-circus/ph-curves/blob/main/.github/workflows/ci.yml):
+format, clippy at `-D warnings` across the feature matrix, tests, rustdoc,
+no-std and ESP32 target builds, dependency policy, and packaging.
+
+Two jobs guard the crate's core promises. **`runtime-purity`** rejects a
+feature-conditional `#![no_std]` and builds the default feature set against a
+`core`-only sysroot, which is what proves *no-alloc* — a plain `--target`
+build only proves *no-std*, because bare-metal `rust-std` ships `alloc`.
+**`feature-compat`** runs the 0.1.x `cargo run --features gen` invocation so
+the compatibility alias cannot rot.
+
+To run the same gate locally before pushing:
 
 ```powershell
 ./scripts/local-ci.ps1
 ```
-
-Restore `.github/workflows/ci.yml` before merging to `main`. Remote CI restore
-and merge remain explicit owner decisions.
 
 This project follows the
 [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.md). By participating you

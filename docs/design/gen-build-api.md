@@ -1,7 +1,6 @@
 # Gen build-script library API (design)
 
-**Branch:** `feature/0.2.0-gen-build-api`  
-**Status:** Shipped in 0.2.0 — `ph_curves::r#gen` behind the `gen-lib` feature. Retained as the design record; the code and its rustdoc are authoritative.
+**Status:** Shipped in 0.2.0 — `ph_curves::r#gen` behind the `gen-lib` feature. Design rationale only; the code and its rustdoc are authoritative.
 
 ## Motivation
 

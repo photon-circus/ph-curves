@@ -1,7 +1,6 @@
 # Inverse transfer (design)
 
-**Branch:** `feature/0.2.0-inverse-transfer`  
-**Status:** Shipped in 0.2.0 — `InverseTransferFunction` and `PiecewiseLinearTransfer::invert`. Retained as the design record; the code and its rustdoc are authoritative.
+**Status:** Shipped in 0.2.0 — `InverseTransferFunction` and `PiecewiseLinearTransfer::invert`. Design rationale only; the code and its rustdoc are authoritative.
 
 ## Motivation
 

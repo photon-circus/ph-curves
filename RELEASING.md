@@ -16,7 +16,7 @@ them, it is not ready.
    ph-curves-gen` must keep producing the CLI. The `feature-compat` CI job runs
    that exact command.
 3. **Breaking changes are justified, gated, and documented.** See
-   [docs/0.2.0/baseline-compatibility.md](https://github.com/photon-circus/ph-curves/blob/main/docs/0.2.0/baseline-compatibility.md)
+   [docs/compatibility.md](https://github.com/photon-circus/ph-curves/blob/main/docs/compatibility.md)
    for the standard: a break earns its cost only when it removes a footgun that
    cannot be fixed additively. Ergonomics does not qualify.
 
