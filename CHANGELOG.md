@@ -73,6 +73,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in the inverse for the same out-of-range condition. `below` and `above` are
   declared against the observation domain and are now mapped onto the physical
   range through the table's direction, so both directions agree.
+- A compressing calibration (`|scale| > |gain|`) could make
+  `AffineCalibration::invert` report a spurious `BelowRange` / `AboveRange` for
+  a value the same calibration had just produced: undoing the affine expands
+  the value and could overshoot an inner endpoint by one quantum. Values that
+  are still inside the calibrated forward image now clamp to that endpoint.
+  **Anything `convert` produces is invertible** — verified across 316,500
+  round trips spanning increasing, decreasing, and flat-run tables. Values
+  genuinely outside the image still range-error.
+- The host `std` link moved from the crate root to a module-local
+  `extern crate std` in `src/gen`. At the crate root, `#[macro_use]` put
+  `format!` and friends in scope crate-wide whenever a host feature was on, so
+  an accidental allocation on the runtime path would have compiled. It is now
+  a compile error, which is what the no-alloc guarantee always claimed.
 
 ### Changed
 
@@ -189,7 +202,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 14 built-in easing curves plus legacy aliases.
 - 16-bit LUT support (`--value-type u16 --lut-size 65536`).
 
-[Unreleased]: https://github.com/photon-circus/ph-curves/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/photon-circus/ph-curves/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/photon-circus/ph-curves/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/photon-circus/ph-curves/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/photon-circus/ph-curves/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/photon-circus/ph-curves/releases/tag/v0.1.0

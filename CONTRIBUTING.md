@@ -43,6 +43,12 @@ Open an issue on [GitHub](https://github.com/photon-circus/ph-curves/issues) wit
 
 Feature requests are welcome — please open an issue describing your use-case before starting work on a large change so we can discuss the approach.
 
+## Releasing
+
+Publishing to crates.io is an owner-only step and is not automatic on merge.
+The checklist, the invariants a release must not break, and the version-choice
+rules live in [RELEASING.md](RELEASING.md).
+
 ## Code of conduct
 
 This project follows the [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.md). By participating you agree to uphold it.
