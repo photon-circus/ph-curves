@@ -6,8 +6,8 @@
 // Host-only: module-local std link (crate root stays `#![no_std]`).
 extern crate std;
 
-use std::prelude::v1::*;
 use std::format;
+use std::prelude::v1::*;
 
 /// Evaluate a builtin curve at normalised position `t` (0.0..=1.0).
 ///

@@ -3,8 +3,8 @@
 // Host-only: module-local std link (crate root stays `#![no_std]`).
 extern crate std;
 
-use std::prelude::v1::*;
 use std::format;
+use std::prelude::v1::*;
 
 mod adaptive;
 mod model;
