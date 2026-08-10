@@ -7,8 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Issue forms for bug reports and feature requests, and a pull request
+  template. Blank issues are disabled so the chooser always renders, which is
+  what puts the private disclosure route in front of someone about to paste a
+  vulnerability into a public issue. The bug form asks which surface is
+  involved — runtime, `gen-lib`, or `gen-cli` — because the `no_std` runtime
+  and the host generator fail in unrelated ways.
+
 ### Changed
 
+- `scripts/local-ci.ps1` sets `CARGO_INCREMENTAL=0`. Incremental compilation
+  made the gate flaky on Windows: rustc could fail to finalize
+  `target/debug/incremental` ("Access is denied", os error 5) and `cargo test`
+  exited 101 while reporting every test as passing, landing on a different
+  feature each run so the failure read as a real, moving defect. CI builds
+  fresh and gains nothing from incremental.
 - The README tagline now matches the manifest `description`, covering inverse
   transfers, calibration, and temporal filters. It had drifted the other way
   from the case `RELEASING.md` warns about — the manifest was the stale copy

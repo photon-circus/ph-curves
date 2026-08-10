@@ -1,0 +1,58 @@
+name: Feature request
+description: Propose a capability ph-curves does not have.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please open one of these before starting work on a large change, so the
+        approach can be agreed first — see
+        [CONTRIBUTING.md](https://github.com/photon-circus/ph-curves/blob/main/CONTRIBUTING.md).
+
+  - type: textarea
+    id: usecase
+    attributes:
+      label: Use case
+      description: >
+        What are you building, and where does the crate stop helping? Describe
+        the problem rather than the API you have in mind — the shape usually
+        falls out of the constraint.
+    validations:
+      required: true
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: What are you doing today?
+      description: >
+        The workaround, if any, and what it costs. A workaround that is merely
+        inconvenient is weaker evidence than one that is wrong.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: shape
+    attributes:
+      label: Can this be additive?
+      description: >
+        Breaking changes have to clear a high bar — see
+        docs/compatibility.md. Ergonomics alone does not qualify.
+      options:
+        - Additive — new type, method, or feature flag
+        - Requires changing existing behaviour or signatures
+        - Not sure
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Runtime constraints
+      description: >
+        The `no_std` + `no_alloc` runtime is the product. Anything on the
+        runtime path has to hold these; host-only work under `gen-lib` /
+        `gen-cli` does not.
+      options:
+        - label: This can be done with no allocation on the runtime path
+        - label: This needs floating point at runtime
+        - label: This is host-only (build script or CLI), not firmware
