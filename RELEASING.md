@@ -25,7 +25,11 @@ them, it is not ready.
 - [ ] `main` contains the release commit, and CI is green on it.
 - [ ] `Cargo.toml` `version` is the version being released.
 - [ ] `CHANGELOG.md` has a dated `## [x.y.z] - YYYY-MM-DD` section — no
-      entries left under `## [Unreleased]`.
+      entries left under `## [Unreleased]`. **Date it in UTC**, using the day
+      you actually publish. crates.io records the publish time in UTC and the
+      GitHub release displays UTC, so a local-time date reads as off by one
+      against both whenever you release in the evening west of Greenwich.
+      Check with `date -u +%F`, not the clock on the wall.
 - [ ] `CHANGELOG.md` has a `[x.y.z]:` compare link at the bottom, and
       `[Unreleased]:` compares from the new tag.
 - [ ] `SECURITY.md` lists the new minor line as supported.
