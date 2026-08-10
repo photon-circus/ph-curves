@@ -1,6 +1,8 @@
-# ph-curves 0.2.0 release train
+# ph-curves 0.2.0 release train (historical record)
 
-This branch (`release/0.2.0`) is the packing spine for the 0.2.0 release. The anchor and all four companion features are **merged here**. Landing on `main` is a separate, explicit owner decision — see *Outstanding gates* below.
+0.2.0 shipped. This is the record of how it was assembled — what landed, in what order, and what had to be fixed along the way. It is **not** current guidance: for the API read the rustdoc, for release mechanics read [RELEASING.md](../../RELEASING.md), and for the compatibility policy read [baseline-compatibility.md](./baseline-compatibility.md), which is the one document here with durable rules rather than history.
+
+The `release/0.2.0` branch was the packing spine; it merged to `main` via PR [#8](https://github.com/photon-circus/ph-curves/pull/8).
 
 ## Contents
 
@@ -16,7 +18,7 @@ Merge order was #7 → #6 → #4 → #5, then #9 (integration gaps) and #10 (res
 
 ## Validation
 
-`scripts/local-ci.ps1` passes end-to-end on this branch: `fmt --check`; tests under default, `gen-lib`, `gen-cli`, and `gen`; the 0.1.x feature-compat CLI smoke (`cargo run --features gen --bin ph-curves-gen -- --help`); clippy `--all-targets` at `-D warnings` for default / `gen-lib` / `gen-cli`; rustdoc at `-D warnings`; no-std builds for thumbv7em, thumbv6m, riscv32imac, riscv32imc, and wasm32; ESP32 / S2 / S3 via `+esp` with `-Zbuild-std=core`; and `cargo package`.
+`scripts/local-ci.ps1` passed end-to-end at release: `fmt --check`; tests under default, `gen-lib`, `gen-cli`, and `gen`; the 0.1.x feature-compat CLI smoke (`cargo run --features gen --bin ph-curves-gen -- --help`); clippy `--all-targets` at `-D warnings` for default / `gen-lib` / `gen-cli`; rustdoc at `-D warnings`; no-std builds for thumbv7em, thumbv6m, riscv32imac, riscv32imc, and wasm32; ESP32 / S2 / S3 via `+esp` with `-Zbuild-std=core`; and `cargo package`.
 
 ## Runtime guarantee
 
@@ -28,14 +30,9 @@ CI enforces this in the `runtime-purity` job: it rejects a feature-conditional `
 
 **0.2.0 breaks nothing against 0.1.2.** See [baseline-compatibility.md](./baseline-compatibility.md) for the full assessment of both candidate breaks, why each was reworked instead of shipped, and where the bar for a justified break actually sits.
 
-## Outstanding gates
-
-- Remote CI is restored at `.github/workflows/ci.yml`, covering format, runtime purity, clippy and tests across `gen-lib` / `gen-cli` / `gen`, 0.1.x feature compatibility, the no-std and Xtensa target matrices, docs, and packaging. It runs on `main` and `release/**`.
-- No crates.io publish is implied. `Cargo.toml` is at `0.2.0` and `CHANGELOG.md` has a dated `[0.2.0]` section with compare links, so the release PR is self-describing. `cargo publish --dry-run` passes. Publishing remains an owner-only step — see [RELEASING.md](../../RELEASING.md).
-
 ## Integration gaps found and closed
 
-Three gaps surfaced while packing the train. None came from a single companion — each only became visible once the features sat together — and all three are now fixed on this branch:
+Three gaps surfaced while packing the train. None came from a single companion — each only became visible once the features sat together — and all three were fixed before release:
 
 - **Calibrated inverse.** `AffineCalibration` implemented `TransferFunction` but not `InverseTransferFunction`, so setpoint-to-code with factory calibration applied did not compose — arguably the main reason to ship #4 and #5 together. It now undoes the affine with `y = (y' * scale - offset) / gain` and delegates, re-expressing inner range errors in calibrated units and flipping `BelowRange` / `AboveRange` when the calibration reverses orientation. `gain == 0` is rejected at construction, since it makes the affine non-invertible.
 - **Boundary policy on decreasing tables.** `invert` selected its policy by physical side alone. On a decreasing table — the NTC reference case — codes above `domain_max` produce physical values below `range_min`, so a table configured `below = Error, above = Clamp` clamped forward and errored inverse for the same condition. `below` and `above` are declared against the observation domain and are now mapped onto the physical range through the table's direction; see `range_behaviors`.

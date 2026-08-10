@@ -1,7 +1,7 @@
 # Gen build-script library API (design)
 
 **Branch:** `feature/0.2.0-gen-build-api`  
-**Status:** Implemented on this branch. Do not merge to `main` without owner decision.
+**Status:** Shipped in 0.2.0 — `ph_curves::r#gen` behind the `gen-lib` feature. Retained as the design record; the code and its rustdoc are authoritative.
 
 ## Motivation
 
@@ -71,8 +71,3 @@ generate_to_path("assets/curves.toml", &out, &GenerateOptions::default())?;
 
 - Changing Curve / Tickless / Transfer runtime types
 - Expanding the built-in host model catalog as part of this refactor
-- Landing on `main`, version bumps, or crates.io release from this branch
-
-## Merge gate
-
-Implementation lives on this branch only; do not merge to `main` without owner decision.

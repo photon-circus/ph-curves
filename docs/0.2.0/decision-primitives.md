@@ -1,7 +1,7 @@
 # Hysteresis + Debounce (design)
 
 **Branch:** `feature/0.2.0-decision-primitives`  
-**Status:** Implemented on this branch (`Hysteresis`, `Debounce` / `DebounceOutput` in `stabilize`). Do not merge to `main` without owner decision.
+**Status:** Shipped in 0.2.0 — `Hysteresis` and `Debounce` in `stabilize`. Retained as the design record; the code and its rustdoc are authoritative.
 
 ## Motivation
 
@@ -79,8 +79,3 @@ Suggested module: `stabilize` (+ crate re-export). Cadence is **sample-count**, 
 
 - Application policy beyond latched bool / edge reporting
 - Sensor-fusion or multi-input voting
-- Landing on `main`, version bumps, or crates.io release from this branch
-
-## Merge gate
-
-Implementation lives on this branch only; do not merge to `main` without owner decision.

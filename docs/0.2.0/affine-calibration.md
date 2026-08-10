@@ -1,7 +1,7 @@
 # AffineCalibration
 
 **Branch:** `feature/0.2.0-affine-calibration`  
-**Status:** Implemented on this branch only; do not merge to `main` without owner decision.
+**Status:** Shipped in 0.2.0 — `AffineCalibration` gain/offset wrapper, plus the calibrated inverse added during integration. Retained as the design record; the code and its rustdoc are authoritative.
 
 ## Motivation
 
@@ -78,11 +78,6 @@ Identity: `gain = scale`, `offset = 0` → passthrough (modulo rounding when `|s
 
 - Nesting many affines as a first-class story (allowed via trait; document precision/overflow stacking)
 - Silent wrap on `i32` overflow — prefer dedicated error or saturating variant (pick one public API)
-- Landing on `main`, version bumps, or crates.io release from this branch
-
-## Merge gate
-
-Implementation lives on this branch only; do not merge to `main` without owner decision.
 
 ## Inverse (added during 0.2.0 integration)
 
