@@ -1,0 +1,11 @@
+# Blank issues are disabled so the chooser always renders, which is what puts
+# the security route in front of someone about to paste a vulnerability into a
+# public issue. Discussions are not enabled on this repository.
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/photon-circus/ph-curves/blob/main/SECURITY.md
+    about: Do not open a public issue. Disclose privately by email; see SECURITY.md.
+  - name: Question about usage
+    url: https://docs.rs/ph-curves
+    about: Check the rendered API docs and the README first. If the docs are wrong or missing, that is a bug — file one.

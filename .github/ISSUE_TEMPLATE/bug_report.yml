@@ -1,0 +1,97 @@
+name: Bug report
+description: Something in ph-curves behaves differently from what it documents.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please do **not** report security vulnerabilities here. See
+        [SECURITY.md](https://github.com/photon-circus/ph-curves/blob/main/SECURITY.md)
+        for the private disclosure route.
+
+  - type: input
+    id: version
+    attributes:
+      label: ph-curves version
+      description: From `Cargo.toml`, or `cargo tree -p ph-curves`.
+      placeholder: "0.2.1"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Which part?
+      description: >
+        The runtime is `no_std` and `no_alloc`; the generator is host-only and
+        lives behind `gen-lib` / `gen-cli`. They fail in very different ways.
+      options:
+        - Runtime library (default features)
+        - Code generator library (gen-lib, build.rs API)
+        - Code generator CLI (gen-cli / gen, ph-curves-gen)
+        - Not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: target
+    attributes:
+      label: Target
+      description: The triple you build for. Pick "Other" if it is not covered by CI.
+      options:
+        - thumbv6m-none-eabi
+        - thumbv7em-none-eabi
+        - riscv32imc-unknown-none-elf
+        - riscv32imac-unknown-none-elf
+        - xtensa-esp32-none-elf
+        - xtensa-esp32s2-none-elf
+        - xtensa-esp32s3-none-elf
+        - wasm32-unknown-unknown
+        - Host (x86_64 / aarch64)
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: toolchain
+    attributes:
+      label: Rust toolchain
+      description: >
+        `rustc -vV`. The MSRV is 1.92.0, and `rust-toolchain.toml` pins it — a
+        rustup file override outranks whatever your shell selected.
+      placeholder: "rustc 1.92.0 (stable)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs actual
+      description: >
+        What you expected, and what happened instead. Concrete values beat
+        descriptions — for conversions and schedules, the exact inputs and the
+        numbers that came back.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: >
+        Smallest code that shows it. If a generated table is involved, include
+        the TOML that produced it — the generator's arithmetic and the runtime's
+        are cross-checked against each other, so the input matters.
+      render: rust
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else
+      description: >
+        Optional. Timer wrap, long uptime, unusual `duration_ms`, custom
+        `step` / `Rounding`, calibration in play — anything that narrows it.
+    validations:
+      required: false

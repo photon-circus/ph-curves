@@ -1,5 +1,14 @@
 $ErrorActionPreference = "Continue"
 
+# Incremental compilation makes this gate flaky on Windows: rustc fails to
+# finalize `target/debug/incremental` ("Access is denied", os error 5) when a
+# scanner or a previous run still holds a handle, and `cargo test` exits 101
+# with every test reported as passing. The feature it lands on varies between
+# runs, so the failure reads as a real, moving defect. A gate that randomly
+# reports red trains you to re-run it instead of read it. CI builds fresh and
+# gains nothing from incremental anyway.
+$env:CARGO_INCREMENTAL = "0"
+
 function Invoke-Cargo {
     param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
 
