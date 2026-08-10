@@ -289,15 +289,32 @@ thermistor and resistor tolerance, ADC/reference error, self-heating, wiring,
 and calibration uncertainty.
 
 All floating-point formulas, models, fitting, and error analysis are compiled
-only behind the host `gen` feature (library API) / `gen-cli` (binary). The
+only behind the host `gen-lib` feature (library API) / `gen-cli` (binary). The
 default library and generated firmware code contain integer arrays, binary
 search, and `i64` interpolation only.
+
+### Host features and the runtime guarantee
+
+| Feature | Pulls in | Use |
+| ------- | -------- | --- |
+| *(none)* | — | Firmware. `no_std`, no allocator, integer-only. |
+| `gen-lib` | serde, toml | `build.rs` and host tools calling `ph_curves::r#gen`. |
+| `gen-cli` | `gen-lib` + clap | Building or installing the `ph-curves-gen` binary. |
+| `gen` | `gen-cli` | 0.1.x compatibility alias. Prefer `gen-lib` in a build script. |
+
+`#![no_std]` is unconditional and **no feature relaxes it**. The host features
+link `std` through an explicit `extern crate std` scoped to the `r#gen` module,
+so a crate elsewhere in your dependency graph enabling `ph-curves/gen-lib`
+cannot turn your firmware build into a `std` build via Cargo's feature
+unification. CI enforces this by building the default feature set against a
+`core`-only sysroot (`-Z build-std=core`), which fails if anything on the
+runtime path reaches for `alloc` or `std`.
 
 ### `build.rs` integration
 
 ```toml
 [build-dependencies]
-ph-curves = { version = "0.2", features = ["gen"] }
+ph-curves = { version = "0.2", features = ["gen-lib"] }
 ```
 
 ```rust
@@ -315,7 +332,7 @@ fn main() {
 ```
 
 ```rust
-// firmware lib.rs — no `gen` feature
+// firmware lib.rs — no host features; still no_std + no_alloc
 include!(concat!(env!("OUT_DIR"), "/curves.rs"));
 ```
 

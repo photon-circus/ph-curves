@@ -1,5 +1,9 @@
 //! Host-side physical point interpolation.
 
+// Host-only module: `std` is linked explicitly, not via the crate prelude.
+// See the `no_std` note in src/lib.rs.
+use std::prelude::v1::*;
+
 use super::PhysicalPoint;
 
 pub fn evaluate(name: &str, points: &[PhysicalPoint]) -> Result<(u16, Vec<f64>), String> {

@@ -3,6 +3,10 @@
 //! Each builtin is a pure `f64 → f64` function that maps normalised time
 //! `t` (0.0..=1.0) to a normalised output value (0.0..=1.0).
 
+// Host-only module: `std` is linked explicitly, not via the crate prelude.
+// See the `no_std` note in src/lib.rs.
+use std::prelude::v1::*;
+
 /// Evaluate a builtin curve at normalised position `t` (0.0..=1.0).
 ///
 pub fn eval(name: &str, t: f64) -> Result<f64, String> {

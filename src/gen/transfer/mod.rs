@@ -1,5 +1,9 @@
 //! Physical transfer-function schema and generation.
 
+// Host-only module: `std` is linked explicitly, not via the crate prelude.
+// See the `no_std` note in src/lib.rs.
+use std::prelude::v1::*;
+
 mod adaptive;
 mod model;
 mod points;

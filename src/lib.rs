@@ -102,16 +102,30 @@
 //! let setpoint_code = NTC_10K_BETA_3950.invert(25_000)?;
 //! ```
 //!
-//! # Code generation (`gen` feature)
+//! # Code generation (`gen-lib` feature)
 //!
-//! With `features = ["gen"]`, host tools and `build.rs` can call
+//! With `features = ["gen-lib"]`, host tools and `build.rs` can call
 //! `r#gen::generate_from_toml` / `r#gen::generate_to_path` without shelling
 //! out to the CLI. (The module is spelled `r#gen` because `gen` is a reserved
 //! keyword in Rust 2024; raw identifiers cannot appear in intra-doc links,
-//! so these are plain code spans rather than links.) The firmware runtime API
-//! is unchanged when `gen` is off.
+//! so these are plain code spans rather than links.)
+//!
+//! # The runtime is always no-std and no-alloc
+//!
+//! The crate-level `no_std` attribute is unconditional. It is **not** relaxed
+//! by any feature. The `gen-lib` / `gen-cli` features link `std` for the host
+//! generator through an explicit `extern crate std`, scoped to the `r#gen`
+//! module; they never put `std` or an allocator on the runtime path.
+//!
+//! This matters because Cargo unifies features across a dependency graph. If
+//! the attribute were conditional, one unrelated crate enabling
+//! `ph-curves/gen-lib` would silently turn a firmware build into a `std`
+//! build. Keeping it unconditional makes that impossible rather than merely
+//! unlikely. The generator's `String` / `Vec` / `format!` usage is imported
+//! explicitly inside `src/gen` instead of arriving through the `std` prelude,
+//! so a stray allocation on the runtime path is a compile error.
 
-#![cfg_attr(not(feature = "gen"), no_std)]
+#![no_std]
 #![deny(missing_docs)]
 #![allow(unsafe_code)]
 #![deny(unsafe_op_in_unsafe_fn)]
@@ -161,6 +175,13 @@
     clippy::let_underscore_future
 )]
 
+// Host-only. The runtime never sees this: `std` is not in the prelude for any
+// module outside `r#gen`, so a stray `String` or `format!` on the runtime path
+// fails to compile rather than silently linking an allocator.
+#[cfg(feature = "std")]
+#[macro_use]
+extern crate std;
+
 mod curve;
 mod math;
 mod round;
@@ -187,7 +208,7 @@ pub use transfer::{
     interpolate_segment, invert_segment,
 };
 
-#[cfg(feature = "gen")]
+#[cfg(feature = "gen-lib")]
 pub mod r#gen;
 
 #[cfg(test)]

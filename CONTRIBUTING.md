@@ -10,7 +10,8 @@ Thanks for your interest in contributing! This document covers the basics.
 
 ```sh
 cargo test
-cargo test --features gen
+cargo test --features gen-lib
+cargo test --features gen-cli
 cargo build --features gen-cli --bin ph-curves-gen
 ```
 

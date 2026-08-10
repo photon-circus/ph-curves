@@ -1,5 +1,9 @@
 //! Rust source-code generation from built curve data.
 
+// Host-only module: `std` is linked explicitly, not via the crate prelude.
+// See the `no_std` note in src/lib.rs.
+use std::prelude::v1::*;
+
 use std::collections::BTreeMap;
 
 use super::curve::{CurveData, CurveDef, DefinitionsFile};
