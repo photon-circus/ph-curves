@@ -91,6 +91,21 @@ removed from `TransferMetadata` because `with_flat_resolution` can change it
 after the fact, so the baked-in copy contradicted the live policy. Do not add
 fields that a builder method can invalidate.
 
+**Schedule times compare as offsets from `t0`, not as absolute timestamps.**
+Tickless clocks are free-running `u32` milliseconds, so absolute ordering is
+meaningless across the ~49.7-day rollover, and the half-range signed-delta
+convention that replaces it cannot express a segment longer than half the
+clock period. Clamping a deadline against `end_ms` that way reports "already
+finished" for any `duration_ms` above roughly `i32::MAX` — the deadline
+collapses onto `now_ms` and firmware spins on a zero-length sleep. Compare
+offsets instead: they are bounded by `duration_ms`, so plain `u32`
+comparisons hold across the full range in both the wall-clock and the
+`t0_ms == 0` relative mode. The half-range convention belongs only in
+`segment_progress`, where deciding whether `now_ms` precedes the segment
+genuinely needs it. This has now been got wrong in both directions, and a
+green test suite caught neither — a schedule test that asserts only on
+`current_val` cannot see a broken `deadline_ms`.
+
 ## Working on the generator
 
 Host code lives in `src/gen`. `src/bin/gen/main.rs` is a thin CLI over it.

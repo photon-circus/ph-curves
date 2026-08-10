@@ -1076,3 +1076,364 @@ fn tickless_ramp_from_max_with_large_step_ceil() {
         deadlines.len()
     );
 }
+
+// ---------------------------------------------------------------------------
+// Tickless wrapping u32 clock
+// ---------------------------------------------------------------------------
+
+/// Segment starting near `u32::MAX` must progress through the rollover.
+///
+/// Saturating `end_ms = t0.saturating_add(duration)` previously clamped the
+/// end to `u32::MAX` and treated post-wrap timestamps as "before start".
+#[test]
+fn tickless_schedule_crosses_u32_wrap() {
+    let curve = linear_curve();
+    let t0 = u32::MAX - 50;
+    let duration = 200;
+    let schedule = curve.tickless_schedule(t0, duration, 0, 255, 10, Rounding::Nearest, 0);
+
+    assert_eq!(schedule.end_ms(), t0.wrapping_add(duration));
+    assert_eq!(schedule.end_ms(), 149);
+
+    let dl_start = schedule.next_deadline(t0);
+    assert_eq!(dl_start.current_val, 0);
+    assert_ne!(
+        dl_start.deadline_ms, t0,
+        "first transition must be scheduled after t0"
+    );
+    // Remaining time to the first deadline stays inside the segment.
+    let rem = dl_start.deadline_ms.wrapping_sub(t0);
+    assert!(rem > 0 && rem <= duration);
+
+    // Mid-segment after the clock rolls over.
+    let mid = t0.wrapping_add(100); // 49
+    let dl_mid = schedule.next_deadline(mid);
+    assert!(
+        dl_mid.current_val > 0,
+        "mid-wrap value should be non-zero, got {}",
+        dl_mid.current_val
+    );
+    assert!(
+        dl_mid.current_val < 255,
+        "mid-wrap value should be below end, got {}",
+        dl_mid.current_val
+    );
+
+    let after = t0.wrapping_add(duration);
+    let dl_end = schedule.next_deadline(after);
+    assert_eq!(dl_end.deadline_ms, after);
+    assert_eq!(
+        dl_end.current_val,
+        crate::quantize(255, 10, Rounding::Nearest)
+    );
+}
+
+#[test]
+fn tickless_min_dt_crosses_u32_wrap() {
+    let curve = linear_curve();
+    let t0 = u32::MAX - 10;
+    let schedule = curve.tickless_schedule(t0, 100, 0, 255, 1, Rounding::Nearest, 25);
+    let now = t0.wrapping_add(5); // still before wrap
+    let dl = schedule.next_deadline(now);
+    let rem = dl.deadline_ms.wrapping_sub(now);
+    assert!(
+        rem >= 25,
+        "min_dt must hold across wrap, remaining {rem}, deadline {}",
+        dl.deadline_ms
+    );
+}
+
+#[test]
+fn tickless_iter_repeat_crosses_u32_wrap() {
+    let curve = linear_curve();
+    let t0 = u32::MAX - 30;
+    let schedule = curve
+        .tickless_schedule(t0, 40, 0, 255, 50, Rounding::Nearest, 0)
+        .with_repeat(RepeatMode::Repeat);
+
+    let deadlines: Vec<TicklessDeadline> = schedule.iter(t0).take(20).collect();
+    assert_eq!(deadlines.len(), 20);
+
+    // Deadlines must advance in wrapping remaining-time order.
+    let mut now = t0;
+    for dl in &deadlines {
+        let rem = dl.deadline_ms.wrapping_sub(now);
+        assert!(
+            rem <= 40 || dl.deadline_ms == now,
+            "deadline {} not reachable within a cycle from {now}",
+            dl.deadline_ms
+        );
+        now = dl.deadline_ms;
+    }
+
+    // At least one deadline must land after the rollover (numerically small).
+    assert!(
+        deadlines.iter().any(|dl| dl.deadline_ms < t0),
+        "expected a post-wrap deadline, got {deadlines:?}"
+    );
+}
+
+/// Long relative durations (the 0.1.2 UnitValue fix) must keep working with
+/// `t0_ms == 0` and elapsed `now_ms`, including values above `u16::MAX`.
+#[test]
+fn tickless_long_relative_duration_still_works() {
+    let curve = linear_curve();
+    let duration = 100_000u32;
+    let schedule = curve.tickless_schedule(0, duration, 0, 255, 10, Rounding::Nearest, 0);
+
+    let dl_start = schedule.next_deadline(0);
+    assert_eq!(dl_start.current_val, 0);
+    assert!(dl_start.deadline_ms > 0);
+    assert!(dl_start.deadline_ms < duration);
+
+    let dl_mid = schedule.next_deadline(duration / 2);
+    assert!(dl_mid.current_val > 0);
+    assert!(dl_mid.current_val < 255);
+
+    let dl_end = schedule.next_deadline(duration);
+    assert_eq!(dl_end.deadline_ms, duration);
+    assert_eq!(
+        dl_end.current_val,
+        crate::quantize(255, 10, Rounding::Nearest)
+    );
+}
+
+#[test]
+fn tickless_long_relative_duration_near_u32_max() {
+    let curve = linear_curve();
+    let duration = u32::MAX;
+    let schedule = curve.tickless_schedule(0, duration, 0, 255, 1, Rounding::Nearest, 0);
+
+    let mid = u32::MAX / 2;
+    let dl_mid = schedule.next_deadline(mid);
+    // Half of the unit interval on a linear curve ≈ 127.
+    assert!(
+        (120..140).contains(&dl_mid.current_val),
+        "expected mid-ramp value near 127, got {}",
+        dl_mid.current_val
+    );
+
+    let late = u32::MAX - 1;
+    let dl_late = schedule.next_deadline(late);
+    assert!(
+        dl_late.current_val >= 250,
+        "near-end value should be near max, got {}",
+        dl_late.current_val
+    );
+}
+
+/// A deadline is only useful if it is in the future. Clamping absolute
+/// timestamps under the half-range convention returned `deadline == now` for
+/// any segment longer than ~24.85 days, so firmware armed a zero-length sleep,
+/// woke immediately, and spun forever with the output stuck at `start_val`.
+#[test]
+fn tickless_long_duration_deadline_advances() {
+    let curve = linear_curve();
+    for duration in [
+        100_000u32,
+        2_000_000_000,
+        3_000_000_000,
+        u32::MAX - 1,
+        u32::MAX,
+    ] {
+        let schedule = curve.tickless_schedule(0, duration, 0, 255, 10, Rounding::Nearest, 0);
+        let dl = schedule.next_deadline(0);
+        assert!(
+            dl.deadline_ms > 0,
+            "duration {duration}: deadline must advance past now, got {}",
+            dl.deadline_ms
+        );
+        assert!(
+            dl.deadline_ms < duration,
+            "duration {duration}: deadline must stay inside the segment, got {}",
+            dl.deadline_ms
+        );
+    }
+}
+
+/// The same failure through the iterator: the cycle was reported finished on
+/// its first step, so a multi-day ramp yielded one deadline at `start_val`
+/// instead of walking the quantization grid.
+#[test]
+fn tickless_long_duration_iter_walks_the_whole_ramp() {
+    let curve = linear_curve();
+    let values = |duration: u32| -> Vec<u16> {
+        curve
+            .tickless_schedule(0, duration, 0, 255, 10, Rounding::Nearest, 0)
+            .iter(0)
+            .take(64)
+            .map(|d| d.current_val)
+            .collect()
+    };
+
+    // A short segment establishes the grid the ramp should walk; segment length
+    // must not change which values are emitted, only when.
+    let baseline = values(100_000);
+    assert_eq!(baseline.len(), 26, "baseline grid changed: {baseline:?}");
+    assert_eq!(baseline[0], 0);
+    assert_eq!(*baseline.last().unwrap(), 250);
+
+    for duration in [2_000_000_000u32, 3_000_000_000, u32::MAX - 1, u32::MAX] {
+        assert_eq!(
+            values(duration),
+            baseline,
+            "duration {duration} did not walk the full ramp"
+        );
+    }
+}
+
+/// Crossing the rollover must not change *what* the schedule does, only the
+/// numbers it does it with. Offsets from `t0` are the invariant.
+#[test]
+fn tickless_wrapped_segment_matches_unwrapped_baseline() {
+    let curve = linear_curve();
+    let wrapped_t0 = u32::MAX - 50;
+    let plain_t0 = 1_000u32;
+
+    let wrapped: Vec<TicklessDeadline> = curve
+        .tickless_schedule(wrapped_t0, 200, 0, 255, 10, Rounding::Nearest, 0)
+        .iter(wrapped_t0)
+        .take(64)
+        .collect();
+    let plain: Vec<TicklessDeadline> = curve
+        .tickless_schedule(plain_t0, 200, 0, 255, 10, Rounding::Nearest, 0)
+        .iter(plain_t0)
+        .take(64)
+        .collect();
+
+    assert_eq!(wrapped.len(), plain.len());
+    for (w, p) in wrapped.iter().zip(plain.iter()) {
+        assert_eq!(w.current_val, p.current_val);
+        assert_eq!(
+            w.deadline_ms.wrapping_sub(wrapped_t0),
+            p.deadline_ms.wrapping_sub(plain_t0),
+            "wrapped deadline {} and plain deadline {} disagree on segment offset",
+            w.deadline_ms,
+            p.deadline_ms
+        );
+    }
+}
+
+/// `min_dt_ms` must not pull a deadline backwards when `now` precedes `t0`.
+#[test]
+fn tickless_min_dt_before_segment_start() {
+    let curve = linear_curve();
+    let t0 = 1_000u32;
+    let schedule = curve.tickless_schedule(t0, 200, 0, 255, 10, Rounding::Nearest, 50);
+
+    // 500 ms before the segment: the whole `min_dt` window is spent waiting for
+    // `t0`, so it must not push the first deadline further into the segment.
+    let dl_far = schedule.next_deadline(t0 - 500);
+    assert!(
+        dl_far.deadline_ms >= t0,
+        "deadline {} fell before t0",
+        dl_far.deadline_ms
+    );
+    assert_eq!(
+        dl_far.deadline_ms,
+        schedule.next_deadline(t0 - 500).deadline_ms
+    );
+
+    // 10 ms before the segment: 40 ms of the window is left, and the first
+    // transition lands 8 ms in, so `min_dt` governs.
+    let dl_near = schedule.next_deadline(t0 - 10);
+    assert_eq!(
+        dl_near.deadline_ms,
+        t0 + 40,
+        "expected the remaining min_dt window to govern"
+    );
+}
+
+/// Every deadline taken from inside a segment that straddles the rollover must
+/// lie strictly ahead of `now` and no further than the segment end, sweeping
+/// the whole segment rather than sampling one midpoint. Asserting only on
+/// `current_val` — as the first wrap tests did — cannot see a `deadline_ms`
+/// that has collapsed onto `now`.
+#[test]
+fn tickless_post_rollover_deadlines_advance() {
+    let curve = linear_curve();
+    let t0 = u32::MAX - 50;
+    let duration = 200u32;
+    let schedule = curve.tickless_schedule(t0, duration, 0, 255, 10, Rounding::Nearest, 0);
+
+    let mut prev_off = 0u32;
+    let mut saw_post_rollover = false;
+
+    for elapsed in 0..duration {
+        let now = t0.wrapping_add(elapsed);
+        if now < t0 {
+            saw_post_rollover = true;
+        }
+
+        let dl = schedule.next_deadline(now);
+        let remaining = dl.deadline_ms.wrapping_sub(now);
+        let offset = dl.deadline_ms.wrapping_sub(t0);
+
+        assert!(
+            remaining > 0,
+            "elapsed {elapsed}: deadline {} collapsed onto now {now}",
+            dl.deadline_ms
+        );
+        assert!(
+            offset > elapsed && offset <= duration,
+            "elapsed {elapsed}: deadline offset {offset} left the segment"
+        );
+        assert!(
+            offset >= prev_off,
+            "elapsed {elapsed}: deadline offset went backwards, {prev_off} -> {offset}"
+        );
+        prev_off = offset;
+    }
+
+    assert!(
+        saw_post_rollover,
+        "sweep never crossed the rollover, so it proves nothing"
+    );
+
+    // One step past the end the deadline is already due, not pushed a further
+    // near-full clock period out.
+    let after = t0.wrapping_add(duration);
+    assert_eq!(schedule.next_deadline(after).deadline_ms, after);
+}
+
+/// "Still schedules correctly" means the deadlines land in the right *places*,
+/// not merely that they advance. Segment length must only rescale them, so the
+/// same fractions of the duration should come back at any duration.
+#[test]
+fn tickless_deadline_offsets_scale_with_duration() {
+    let curve = linear_curve();
+    let offsets = |duration: u32| -> Vec<u32> {
+        curve
+            .tickless_schedule(0, duration, 0, 255, 10, Rounding::Nearest, 0)
+            .iter(0)
+            .take(8)
+            .map(|d| d.deadline_ms)
+            .collect()
+    };
+
+    let base_duration = 100_000u32;
+    let base = offsets(base_duration);
+    assert_eq!(base.len(), 8);
+
+    for duration in [2_000_000_000u32, 3_000_000_000, u32::MAX] {
+        let scaled = offsets(duration);
+        assert_eq!(
+            scaled.len(),
+            base.len(),
+            "duration {duration}: ramp truncated"
+        );
+
+        for (i, (long, short)) in scaled.iter().zip(base.iter()).enumerate() {
+            // long / duration ≈ short / base_duration, cross-multiplied to stay
+            // in integer arithmetic.
+            let lhs = u128::from(*long) * u128::from(base_duration);
+            let rhs = u128::from(*short) * u128::from(duration);
+            let diff = lhs.abs_diff(rhs);
+            assert!(
+                diff * 1_000 <= rhs,
+                "duration {duration}: deadline {i} at {long} is not the same \
+                 fraction of the segment as {short} of {base_duration}"
+            );
+        }
+    }
+}

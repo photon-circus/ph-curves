@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.1] - 2026-08-10
 
 ### Added
 
@@ -34,6 +34,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `TicklessSchedule` used saturating absolute wall-clock math
+  (`t0.saturating_add(duration)`, `now >= end`, `now.saturating_add(min_dt)`).
+  On a free-running `u32` ms clock that wraps every ~49.7 days, a segment
+  starting near `u32::MAX` clamped `end_ms` short and treated post-rollover
+  timestamps as before the start, stalling the ramp partway — forcing callers
+  to pass segment-relative elapsed with `t0_ms = 0` as a workaround.
+  Scheduling now classifies `now_ms` against the segment with a half-range
+  signed delta, and clamps the deadline on offsets from `t0_ms` rather than on
+  absolute timestamps. Offsets are bounded by `duration_ms`, so the
+  comparisons stay ordinary `u32` ones and long relative durations
+  (`t0_ms == 0`, `duration_ms` up to `u32::MAX`) from the 0.1.2 `UnitValue`
+  fix keep working unchanged.
+- `TicklessSchedule::end_ms` now wraps rather than saturating, and
+  `next_deadline` past the segment end reports `now_ms` rather than the
+  clamped end. For any segment that does not cross the rollover both are
+  identical to 0.2.0. Callers comparing `end_ms()` with `<` or `>` against a
+  raw timestamp should switch to wrapping remaining-time
+  (`end_ms().wrapping_sub(now)`); ordering comparisons on absolute values are
+  not meaningful across the rollover.
 - Two README links resolved only inside the repository and 404'd from the
   published crate, where `rust-toolchain.toml` and `.github/` are excluded.
 
@@ -238,7 +257,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 14 built-in easing curves plus legacy aliases.
 - 16-bit LUT support (`--value-type u16 --lut-size 65536`).
 
-[Unreleased]: https://github.com/photon-circus/ph-curves/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/photon-circus/ph-curves/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/photon-circus/ph-curves/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/photon-circus/ph-curves/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/photon-circus/ph-curves/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/photon-circus/ph-curves/compare/v0.1.0...v0.1.1
