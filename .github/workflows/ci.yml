@@ -6,6 +6,15 @@ on:
   pull_request:
     branches: [main, "release/**"]
 
+# A push to a release branch that also has an open PR fires both the `push`
+# and `pull_request` events, so the same commit was building twice. That
+# doubled cost and, more importantly, doubled the number of simultaneous
+# unauthenticated GitHub API calls from the Xtensa toolchain installer, which
+# tripped anonymous rate limiting (403) and failed a green commit.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -Dwarnings
@@ -146,10 +155,16 @@ jobs:
           - xtensa-esp32s3-none-elf
     steps:
       - uses: actions/checkout@v4
+      # espup queries the GitHub API for the latest Xtensa Rust release.
+      # Unauthenticated that shares the anonymous per-IP quota with every other
+      # runner and returns 403 under load; the token makes the call use this
+      # repository's much larger quota.
       - uses: esp-rs/xtensa-toolchain@v1.5
         with:
           default: true
           ldproxy: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - uses: Swatinem/rust-cache@v2
       - run: cargo +esp build --target ${{ matrix.target }} -Zbuild-std=core
 
