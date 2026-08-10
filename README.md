@@ -8,7 +8,8 @@
 [![no_std](https://img.shields.io/badge/no__std-yes-green)](src/lib.rs)
 
 `no_std`, zero-allocation curve lookup tables, ADC-to-measurement transfer
-functions, and tickless scheduling for embedded Rust.
+functions with inverse and calibration, temporal filters, and tickless
+scheduling for embedded Rust.
 
 ## Features
 

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The README tagline now matches the manifest `description`, covering inverse
+  transfers, calibration, and temporal filters. It had drifted the other way
+  from the case `RELEASING.md` warns about — the manifest was the stale copy
+  before 0.2.1 — but the tagline is the first thing a reader sees on both
+  GitHub and crates.io, so the two should not disagree about what the crate
+  does.
+
 ## [0.2.1] - 2026-08-10
 
 ### Added
