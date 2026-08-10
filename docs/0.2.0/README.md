@@ -31,7 +31,7 @@ CI enforces this in the `runtime-purity` job: it rejects a feature-conditional `
 ## Outstanding gates
 
 - Remote CI is restored at `.github/workflows/ci.yml`, covering format, runtime purity, clippy and tests across `gen-lib` / `gen-cli` / `gen`, 0.1.x feature compatibility, the no-std and Xtensa target matrices, docs, and packaging. It runs on `main` and `release/**`.
-- No crates.io publish is implied. `Cargo.toml` is at `0.2.0` and `CHANGELOG.md` has a dated `[0.2.0]` section so the release PR is self-describing; publishing remains a separate step.
+- No crates.io publish is implied. `Cargo.toml` is at `0.2.0` and `CHANGELOG.md` has a dated `[0.2.0]` section with compare links, so the release PR is self-describing. `cargo publish --dry-run` passes. Publishing remains an owner-only step — see [RELEASING.md](../../RELEASING.md).
 
 ## Integration gaps found and closed
 

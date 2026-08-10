@@ -16,8 +16,19 @@ exclude = [
     ".gitattributes",
     ".gitignore",
     "clippy.toml",
-    "rust-toolchain.toml"
+    "rust-toolchain.toml",
+    # Development-only. `docs/` holds version-pinned release-train notes that
+    # reference PR numbers; `scripts/` is the local CI runner. Both stay in the
+    # repository and out of the published artifact.
+    "docs/",
+    "scripts/"
 ]
+
+# docs.rs builds with default features, which omit the host code generator.
+# Without this the `r#gen` build-script API — a headline 0.2.0 feature — would
+# be missing from the rendered documentation entirely.
+[package.metadata.docs.rs]
+features = ["gen-lib"]
 
 [features]
 # Links `std` into the crate for host-side code. Never enable this for
