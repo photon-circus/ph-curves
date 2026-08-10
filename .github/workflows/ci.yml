@@ -1,10 +1,27 @@
 name: CI
 
+# `push` is limited to the default branch on purpose. A branch that also has
+# an open PR fires both `push` and `pull_request`, and those carry different
+# `github.ref` values (`refs/heads/...` vs `refs/pull/N/merge`), so a
+# concurrency group cannot collapse them -- they are simply two runs of the
+# same commit. Building the matrix twice doubled the simultaneous
+# unauthenticated GitHub API calls from the Xtensa toolchain installer, which
+# tripped anonymous rate limiting (403) and reported a green commit as red.
+#
+# Every non-default branch is therefore covered by its pull request, which is
+# the merge gate anyway. A release branch with no PR open does not build; open
+# the PR to get coverage.
 on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    branches: [main, "release/**"]
+
+# Supersede in-flight runs when a branch or PR is pushed again. This does not
+# deduplicate push-vs-pull_request (see above); it stops rapid pushes stacking.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -22,6 +39,54 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all --check
 
+  # The crate's reason to exist: firmware gets deterministic, allocation-free
+  # lookup and scheduling. This job is what makes that a guarantee rather than
+  # an intention, so it must stay ahead of the feature-matrix jobs.
+  runtime-purity:
+    name: Runtime is no_std + no_alloc
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - thumbv7em-none-eabi
+          - thumbv6m-none-eabi
+          - riscv32imc-unknown-none-elf
+    steps:
+      - uses: actions/checkout@v4
+
+      # A feature-conditional `no_std` would let Cargo's feature unification
+      # turn a firmware build into a std build when some unrelated crate in the
+      # graph enables a host feature. The attribute must be unconditional.
+      - name: '#![no_std] must be unconditional'
+        run: |
+          if grep -nE '^#!\[cfg_attr\(.*no_std' src/lib.rs; then
+            echo "::error file=src/lib.rs::#![no_std] is feature-conditional. The runtime no-std guarantee must not depend on feature resolution."
+            exit 1
+          fi
+          if ! grep -qxF '#![no_std]' src/lib.rs; then
+            echo "::error file=src/lib.rs::src/lib.rs must declare an unconditional #![no_std]."
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+          targets: ${{ matrix.target }}
+          components: rust-src
+      - uses: Swatinem/rust-cache@v2
+
+      # Builds the sysroot from `core` alone. If anything on the default-feature
+      # path reached for `alloc` or `std` — directly or through a dependency —
+      # this fails to compile. That is the no-alloc proof; a plain
+      # `--target` build only proves no-std.
+      #
+      # `+nightly` is required, not stylistic: rust-toolchain.toml pins 1.92.0
+      # and a rustup file override outranks whatever the setup action selected,
+      # so a bare `cargo` here resolves to stable and rejects `-Z`.
+      - name: Build against core only
+        run: cargo +nightly build --target ${{ matrix.target }} -Z build-std=core
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
@@ -33,7 +98,10 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --all-targets
-      - run: cargo clippy --all-targets --features gen
+      - run: cargo clippy --all-targets --features gen-lib
+      # `gen-lib` does not build the CLI binary, so --all-targets misses
+      # src/bin/gen/main.rs without this step.
+      - run: cargo clippy --all-targets --features gen-cli
 
   test:
     name: Test
@@ -45,7 +113,24 @@ jobs:
           toolchain: "1.92.0"
       - uses: Swatinem/rust-cache@v2
       - run: cargo test
+      - run: cargo test --features gen-lib
+      - run: cargo test --features gen-cli
+      # `gen` is the 0.1.x compatibility alias and must keep building the CLI.
       - run: cargo test --features gen
+
+  feature-compat:
+    name: 0.1.x feature compatibility
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.92.0"
+      - uses: Swatinem/rust-cache@v2
+      # The 0.1.x invocation. If `gen` ever stops producing the binary, this
+      # breaks every existing user's build command.
+      - name: 'cargo run --features gen still produces the CLI'
+        run: cargo run --features gen --bin ph-curves-gen -- --help
 
   build-no-std:
     name: Build (no_std)
@@ -57,6 +142,7 @@ jobs:
           - thumbv6m-none-eabi
           - riscv32imac-unknown-none-elf
           - riscv32imc-unknown-none-elf    # ESP32-C3
+          - wasm32-unknown-unknown
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -77,10 +163,16 @@ jobs:
           - xtensa-esp32s3-none-elf
     steps:
       - uses: actions/checkout@v4
+      # espup queries the GitHub API for the latest Xtensa Rust release.
+      # Unauthenticated that shares the anonymous per-IP quota with every other
+      # runner and returns 403 under load; the token makes the call use this
+      # repository's much larger quota.
       - uses: esp-rs/xtensa-toolchain@v1.5
         with:
           default: true
           ldproxy: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - uses: Swatinem/rust-cache@v2
       - run: cargo +esp build --target ${{ matrix.target }} -Zbuild-std=core
 
@@ -96,3 +188,14 @@ jobs:
           toolchain: "1.92.0"
       - uses: Swatinem/rust-cache@v2
       - run: cargo doc --no-deps
+
+  package:
+    name: Package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.92.0"
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo package

@@ -1,6 +1,6 @@
 [package]
 name = "ph-curves"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.92.0"
 description = "no-std, no-alloc curve lookup tables and tickless scheduling for embedded Rust"
@@ -16,16 +16,37 @@ exclude = [
     ".gitattributes",
     ".gitignore",
     "clippy.toml",
-    "rust-toolchain.toml"
+    "rust-toolchain.toml",
+    # Development-only. `docs/` holds version-pinned release-train notes that
+    # reference PR numbers; `scripts/` is the local CI runner. Both stay in the
+    # repository and out of the published artifact.
+    "docs/",
+    "scripts/"
 ]
 
+# docs.rs builds with default features, which omit the host code generator.
+# Without this the `r#gen` build-script API — a headline 0.2.0 feature — would
+# be missing from the rendered documentation entirely.
+[package.metadata.docs.rs]
+features = ["gen-lib"]
+
 [features]
-gen = ["dep:serde", "dep:toml", "dep:clap"]
+# Links `std` into the crate for host-side code. Never enable this for
+# firmware: the runtime API is no-std and no-alloc, and stays that way whether
+# or not this is on — see the `#![no_std]` note in src/lib.rs.
+std = []
+# Host code-generation library for build.rs and tooling (serde + toml, no clap).
+gen-lib = ["std", "dep:serde", "dep:toml"]
+# The `ph-curves-gen` CLI binary.
+gen-cli = ["gen-lib", "dep:clap"]
+# 0.1.x compatibility. In 0.1.x, `gen` built the CLI; it still does.
+# Prefer `gen-lib` from a build script — it skips the clap dependency.
+gen = ["gen-cli"]
 
 [dependencies]
 fixed = { version = "1", default-features = false }
 
-# Only pulled in by the `gen` feature for the CLI binary.
+# Host-only deps for the `gen` / `gen-cli` features.
 serde = { version = "1", features = ["derive"], optional = true }
 toml = { version = "0.8", optional = true }
 clap = { version = "4", features = ["derive"], optional = true }
@@ -33,4 +54,4 @@ clap = { version = "4", features = ["derive"], optional = true }
 [[bin]]
 name = "ph-curves-gen"
 path = "src/bin/gen/main.rs"
-required-features = ["gen"]
+required-features = ["gen-cli"]

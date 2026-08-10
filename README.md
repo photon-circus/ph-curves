@@ -3,12 +3,12 @@
 [![Crates.io](https://img.shields.io/crates/v/ph-curves)](https://crates.io/crates/ph-curves)
 [![docs.rs](https://img.shields.io/docsrs/ph-curves)](https://docs.rs/ph-curves)
 [![CI](https://github.com/photon-circus/ph-curves/actions/workflows/ci.yml/badge.svg)](https://github.com/photon-circus/ph-curves/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/crates/l/mit)](LICENSE.md)
+[![License: MIT](https://img.shields.io/crates/l/ph-curves)](LICENSE.md)
 [![MSRV](https://img.shields.io/badge/MSRV-1.92.0-blue)](rust-toolchain.toml)
 [![no_std](https://img.shields.io/badge/no__std-yes-green)](src/lib.rs)
 
-`no_std`, zero-allocation curve lookup tables and tickless scheduling for
-embedded Rust.
+`no_std`, zero-allocation curve lookup tables, ADC-to-measurement transfer
+functions, and tickless scheduling for embedded Rust.
 
 ## Features
 
@@ -20,6 +20,25 @@ embedded Rust.
   quantized output value changes, so your firmware can sleep instead of polling.
 - **Code-gen CLI** — a companion binary (`ph-curves-gen`) reads a simple TOML
   file and emits the Rust source for all your curves.
+- **Physical transfer functions** — sparse adaptive knots convert integer ADC
+  observations to signed, scaled measurements with explicit range behavior.
+  Firmware uses only integer math; physical modeling and fitting are host-only.
+- **Temporal stabilization** — fixed-memory integer moving-average, median,
+  exponential smoothing, and stability detection for caller-supplied samples.
+
+## Scope and non-goals
+
+`ph-curves` is a pure math and scheduling-primitives crate, not a hardware
+driver crate. It may map caller-provided observations, normalized positions,
+and timestamps to values or future deadlines. It does not own or access ADCs,
+GPIO, buses, clocks, timers, interrupts, async runtimes, sensors, actuators, or
+device lifecycle. Hardware acquisition and application remain the caller's
+responsibility.
+
+New APIs must remain deterministic and side-effect-free: data in, data or
+deadlines out. Sensor models in the host generator describe transfer
+mathematics only; they must not grow into sensor configuration, sampling,
+calibration storage, fault management, or device-specific driver behavior.
 
 ## Quick start
 
@@ -47,13 +66,15 @@ Each curve uses exactly **one** of three definition styles:
 | `points`   | Piecewise-linear control points `[input, output]`         |
 
 Set `monotonic = false` to skip inverse-LUT generation (default is `true`).
-Curve names are normalized to uppercase Rust identifiers; names with no ASCII
-letters or digits and names that normalize to the same identifier are rejected.
+Curve and transfer names are normalized to uppercase Rust identifiers. Names
+with no ASCII letters or digits, names that normalize to the same identifier,
+and names that collide with generated companions (`_FWD`, `_INV`, `_INPUTS`,
+`_OUTPUTS`, `_METADATA`) are rejected.
 
 ### 2. Generate Rust source
 
 ```sh
-cargo install --path . --features gen
+cargo install --path . --features gen-cli
 
 ph-curves-gen --input assets/curves.toml --output src/curves.rs
 ```
@@ -95,6 +116,272 @@ for deadline in schedule.iter(0) {
     set_output(deadline.current_val);
 }
 ```
+
+## ADC-to-measurement transfer functions
+
+Transfer functions are separate from normalized easing curves and
+`UnitValue`. They accept a real `u16` input domain (raw ADC codes or explicitly
+scaled voltage-like integers) and return signed `i32` measurement quanta.
+
+The included `assets/transfers.toml` reference models a 10 kOhm, Beta 3950 NTC
+thermistor in a 10 kOhm ratiometric divider on a 12-bit ADC:
+
+```toml
+[transfers.ntc_10k_beta_3950]
+input_unit = "adc_code"
+output_unit = "degree_celsius"
+output_scale = 1000
+max_interpolation_error = 50
+max_knots = 256
+below = "error"
+above = "error"
+output_range = [-40.0, 125.0]
+
+[transfers.ntc_10k_beta_3950.model]
+kind = "ntc_beta_divider"
+nominal_resistance_ohms = 10000.0
+beta_kelvin = 3950.0
+nominal_temperature_celsius = 25.0
+fixed_resistance_ohms = 10000.0
+adc_max_code = 4095
+topology = "ntc_to_ground"
+```
+
+Generate and use it:
+
+```sh
+ph-curves-gen --input assets/transfers.toml --output ntc_transfer.rs
+```
+
+```rust
+use ph_curves::TransferFunction;
+
+include!("ntc_transfer.rs");
+
+let milli_celsius = NTC_10K_BETA_3950.convert(adc_code)?;
+```
+
+The reference generates 61 nonuniform knots over ADC codes `142..=3995`:
+366 bytes of array payload rather than a 4,096- or 65,536-entry LUT. The
+generator checks every integer ADC code and reports a measured worst-case
+numerical error. Adaptive fitting defaults to at most 256 knots (configurable
+up to an absolute 4,096-knot safety limit) and fails rather than silently
+emitting a full domain table.
+
+Knot selection is a bounded greedy heuristic: it repeatedly adds the input
+with the current worst error. Exhaustive verification guarantees that every
+emitted table meets the requested error, but reaching `max_knots` does not
+prove that no alternative knot placement could meet it. Increase `max_knots`
+or generate physical points with a domain-specific fitting tool when that
+distinction matters.
+
+`below` and `above` independently select `"error"` (the default) or `"clamp"`.
+Transfer functions never extrapolate.
+
+### What transfer functions enable
+
+The transfer API is a good fit when all of the following are true:
+
+- One `u16` integer observation determines one signed, scaled `i32` result.
+- The relationship is static and monotonic, either increasing or decreasing.
+- A formula, empirical calibration points, or a supported host model can
+  describe the ideal relationship.
+- Endpoint errors or clamps are sufficient outside the generated domain.
+- Numerical interpolation error can be bounded independently from real-world
+  sensor accuracy.
+
+Examples include ADC code or integer millivolts to temperature, pressure,
+resistance, illuminance, position, calibrated voltage, tank level, or a rough
+user-facing battery charge estimate. The same primitives work for any unit;
+the crate does not attach sensor-specific behavior to unit labels.
+
+The strongest supported pipeline is:
+
+`one integer observation -> one monotonic physical result -> optional temporal stabilization`
+
+### Honest limitations
+
+The transfer layer does **not** currently provide:
+
+- Signed or wider-than-`u16` input domains, or outputs wider than `i32`.
+- Nonmonotonic forward maps.
+- Dense physical-domain inverse LUTs (inverse uses runtime search on the forward knots).
+- Multidimensional compensation such as measurement by temperature or load.
+- Runtime/factory gain-and-offset calibration wrappers.
+- Automatic chaining or unit conversion between transfer functions.
+- Sensor fusion, state estimation, hysteretic application decisions, or
+  missing/invalid-sample policy.
+- A plugin interface for arbitrary host model code.
+
+Only the NTC Beta-divider has a built-in physical model. Other devices should
+normally use a formula or empirical points. Dedicated crates may provide
+domain-specific models and policies while emitting or consuming generic
+`ph-curves` transfers.
+
+### Writing a custom transfer
+
+Use `assets/custom-transfers.toml` as a complete guide. A custom transfer has
+six design steps:
+
+1. Choose the integer input representation firmware already has, such as raw
+   ADC code or millivolts. Include divider/reference calibration in the model
+   if it is static.
+2. Choose an output unit and integer scale. For example,
+   `output_unit = "kilopascal"` with `output_scale = 1000` emits milli-kPa.
+3. Define the valid input domain and explicit below/above behavior.
+4. Select either a formula over `x` or increasing-input physical points.
+5. Set the numerical error target and a bounded knot budget.
+6. Generate the table, inspect its reported domain/knot/error metadata, and
+   validate it against independent reference measurements.
+
+For an analytical sensor, use a formula:
+
+```toml
+[transfers.pressure_100kpa]
+input_unit = "adc_code"
+output_unit = "kilopascal"
+output_scale = 1000
+domain = [410, 3686]
+formula = "(x - 410) * 100.0 / 3276.0"
+max_interpolation_error = 1
+max_knots = 32
+```
+
+The formula is evaluated only by the host generator. `x` is the integer input;
+the existing formula operators/functions are available. The generated
+firmware table contains no floating point.
+
+For an empirical or piecewise model, use physical points:
+
+```toml
+[transfers.tank_level]
+input_unit = "millivolt"
+output_unit = "percent"
+output_scale = 100
+max_interpolation_error = 5
+max_knots = 32
+below = "clamp"
+above = "clamp"
+points = [
+  { input = 500, output = 0.0 },
+  { input = 1200, output = 28.0 },
+  { input = 2050, output = 82.0 },
+  { input = 2500, output = 100.0 },
+]
+```
+
+Point inputs must be strictly increasing and outputs must be monotonic.
+Endpoints define the valid domain; unlike normalized easing curves, physical
+points do not need to start at zero or end at full scale.
+
+If a model needs conditionals, multiple independent inputs, dynamic
+calibration, temperature/load compensation, or domain-specific state, compute
+calibration points in a dedicated host tool/crate and feed those points to the
+generic generator. Do not turn `ph-curves` into a device driver or an
+open-ended sensor-model catalog.
+
+### Accuracy scope
+
+The generated error bound covers integer output quantization and interpolation
+against the configured ideal formula, point set, or model. It is **not** total
+sensor accuracy. For an NTC system, separately account for Beta-model error,
+thermistor and resistor tolerance, ADC/reference error, self-heating, wiring,
+and calibration uncertainty.
+
+All floating-point formulas, models, fitting, and error analysis are compiled
+only behind the host `gen-lib` feature (library API) / `gen-cli` (binary). The
+default library and generated firmware code contain integer arrays, binary
+search, and `i64` interpolation only.
+
+### Host features and the runtime guarantee
+
+| Feature | Pulls in | Use |
+| ------- | -------- | --- |
+| *(none)* | — | Firmware. `no_std`, no allocator, integer-only. |
+| `gen-lib` | serde, toml | `build.rs` and host tools calling `ph_curves::r#gen`. |
+| `gen-cli` | `gen-lib` + clap | Building or installing the `ph-curves-gen` binary. |
+| `gen` | `gen-cli` | 0.1.x compatibility alias. Prefer `gen-lib` in a build script. |
+
+`#![no_std]` is unconditional and **no feature relaxes it**. The host features
+link `std` only inside `src/gen` (module-local `extern crate std` and explicit
+imports); the crate root does not `extern crate std`. A crate elsewhere in
+your dependency graph enabling `ph-curves/gen-lib` therefore cannot turn your
+firmware build into a `std` build via Cargo's feature unification. CI enforces
+this by building the default feature set against a `core`-only sysroot
+(`-Z build-std=core`), which fails if anything on the runtime path reaches for
+`alloc` or `std`.
+
+### `build.rs` integration
+
+```toml
+[build-dependencies]
+ph-curves = { version = "0.2", features = ["gen-lib"] }
+```
+
+```rust
+// build.rs
+use std::env;
+use std::path::PathBuf;
+use ph_curves::r#gen::{generate_to_path, GenerateOptions};
+
+fn main() {
+    let out = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("curves.rs");
+    generate_to_path("assets/curves.toml", &out, &GenerateOptions::default())
+        .expect("ph-curves gen");
+    println!("cargo:rerun-if-changed=assets/curves.toml");
+}
+```
+
+```rust
+// firmware lib.rs — no host features; still no_std + no_alloc
+include!(concat!(env!("OUT_DIR"), "/curves.rs"));
+```
+
+## Temporal stabilization
+
+A transfer function converts one observation. Meaningful measurements often
+need several observations to suppress noise, reject spikes, or determine that
+a signal has settled. `ph-curves` provides caller-driven, fixed-memory
+primitives without acquiring samples or owning a clock:
+
+```rust
+use ph_curves::{MedianFilter, Stability, StabilityDetector, TemporalFilter};
+
+let mut median = MedianFilter::<u16, 5>::new();
+let mut stable = StabilityDetector::<i32, 4>::new(100); // 0.1 C in milli-C
+
+if let Some(filtered_adc) = median.update(adc_code).ready() {
+    let milli_celsius = NTC_10K_BETA_3950.convert(filtered_adc)?;
+    if matches!(stable.update(milli_celsius), Stability::Stable { .. }) {
+        use_measurement(milli_celsius);
+    }
+}
+```
+
+Available primitives:
+
+- `MovingAverage<T, N>`: `O(1)` exact fixed-window mean with explicit warm-up.
+- `MedianFilter<T, N>`: robust isolated-spike rejection for small odd windows.
+- `ExponentialSmoother<T>`: constant-memory smoothing with an explicit integer
+  blend coefficient (`alpha` in `0..=65535`). Because the update is quantized
+  as `round(delta * alpha / 65535)`, small steps can produce a zero adjustment
+  when `|delta| * alpha < 32768`. Prefer a larger `alpha`, or a moving average /
+  median, when tracking fine ADC or milli-unit noise.
+- `StabilityDetector<T, N>`: reports warming, stable, or unstable from the
+  recent range; it never substitutes a stale last-good value.
+
+Filtering raw ADC codes and filtering converted measurements are intentionally
+separate composition choices. For a nonlinear transfer,
+`transfer(mean(raw))` generally differs from `mean(transfer(raw))`. Raw-domain
+filtering suppresses acquisition noise before conversion; physical-domain
+filtering expresses windows and thresholds in measurement units. A median is
+order-based and therefore composes predictably with monotonic transfers,
+apart from integer rounding.
+
+Window sizes count caller-supplied valid samples. Sampling cadence, invalid
+sample policy, transfer errors, and whether instability resets application
+state remain caller responsibilities. The crate does not read timestamps or
+silently assume a sample rate.
 
 ## Built-in curves
 
@@ -146,6 +433,13 @@ formula = "pow((t + 0.16) / 1.16, 3.0)"
 | `MonotonicCurveLut256` | Type alias: `MonotonicCurveLut<u8, u8, 256>`        |
 | `CurveLut65536`        | Type alias: `CurveLut<u16, u16, 65536>`             |
 | `MonotonicCurveLut65536` | Type alias: `MonotonicCurveLut<u16, u16, 65536>`  |
+| `PiecewiseLinearTransfer<N>` | Sparse integer ADC↔measurement transfer (forward + inverse) |
+| `TransferMetadata`       | Units, scale, domain/range, flats, and error bounds |
+| `FlatResolution`         | Policy for non-unique (flat) inverse outputs      |
+| `MovingAverage<T,N>`     | Exact fixed-window integer mean                  |
+| `MedianFilter<T,N>`      | Small fixed-window outlier rejection             |
+| `ExponentialSmoother<T>` | Constant-memory integer smoothing                |
+| `StabilityDetector<T,N>` | Independent recent-range stability classification |
 
 ### Traits
 
@@ -154,6 +448,13 @@ formula = "pow((t + 0.16) / 1.16, 3.0)"
 - **`Tickless<T>`** — adds `tickless_schedule(...)` to any `MonotonicCurve`.
 - **`UnitValue`** — implemented for `u8` and `u16`; maps the unit interval
   onto a discrete integer range with fixed-point helpers.
+- **`TransferFunction`** — checked physical conversion with explicit
+  below/above-domain behavior and no extrapolation.
+- **`InverseTransferFunction`** — physical → observation invert on the same
+  sparse knots (`invert` / `invert_physical`), with `FlatResolution` for
+  plateaus.
+- **`TemporalFilter`** — caller-driven update/reset interface with explicit
+  warm-up output.
 
 ### Tickless scheduling
 
@@ -178,6 +479,18 @@ Rust **1.92.0** (edition 2024).
 
 Contributions are welcome! Please read the [contributing guide](CONTRIBUTING.md)
 before opening a pull request.
+
+### Local CI on this feature branch
+
+GitHub Actions are intentionally disabled while ADC transfer work is in review
+(`.github/ci.yml.disabled`). Validate with:
+
+```powershell
+./scripts/local-ci.ps1
+```
+
+Restore `.github/workflows/ci.yml` before merging to `main`. Remote CI restore
+and merge remain explicit owner decisions.
 
 This project follows the
 [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.md). By participating you

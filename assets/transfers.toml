@@ -1,0 +1,21 @@
+# Host-generated physical transfer functions. Floating point is used only by
+# ph-curves-gen; generated firmware code contains integer tables and math.
+
+[transfers.ntc_10k_beta_3950]
+input_unit = "adc_code"
+output_unit = "degree_celsius"
+output_scale = 1000
+max_interpolation_error = 50
+max_knots = 256
+below = "error"
+above = "error"
+output_range = [-40.0, 125.0]
+
+[transfers.ntc_10k_beta_3950.model]
+kind = "ntc_beta_divider"
+nominal_resistance_ohms = 10000.0
+beta_kelvin = 3950.0
+nominal_temperature_celsius = 25.0
+fixed_resistance_ohms = 10000.0
+adc_max_code = 4095
+topology = "ntc_to_ground"

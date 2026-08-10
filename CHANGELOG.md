@@ -7,6 +7,124 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-09
+
+### Added
+
+- `InverseTransferFunction` and `PiecewiseLinearTransfer::invert`, mapping a
+  physical setpoint back to an observation on the same sparse knots with no
+  dense physical-domain LUT. `FlatResolution` selects how a value landing on a
+  flat (non-unique) output run resolves; `InverseTransferError` reports
+  out-of-range and ambiguous-flat cases against the physical range.
+- `invert_segment`, the public mirror of `interpolate_segment`, so host tools
+  and the runtime share one rounding implementation.
+- `AffineCalibration` implements `InverseTransferFunction` when its inner
+  transfer does, so a calibrated setpoint — "which ADC code reads 25 °C after
+  this unit's factory trim?" — is a single `invert` call. Range errors are
+  re-expressed in calibrated units, and a calibration whose `gain` and `scale`
+  have opposite signs flips `BelowRange` and `AboveRange` accordingly.
+- `PiecewiseLinearTransfer::range_behaviors` reports how the domain boundary
+  policies map onto the physical range.
+- Transfer metadata now records `range_min` / `range_max`,
+  `strictly_monotonic`, `flat_segment_count`, and an exhaustively measured
+  `achieved_max_inverse_code_error` round-trip bound.
+- `AffineCalibration` wrapper that applies caller-supplied `i32`
+  gain/offset/scale after any `TransferFunction<Output = i32>` using checked
+  `i64` math (nearest, ties-away). Overflow surfaces as
+  `TransferError::Overflow`; `scale == 0` returns
+  `AffineCalibrationError::ZeroScale` at construction.
+- `Hysteresis` and `Debounce` decision primitives beside the temporal filters.
+  Both are sample-count only: they read no clock and touch no GPIO.
+- `ph_curves::r#gen`, a `build.rs` / host-tool library API behind the `gen`
+  feature, exposing `generate_from_toml`, `generate_from_str`,
+  `generate_to_path`, `generate`, `GenerateOptions`, and `ValueType`.
+  Generator validation now returns `Error` values instead of panicking.
+- Sparse, integer-only `PiecewiseLinearTransfer` support for physical
+  ADC-to-measurement conversion with signed outputs, explicit below/above
+  policies, and no extrapolation.
+- Host-side adaptive transfer generation from physical points, formulas, and
+  an NTC Beta-divider model, with exhaustive discrete-domain error reporting
+  and bounded knot counts.
+- Fixed-memory integer moving-average, median, and exponential filters plus a
+  separate range-based stability detector for caller-supplied sample series.
+
+### Fixed
+
+- The 0.1.2 curve-name identifier rejection now also covers transfer names and
+  the generated companions (`_FWD`, `_INV`, `_INPUTS`, `_OUTPUTS`,
+  `_METADATA`), so a curve and a transfer cannot claim the same symbol.
+- The 0.1.2 Debug-escaping of generated `///` docs now also covers transfer
+  names, provenance, and unit strings, so TOML text cannot break out of line
+  comments.
+- Formula parsing no longer evaluates at an arbitrary out-of-domain value
+  before the generator evaluates the declared input domain.
+- Signed transfer interpolation rounds the complete result at half-way ties,
+  matching the documented ties-away-from-zero behavior.
+- The generator emitted `achieved_max_inverse_code_error: 0` unconditionally
+  rather than measuring it, so any table whose codes do not survive a
+  convert-then-invert cycle shipped a false round-trip bound. It is now swept
+  exhaustively over the input domain.
+- `TransferMetadata` no longer carries a `flat_resolution` copy. Codegen always
+  baked in `PreferLowInput`, so metadata contradicted the live policy for any
+  caller using `with_flat_resolution`. Read `flat_resolution()` instead.
+- Inverse conversion selected its boundary policy by physical side alone, so on
+  a decreasing table — the NTC reference case — a table configured
+  `below = Error, above = Clamp` clamped in the forward direction and errored
+  in the inverse for the same out-of-range condition. `below` and `above` are
+  declared against the observation domain and are now mapped onto the physical
+  range through the table's direction, so both directions agree.
+- A compressing calibration (`|scale| > |gain|`) could make
+  `AffineCalibration::invert` report a spurious `BelowRange` / `AboveRange` for
+  a value the same calibration had just produced: undoing the affine expands
+  the value and could overshoot an inner endpoint by one quantum. Values that
+  are still inside the calibrated forward image now clamp to that endpoint.
+  **Anything `convert` produces is invertible** — verified across 316,500
+  round trips spanning increasing, decreasing, and flat-run tables. Values
+  genuinely outside the image still range-error.
+- The host `std` link moved from the crate root to a module-local
+  `extern crate std` in `src/gen`. At the crate root, `#[macro_use]` put
+  `format!` and friends in scope crate-wide whenever a host feature was on, so
+  an accidental allocation on the runtime path would have compiled. It is now
+  a compile error, which is what the no-alloc guarantee always claimed.
+
+### Changed
+
+- `AffineCalibration::new` rejects `gain == 0` with
+  `AffineCalibrationError::ZeroGain`. A zero gain collapses every observation
+  onto `offset / scale`, discarding the sensor and leaving the calibration
+  non-invertible. Not a baseline change — `AffineCalibration` ships new in
+  0.2.0.
+- The crate's three near-duplicate nearest/ties-away division helpers are now
+  one shared implementation, so a quantized value cannot drift depending on
+  which module produced it.
+- Host code generation is split into two features. `gen-lib` is the `build.rs`
+  library API (serde + toml, no clap); `gen-cli` adds the `ph-curves-gen`
+  binary. **`gen` is unchanged from 0.1.x** — it is now an alias for `gen-cli`
+  and still builds the binary, so existing `--features gen` invocations keep
+  working. *No migration is required.* Build scripts should prefer `gen-lib`,
+  which skips the clap dependency.
+- Exhausting the greedy transfer fitter's knot budget now reports the
+  heuristic limitation without claiming that no alternative knot placement
+  could satisfy the requested error.
+
+### Notes
+
+- **No breaking changes against 0.1.2.** Every addition above is additive, and
+  the two changes that would have broken the baseline — retiring `gen` as the
+  CLI feature, and relaxing `#![no_std]` for host builds — were both reworked
+  so the 0.1.x contract holds. A 0.1.2 dependency declaration and a 0.1.2
+  `cargo run --features gen` invocation both keep working unchanged.
+- **The runtime is `no_std` and `no_alloc`, unconditionally.** `#![no_std]` is
+  not feature-gated, so Cargo's feature unification cannot turn a firmware
+  build into a `std` build when an unrelated crate enables a host feature. CI
+  proves it by building the default feature set against a `core`-only sysroot
+  (`-Z build-std=core`) on thumbv7em, thumbv6m, and riscv32imc: reaching for
+  `alloc` or `std` on the runtime path fails the build.
+- Remote GitHub Actions are restored at `.github/workflows/ci.yml`, covering
+  format, the runtime-purity gate, clippy and tests across `gen-lib` /
+  `gen-cli` / `gen`, a 0.1.x feature-compatibility check, the no-std and Xtensa
+  target matrices, docs, and packaging.
+
 ## [0.1.2] - 2026-08-09
 
 ### Fixed
@@ -84,7 +202,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 14 built-in easing curves plus legacy aliases.
 - 16-bit LUT support (`--value-type u16 --lut-size 65536`).
 
-[Unreleased]: https://github.com/photon-circus/ph-curves/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/photon-circus/ph-curves/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/photon-circus/ph-curves/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/photon-circus/ph-curves/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/photon-circus/ph-curves/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/photon-circus/ph-curves/releases/tag/v0.1.0
