@@ -3,9 +3,11 @@
 //! Each builtin is a pure `f64 → f64` function that maps normalised time
 //! `t` (0.0..=1.0) to a normalised output value (0.0..=1.0).
 
-// Host-only module: `std` is linked explicitly, not via the crate prelude.
-// See the `no_std` note in src/lib.rs.
+// Host-only: module-local std link (crate root stays `#![no_std]`).
+extern crate std;
+
 use std::prelude::v1::*;
+use std::format;
 
 /// Evaluate a builtin curve at normalised position `t` (0.0..=1.0).
 ///

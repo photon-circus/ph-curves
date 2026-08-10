@@ -1,10 +1,9 @@
-//! Shared integer rounding used by curves, transfers, and stabilization.
+//! Shared integer rounding used by transfer and stabilization paths.
 //!
-//! Every quantized result in this crate rounds the same way — nearest, ties
-//! away from zero — so a value cannot drift depending on which module
-//! produced it. Forward interpolation, inverse interpolation, affine
-//! calibration, and the temporal filters all route through
-//! [`div_nearest_ties_away`].
+//! Transfer interpolation (forward and inverse), affine calibration, and the
+//! temporal filters all round the same way — nearest, ties away from zero —
+//! via [`div_nearest_ties_away`]. Curve LUT lookup does not use this helper;
+//! it has its own quantization path.
 
 /// Divide with nearest rounding, ties away from zero.
 ///

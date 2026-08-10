@@ -10,8 +10,9 @@
 //! ph-curves-gen --input curves.toml --value-type u16 --lut-size 65536
 //! ```
 //!
-//! Generation logic lives in the library behind `features = ["gen"]`. This
-//! binary only parses CLI flags and writes the result. See `ph_curves::r#gen`
+//! Generation logic lives in the library behind `features = ["gen-cli"]`
+//! (or the `gen` compatibility alias). This binary only parses CLI flags and
+//! writes the result. Prefer `gen-lib` from `build.rs`. See `ph_curves::r#gen`
 //! module docs for TOML schema details and `build.rs` usage.
 
 use std::fs;

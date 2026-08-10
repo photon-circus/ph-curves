@@ -310,12 +310,20 @@ impl<const N: usize> PiecewiseLinearTransfer<N> {
         self.direction
     }
 
-    /// Return the below-domain / below-range behavior.
+    /// Return the below-observation-domain behavior.
+    ///
+    /// Declared against the observation domain, not the physical range. For
+    /// the physical-side policies used by inverse conversion, see
+    /// [`range_behaviors`](Self::range_behaviors).
     pub const fn below_behavior(&self) -> BoundaryBehavior {
         self.below
     }
 
-    /// Return the above-domain / above-range behavior.
+    /// Return the above-observation-domain behavior.
+    ///
+    /// Declared against the observation domain, not the physical range. For
+    /// the physical-side policies used by inverse conversion, see
+    /// [`range_behaviors`](Self::range_behaviors).
     pub const fn above_behavior(&self) -> BoundaryBehavior {
         self.above
     }
@@ -634,6 +642,11 @@ fn invert_valid_segment(physical: i32, x0: u16, y0: i32, x1: u16, y1: i32) -> u1
 /// Both directions round, so a convert-then-invert round trip through a
 /// calibration is bounded, not exact. A calibration that compresses the
 /// physical scale cannot restore what the forward quantization discarded.
+/// When that compression would make `unapply` overshoot an inner endpoint
+/// for a calibrated value that is still in the forward image,
+/// [`invert`](InverseTransferFunction::invert) clamps to the endpoint rather
+/// than returning a spurious range error — so `invert(convert(x))` stays
+/// in-domain for every in-domain observation `x`.
 #[derive(Copy, Clone, Debug)]
 pub struct AffineCalibration<T> {
     inner: T,
@@ -728,11 +741,21 @@ where
     /// the caller passed in. A calibration with `gain` and `scale` of opposite
     /// signs reverses orientation, which turns an inner `BelowRange` into an
     /// `AboveRange` and vice versa.
+    ///
+    /// When `|scale| > |gain|`, undoing the affine can land just outside the
+    /// inner physical range even though `physical` is in the forward image of
+    /// that range (the classic `invert(convert(endpoint))` compression case).
+    /// Those values are clamped to the inner endpoint before the second
+    /// invert attempt so in-domain calibrated setpoints never spuriously
+    /// range-error. Values outside the calibrated forward image still report
+    /// [`InverseTransferError::BelowRange`] /
+    /// [`InverseTransferError::AboveRange`].
     fn invert(&self, physical: i32) -> Result<T::Observation, InverseTransferError<i32>> {
         let uncalibrated = unapply_affine_i64(physical, self.gain, self.offset, self.scale)?;
-        self.inner
-            .invert(uncalibrated)
-            .map_err(|error| self.recalibrate_error(physical, error))
+        match self.inner.invert(uncalibrated) {
+            Ok(observation) => Ok(observation),
+            Err(error) => self.recover_compressed_endpoint(physical, error),
+        }
     }
 }
 
@@ -781,6 +804,39 @@ impl<T> AffineCalibration<T> {
                 maximum: calibrated,
             }
         }
+    }
+
+    /// If compression/rounding pushed `unapply` past an inner endpoint while
+    /// `physical` is still inside the forward image, clamp to that endpoint
+    /// and retry; otherwise surface the recalibrated range error.
+    fn recover_compressed_endpoint(
+        &self,
+        physical: i32,
+        error: InverseTransferError<i32>,
+    ) -> Result<T::Observation, InverseTransferError<i32>>
+    where
+        T: InverseTransferFunction<Physical = i32>,
+    {
+        let bound = match error {
+            InverseTransferError::BelowRange { minimum, .. } => minimum,
+            InverseTransferError::AboveRange { maximum, .. } => maximum,
+            other => return Err(self.recalibrate_error(physical, other)),
+        };
+
+        let calibrated_error = self.recalibrate_error(physical, error);
+        let inside_forward_image = match calibrated_error {
+            InverseTransferError::BelowRange { minimum, .. } => physical >= minimum,
+            InverseTransferError::AboveRange { maximum, .. } => physical <= maximum,
+            _ => false,
+        };
+
+        if !inside_forward_image {
+            return Err(calibrated_error);
+        }
+
+        self.inner
+            .invert(bound)
+            .map_err(|retry_error| self.recalibrate_error(physical, retry_error))
     }
 }
 
@@ -1290,6 +1346,75 @@ mod tests {
                 "code {code}: convert -> {calibrated} -> invert -> {recovered}"
             );
         }
+    }
+
+    #[test]
+    fn calibrated_inverse_survives_compressing_calibration_at_endpoints() {
+        let base = PiecewiseLinearTransfer::new(&INPUTS, &OUTPUTS, MonotonicDirection::Increasing);
+        // |scale| > |gain|: unapply expands and can overshoot an inner endpoint
+        // even when the calibrated value is exactly convert(endpoint).
+        let cal = AffineCalibration::new(base, 2, 0, 3).unwrap();
+
+        let low = cal.convert(100).unwrap();
+        assert_eq!(low, -667);
+        assert_eq!(cal.invert(low), Ok(100));
+
+        let high = cal.convert(400).unwrap();
+        assert_eq!(high, 1_333);
+        assert_eq!(cal.invert(high), Ok(400));
+
+        for code in INPUTS[0]..=INPUTS[INPUTS.len() - 1] {
+            let calibrated = cal.convert(code).unwrap();
+            let recovered = cal.invert(calibrated).unwrap();
+            assert!(
+                recovered.abs_diff(code) <= 1,
+                "code {code}: convert -> {calibrated} -> invert -> {recovered}"
+            );
+        }
+
+        // Truly outside the calibrated forward image still range-errors.
+        assert_eq!(
+            cal.invert(-668),
+            Err(InverseTransferError::BelowRange {
+                physical: -668,
+                minimum: -667
+            })
+        );
+        assert_eq!(
+            cal.invert(1_334),
+            Err(InverseTransferError::AboveRange {
+                physical: 1_334,
+                maximum: 1_333
+            })
+        );
+    }
+
+    #[test]
+    fn compressing_calibration_still_flips_orientation_on_range_errors() {
+        let base = PiecewiseLinearTransfer::new(&INPUTS, &OUTPUTS, MonotonicDirection::Increasing);
+        let flipped = AffineCalibration::new(base, -2, 0, 3).unwrap();
+        assert!(!flipped.preserves_orientation());
+
+        let low_obs = flipped.convert(100).unwrap();
+        let high_obs = flipped.convert(400).unwrap();
+        assert_eq!(flipped.invert(low_obs), Ok(100));
+        assert_eq!(flipped.invert(high_obs), Ok(400));
+
+        // Past the calibrated image of the former low endpoint → AboveRange.
+        assert_eq!(
+            flipped.invert(low_obs + 1),
+            Err(InverseTransferError::AboveRange {
+                physical: low_obs + 1,
+                maximum: low_obs
+            })
+        );
+        assert_eq!(
+            flipped.invert(high_obs - 1),
+            Err(InverseTransferError::BelowRange {
+                physical: high_obs - 1,
+                minimum: high_obs
+            })
+        );
     }
 
     #[test]

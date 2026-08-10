@@ -16,11 +16,11 @@ Merge order was #7 → #6 → #4 → #5, then #9 (integration gaps) and #10 (res
 
 ## Validation
 
-`scripts/local-ci.ps1` passes end-to-end on this branch: `fmt --check`; tests under default, `gen`, and `gen-cli`; clippy `--all-targets` at `-D warnings` for all three; rustdoc at `-D warnings`; no-std builds for thumbv7em, thumbv6m, riscv32imac, riscv32imc, and wasm32; ESP32 / S2 / S3 via `+esp` with `-Zbuild-std=core`; and `cargo package`.
+`scripts/local-ci.ps1` passes end-to-end on this branch: `fmt --check`; tests under default, `gen-lib`, `gen-cli`, and `gen`; the 0.1.x feature-compat CLI smoke (`cargo run --features gen --bin ph-curves-gen -- --help`); clippy `--all-targets` at `-D warnings` for default / `gen-lib` / `gen-cli`; rustdoc at `-D warnings`; no-std builds for thumbv7em, thumbv6m, riscv32imac, riscv32imc, and wasm32; ESP32 / S2 / S3 via `+esp` with `-Zbuild-std=core`; and `cargo package`.
 
 ## Runtime guarantee
 
-The crate exists so firmware gets deterministic, allocation-free lookup and scheduling. `#![no_std]` is **unconditional** — no feature relaxes it. Host code generation links `std` through an explicit `extern crate std` scoped to `src/gen`, whose modules import the prelude by hand, so a stray `String` on the runtime path is a compile error rather than a silent allocator dependency.
+The crate exists so firmware gets deterministic, allocation-free lookup and scheduling. `#![no_std]` is **unconditional** — no feature relaxes it. Host code generation links `std` only inside `src/gen` (module-local `extern crate std` plus explicit prelude imports); the crate root does not link `std`, so a stray `String` on the runtime path is a compile error rather than a silent allocator dependency.
 
 CI enforces this in the `runtime-purity` job: it rejects a feature-conditional `#![no_std]`, then builds the default feature set against a `core`-only sysroot (`-Z build-std=core`) on thumbv7em, thumbv6m, and riscv32imc. A plain `--target` build only proves no-std — bare-metal `rust-std` ships `alloc` — so the core-only build is what proves no-alloc.
 

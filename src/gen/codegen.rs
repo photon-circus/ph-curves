@@ -1,8 +1,10 @@
 //! Rust source-code generation from built curve data.
 
-// Host-only module: `std` is linked explicitly, not via the crate prelude.
-// See the `no_std` note in src/lib.rs.
+// Host-only: module-local std link (crate root stays `#![no_std]`).
+extern crate std;
+
 use std::prelude::v1::*;
+use std::{format, vec};
 
 use std::collections::BTreeMap;
 
@@ -202,15 +204,6 @@ fn emit_transfer(
         worst = data.worst_case_input,
         inverse_error = achieved_max_inverse_code_error,
     ));
-
-    eprintln!(
-        "transfer {name:?}: domain {} codes, {knot_count} knots, {} bytes, error <= {} (achieved {:.6}, worst input {})",
-        usize::from(domain_max - domain_min) + 1,
-        knot_count * 6,
-        def.max_interpolation_error,
-        data.achieved_max_error_exact,
-        data.worst_case_input
-    );
 }
 
 fn emitted_const_names(

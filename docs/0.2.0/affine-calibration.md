@@ -100,6 +100,8 @@ let code = trimmed.invert(25_000)?;   // calibrated setpoint -> ADC code
 
 ### Round-trip bound
 
-Both directions round, so `invert(convert(x))` through a calibration is bounded, not exact. A calibration that compresses the physical scale cannot restore what the forward quantization discarded. A calibrated value within half an *uncalibrated* quantum of a range endpoint rounds back into range rather than erroring.
+Both directions round, so `invert(convert(x))` through a calibration is bounded, not exact. A calibration that compresses the physical scale cannot restore what the forward quantization discarded.
+
+When `|scale| > |gain|`, undoing the affine can land just outside the inner physical range even though the calibrated value is in the forward image of that range (for example `gain = 2`, `scale = 3` at a table endpoint). `invert` detects that case — the caller's value still compares inside the recalibrated bound — clamps to the inner endpoint, and retries, so `invert(convert(x))` never spuriously range-errors for in-domain `x`. Values outside the calibrated forward image still return `BelowRange` / `AboveRange` (with orientation flip when `gain` and `scale` disagree in sign).
 
 `TransferMetadata::achieved_max_inverse_code_error` describes the uncalibrated table only; wrapping in `AffineCalibration` can widen it.

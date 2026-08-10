@@ -1,8 +1,10 @@
 //! Physical transfer-function schema and generation.
 
-// Host-only module: `std` is linked explicitly, not via the crate prelude.
-// See the `no_std` note in src/lib.rs.
+// Host-only: module-local std link (crate root stays `#![no_std]`).
+extern crate std;
+
 use std::prelude::v1::*;
+use std::format;
 
 mod adaptive;
 mod model;
@@ -310,6 +312,7 @@ fn invert_physical(
 mod tests {
     use super::*;
     use model::{DividerTopology, ModelDef};
+    use std::vec;
 
     #[test]
     fn inverse_code_error_is_zero_for_a_faithful_table() {

@@ -1,8 +1,10 @@
 //! Piecewise-linear interpolation from control points.
 
-// Host-only module: `std` is linked explicitly, not via the crate prelude.
-// See the `no_std` note in src/lib.rs.
+// Host-only: module-local std link (crate root stays `#![no_std]`).
+extern crate std;
+
 use std::prelude::v1::*;
+use std::{format, vec};
 
 /// Build a forward LUT by linearly interpolating between control points.
 ///

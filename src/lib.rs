@@ -113,9 +113,10 @@
 //! # The runtime is always no-std and no-alloc
 //!
 //! The crate-level `no_std` attribute is unconditional. It is **not** relaxed
-//! by any feature. The `gen-lib` / `gen-cli` features link `std` for the host
-//! generator through an explicit `extern crate std`, scoped to the `r#gen`
-//! module; they never put `std` or an allocator on the runtime path.
+//! by any feature. The `gen-lib` / `gen-cli` features link `std` only inside
+//! `src/gen` via a module-local `extern crate std` and explicit imports; they
+//! never put `std` or an allocator on the runtime path, and the crate root
+//! does not `extern crate std`.
 //!
 //! This matters because Cargo unifies features across a dependency graph. If
 //! the attribute were conditional, one unrelated crate enabling
@@ -174,13 +175,6 @@
     clippy::items_after_statements,
     clippy::let_underscore_future
 )]
-
-// Host-only. The runtime never sees this: `std` is not in the prelude for any
-// module outside `r#gen`, so a stray `String` or `format!` on the runtime path
-// fails to compile rather than silently linking an allocator.
-#[cfg(feature = "std")]
-#[macro_use]
-extern crate std;
 
 mod curve;
 mod math;

@@ -303,12 +303,13 @@ search, and `i64` interpolation only.
 | `gen` | `gen-cli` | 0.1.x compatibility alias. Prefer `gen-lib` in a build script. |
 
 `#![no_std]` is unconditional and **no feature relaxes it**. The host features
-link `std` through an explicit `extern crate std` scoped to the `r#gen` module,
-so a crate elsewhere in your dependency graph enabling `ph-curves/gen-lib`
-cannot turn your firmware build into a `std` build via Cargo's feature
-unification. CI enforces this by building the default feature set against a
-`core`-only sysroot (`-Z build-std=core`), which fails if anything on the
-runtime path reaches for `alloc` or `std`.
+link `std` only inside `src/gen` (module-local `extern crate std` and explicit
+imports); the crate root does not `extern crate std`. A crate elsewhere in
+your dependency graph enabling `ph-curves/gen-lib` therefore cannot turn your
+firmware build into a `std` build via Cargo's feature unification. CI enforces
+this by building the default feature set against a `core`-only sysroot
+(`-Z build-std=core`), which fails if anything on the runtime path reaches for
+`alloc` or `std`.
 
 ### `build.rs` integration
 

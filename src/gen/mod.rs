@@ -5,10 +5,11 @@
 //! generated source without enabling this module.
 //!
 //! This module is the crate's only `std` consumer. The crate root is
-//! unconditionally `#![no_std]`; `std` is linked by an explicit
-//! `extern crate std` behind the `std` feature, and every module here imports
-//! the prelude by hand. Enabling this feature therefore cannot add `std` or an
-//! allocator to the runtime API.
+//! unconditionally `#![no_std]` and does not `extern crate std`. Each file
+//! under `src/gen` links `std` with a module-local `extern crate std`, imports
+//! the prelude by hand, and pulls in `format!` / `vec!` explicitly (those
+//! macros are not available without a crate-root `#[macro_use]`). Enabling
+//! `gen-lib` therefore cannot add `std` or an allocator to the runtime API.
 //!
 //! # `build.rs` example
 //!
@@ -27,6 +28,9 @@
 
 #![allow(clippy::std_instead_of_core)]
 #![allow(clippy::std_instead_of_alloc)]
+
+// Host-only: crate root stays `#![no_std]` with no crate-wide `std` link.
+extern crate std;
 
 mod api;
 pub(crate) mod builtin;

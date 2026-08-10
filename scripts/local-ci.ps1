@@ -19,6 +19,14 @@ if (Select-String -Path src/lib.rs -Pattern '^#!\[cfg_attr\(.*no_std' -Quiet) {
 if (-not (Select-String -Path src/lib.rs -Pattern '^#!\[no_std\]$' -Quiet)) {
     throw "src/lib.rs: missing an unconditional #![no_std]."
 }
+# `std` must be linked only inside src/gen, not at the crate root (and never
+# via `#[macro_use]`, which would put the prelude on the runtime path).
+if (Select-String -Path src/lib.rs -Pattern '^\s*extern crate std' -Quiet) {
+    throw "src/lib.rs: must not link std at the crate root; keep it module-local under src/gen."
+}
+if (-not (Select-String -Path src/gen/mod.rs -Pattern '^\s*extern crate std;' -Quiet)) {
+    throw "src/gen/mod.rs: missing module-local `extern crate std`."
+}
 
 Invoke-Cargo test
 Invoke-Cargo test --features gen-lib
@@ -28,6 +36,8 @@ Invoke-Cargo test --features gen-lib
 Invoke-Cargo test --features gen-cli
 # `gen` is the 0.1.x compatibility alias and must keep building the CLI.
 Invoke-Cargo test --features gen
+# Mirror CI `feature-compat`: the 0.1.x `gen` alias still runs the binary.
+Invoke-Cargo run --features gen --bin ph-curves-gen -- --help
 
 $previousRustFlags = $env:RUSTFLAGS
 try {

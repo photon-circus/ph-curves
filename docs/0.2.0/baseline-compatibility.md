@@ -67,12 +67,12 @@ dependency graph: any crate anywhere enabling `ph-curves/gen` would flip the
 firmware build to `std`, at a distance, with no diagnostic. A no-std promise
 that a third-party dependency can revoke is not a promise.
 
-**How it was avoided.** `#![no_std]` is unconditional. `std` is linked by an
-explicit `extern crate std` behind the `std` feature, and each module under
-`src/gen` imports `std::prelude::v1::*` by hand. Because the prelude is not
-crate-wide, a stray `String` or `format!` on the runtime path is a compile
-error rather than a silent allocator dependency — the boundary is enforced by
-the type system, not by review.
+**How it was avoided.** `#![no_std]` is unconditional. The crate root does not
+`extern crate std`. Each module under `src/gen` links `std` with a
+module-local `extern crate std` and imports `std::prelude::v1::*` by hand.
+Because the prelude is not crate-wide, a stray `String` or `format!` on the
+runtime path is a compile error rather than a silent allocator dependency —
+the boundary is enforced by the type system, not by review.
 
 **Enforced by.** The `runtime-purity` CI job:
 
