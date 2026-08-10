@@ -1,0 +1,51 @@
+# cargo-deny configuration.
+#
+# Run locally with `cargo deny check`; CI runs the same thing on every PR.
+#
+# The runtime dependency surface is deliberately tiny — `fixed` and its
+# arithmetic support crates. Everything else arrives only through the host
+# `gen-lib` / `gen-cli` features and never reaches firmware. Both are checked
+# here, because a host-only dependency can still carry a licence obligation or
+# a published advisory.
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+# No ignores. If an advisory lands, fix or update rather than silencing it —
+# and if a temporary ignore is unavoidable, record the reason and the removal
+# condition inline.
+ignore = []
+
+[licenses]
+version = 2
+# Permissive licences compatible with this crate's MIT terms. `Unicode-3.0`
+# arrives via `unicode-ident`, a transitive build dependency of the proc-macro
+# crates. Adding to this list is a deliberate decision, not a formality.
+# Exactly the licences present today, nothing speculative: an unmatched entry
+# warns, and a new one should be a visible decision in a diff.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Unicode-3.0",
+    "BSD-2-Clause",
+    "Zlib",
+]
+confidence-threshold = 0.93
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Nothing is banned outright yet. The runtime path is the thing to protect: if
+# an allocator or std-dependent crate ever appears as a normal (non-host)
+# dependency, add it here. The `runtime-purity` CI job is the stronger guard —
+# it builds against a `core`-only sysroot, so such a dependency fails to
+# compile rather than merely warning.
+deny = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

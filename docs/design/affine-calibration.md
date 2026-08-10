@@ -1,7 +1,6 @@
 # AffineCalibration
 
-**Branch:** `feature/0.2.0-affine-calibration`  
-**Status:** Shipped in 0.2.0 — `AffineCalibration` gain/offset wrapper, plus the calibrated inverse added during integration. Retained as the design record; the code and its rustdoc are authoritative.
+**Status:** Shipped in 0.2.0 — `AffineCalibration` gain/offset wrapper, plus the calibrated inverse added during integration. Design rationale only; the code and its rustdoc are authoritative.
 
 ## Motivation
 

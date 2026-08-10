@@ -92,4 +92,11 @@ foreach ($target in $xtensaTargets) {
     Invoke-Cargo +esp build --target $target -Zbuild-std=core
 }
 
+# Dependency policy: advisories, licences, bans, sources.
+if (Get-Command cargo-deny -ErrorAction SilentlyContinue) {
+    Invoke-Cargo deny check
+} else {
+    Write-Warning "cargo-deny not installed; skipping dependency policy. Install with 'cargo install cargo-deny'. CI runs it regardless."
+}
+
 Invoke-Cargo package --allow-dirty

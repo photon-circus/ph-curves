@@ -17,6 +17,11 @@ exclude = [
     ".gitignore",
     "clippy.toml",
     "rust-toolchain.toml",
+    "deny.toml",
+    # Agent instructions are repository guidance, not consumer documentation,
+    # and AGENTS.md links into the excluded docs/ tree.
+    "AGENTS.md",
+    "CLAUDE.md",
     # Development-only. `docs/` holds version-pinned release-train notes that
     # reference PR numbers; `scripts/` is the local CI runner. Both stay in the
     # repository and out of the published artifact.

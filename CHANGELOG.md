@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `AGENTS.md` with the repository's hard invariants for coding agents, and a
+  `CLAUDE.md` shim pointing at it.
+- `deny.toml` and a `cargo deny check` CI job covering advisories, licences,
+  bans, and sources. The licence allow-list is exactly what the graph uses, so
+  a new licence shows up as a diff rather than passing silently.
+
+### Changed
+
+- Documentation reorganised by kind rather than by version: `docs/design/` for
+  per-feature design records and `docs/compatibility.md` for the durable
+  compatibility policy. The former `docs/0.2.0/` pinned durable policy to a
+  release and would have orphaned every design doc at the next one.
+- The README's contributing section described GitHub Actions as disabled and
+  `scripts/local-ci.ps1` as the gate. Actions run on every pull request.
+- README now documents `AffineCalibration`, `Hysteresis`, and `Debounce`, which
+  shipped in 0.2.0 without any README coverage, plus `invert_segment`.
+
+### Fixed
+
+- Two README links resolved only inside the repository and 404'd from the
+  published crate, where `rust-toolchain.toml` and `.github/` are excluded.
+
+### Removed
+
+- The 0.2.0 release-train narrative. Its durable content — the no-alloc proof
+  mechanism, the `std` boundary rule, the codegen/metadata lockstep — moved to
+  `AGENTS.md`, where it changes behaviour instead of recording history.
+
 ## [0.2.0] - 2026-08-10
 
 ### Added
