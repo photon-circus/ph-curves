@@ -63,8 +63,12 @@ jobs:
       # path reached for `alloc` or `std` — directly or through a dependency —
       # this fails to compile. That is the no-alloc proof; a plain
       # `--target` build only proves no-std.
+      #
+      # `+nightly` is required, not stylistic: rust-toolchain.toml pins 1.92.0
+      # and a rustup file override outranks whatever the setup action selected,
+      # so a bare `cargo` here resolves to stable and rejects `-Z`.
       - name: Build against core only
-        run: cargo build --target ${{ matrix.target }} -Z build-std=core
+        run: cargo +nightly build --target ${{ matrix.target }} -Z build-std=core
 
   clippy:
     name: Clippy
