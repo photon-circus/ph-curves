@@ -1,6 +1,6 @@
 [package]
 name = "ph-curves"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.92.0"
 description = "no-std, no-alloc Rust for embedded: curve lookup tables, ADC-to-measurement transfer functions with inverse and calibration, temporal filters, and tickless scheduling"

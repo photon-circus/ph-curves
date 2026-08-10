@@ -4,9 +4,62 @@
 //! computes the exact wall-clock deadline at which the *quantized* output
 //! value will next change.  This lets interrupt-driven firmware sleep between
 //! transitions, saving power and CPU cycles.
+//!
+//! # Wrapping clocks
+//!
+//! Timestamps are free-running `u32` milliseconds. All schedule math uses
+//! wrapping arithmetic so a segment that starts near `u32::MAX` can cross the
+//! ~49.7-day rollover.
+//!
+//! For durations up to `i32::MAX` milliseconds (~24.85 days), before-start /
+//! past-end classification uses the usual half-range signed-delta convention
+//! (`now.wrapping_sub(t0) as i32`). Longer durations remain supported when
+//! `now_ms` is a segment-relative elapsed time with `t0_ms == 0` and
+//! `now_ms <= duration_ms` — the mode used for multi-day relative ramps.
+//! A wrapping wall clock cannot unambiguously represent a single segment
+//! longer than half the clock period.
+//!
+//! Deadline clamping works on *offsets from `t0_ms`*, never on absolute
+//! timestamps. Every offset is bounded by `duration_ms`, so the comparisons
+//! stay ordinary `u32` ones and remain correct across the full `u32` duration
+//! range. The half-range convention appears only where it is unavoidable —
+//! deciding whether `now_ms` precedes the segment at all. Clamping absolute
+//! timestamps against a half-range convention instead would misread any
+//! segment longer than ~24.85 days as already finished.
 
 use crate::MonotonicCurve;
 use crate::math::{Rounding, UnitValue, next_target_value, quantize};
+
+/// Half the `u32` range. Deltas larger than this are treated as negative under
+/// the signed wrapping convention used by free-running embedded clocks.
+const HALF_RANGE_MS: u32 = i32::MAX as u32;
+
+/// Progress of `now_ms` relative to a segment `[t0, t0+duration)`.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum SegmentProgress {
+    BeforeStart,
+    InSegment(u32),
+    PastEnd,
+}
+
+/// Classify `now` against a segment start/duration with wrap-safe elapsed math.
+///
+/// When `duration_ms <= HALF_RANGE_MS`, elapsed values above the half-range are
+/// "before start". Longer durations skip that check so relative `t0 == 0`
+/// schedules can still use the full `u32` duration range.
+fn segment_progress(t0_ms: u32, duration_ms: u32, now_ms: u32) -> SegmentProgress {
+    if duration_ms == 0 {
+        return SegmentProgress::PastEnd;
+    }
+    let elapsed = now_ms.wrapping_sub(t0_ms);
+    if duration_ms <= HALF_RANGE_MS && elapsed > HALF_RANGE_MS {
+        SegmentProgress::BeforeStart
+    } else if elapsed >= duration_ms {
+        SegmentProgress::PastEnd
+    } else {
+        SegmentProgress::InSegment(elapsed)
+    }
+}
 
 /// Repeat behaviour for a tickless schedule.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -28,7 +81,10 @@ pub enum RepeatMode {
 pub struct TicklessDeadline {
     /// Wall-clock time (in milliseconds) at which the output will next change.
     ///
-    /// Set a hardware timer or `sleep_until` to this value.
+    /// Set a hardware timer or `sleep_until` to this value. On a free-running
+    /// `u32` clock the value may be numerically less than `now` when the
+    /// deadline crosses the rollover; compare with wrapping remaining-time
+    /// (`deadline.wrapping_sub(now)`), not signed absolute order.
     pub deadline_ms: u32,
     /// The quantized output value that should be applied *now* (at the time
     /// this deadline was computed).
@@ -103,8 +159,11 @@ where
     }
 
     /// The end time of the current segment in milliseconds.
+    ///
+    /// Computed with wrapping addition so a segment that starts near
+    /// `u32::MAX` can end after the clock rolls over.
     pub fn end_ms(&self) -> u32 {
-        self.t0_ms.saturating_add(self.duration_ms)
+        self.t0_ms.wrapping_add(self.duration_ms)
     }
 
     /// Compute the next deadline after `now_ms`.
@@ -113,19 +172,38 @@ where
     /// wall-clock time at which the next quantized transition will occur.
     ///
     /// When `now_ms` is at or past the end of the segment, the returned
-    /// deadline is clamped to the segment end and the final quantized value.
+    /// deadline is `now_ms` (already due) and the final quantized value.
     pub fn next_deadline(&self, now_ms: u32) -> TicklessDeadline {
         let end_ms = self.end_ms();
+        let progress = segment_progress(self.t0_ms, self.duration_ms, now_ms);
 
-        let current_t = self.time_to_t(now_ms);
+        let current_t = match progress {
+            SegmentProgress::BeforeStart => T::zero(),
+            SegmentProgress::PastEnd => T::one(),
+            SegmentProgress::InSegment(elapsed) => {
+                if elapsed == 0 {
+                    T::zero()
+                } else {
+                    T::from_time_frac(elapsed, self.duration_ms)
+                }
+            }
+        };
+
         let w = self.curve.eval(current_t);
         let raw_val = w.lerp_u16(self.start_val, self.end_val);
         let current_val = quantize(raw_val, self.step, self.rounding);
         let end_val_q = quantize(self.end_val, self.step, self.rounding);
 
-        if now_ms >= end_ms || current_val == end_val_q {
+        if matches!(progress, SegmentProgress::PastEnd) || current_val == end_val_q {
+            let deadline_ms = if matches!(progress, SegmentProgress::PastEnd) {
+                // Already due. Prefer `now` over a numerically-smaller wrapped
+                // `end_ms` so callers do not arm a nearly-full-period sleep.
+                now_ms
+            } else {
+                end_ms
+            };
             return TicklessDeadline {
-                deadline_ms: end_ms.max(now_ms),
+                deadline_ms,
                 current_val,
             };
         }
@@ -134,21 +212,39 @@ where
         let target_val = next_target_value(current_val, end_val_q, self.step, increasing);
         let w_target = T::inv_lerp_u16(self.start_val, self.end_val, target_val);
         let u_target = self.curve.inv(w_target);
-        let mut deadline_ms = self.t_to_time(u_target);
 
-        let min_deadline = now_ms.saturating_add(self.min_dt_ms);
-        if deadline_ms < min_deadline {
-            deadline_ms = min_deadline;
+        // Clamp in offset-from-`t0` space. `PastEnd` already returned above, so
+        // `now` is either inside the segment or ahead of it, and every offset
+        // below is bounded by `duration_ms` — plain `u32` comparisons hold even
+        // when the segment is longer than half the clock period.
+        let (now_off, min_off) = match progress {
+            SegmentProgress::InSegment(elapsed) => {
+                (elapsed, elapsed.saturating_add(self.min_dt_ms))
+            }
+            // `now` precedes `t0`; its offset is negative, so it can never floor
+            // a non-negative deadline. Only the `min_dt` window reaches into the
+            // segment, and only by whatever is left after covering the gap.
+            SegmentProgress::BeforeStart => (
+                0,
+                self.min_dt_ms
+                    .saturating_sub(self.t0_ms.wrapping_sub(now_ms)),
+            ),
+            SegmentProgress::PastEnd => (self.duration_ms, self.duration_ms),
+        };
+
+        let mut dl_off = u_target.to_time_offset(self.duration_ms);
+        if dl_off < min_off {
+            dl_off = min_off;
         }
-        if deadline_ms > end_ms {
-            deadline_ms = end_ms;
+        if dl_off > self.duration_ms {
+            dl_off = self.duration_ms;
         }
-        if deadline_ms < now_ms {
-            deadline_ms = now_ms;
+        if dl_off < now_off {
+            dl_off = now_off;
         }
 
         TicklessDeadline {
-            deadline_ms,
+            deadline_ms: self.t0_ms.wrapping_add(dl_off),
             current_val,
         }
     }
@@ -168,23 +264,6 @@ where
             now_ms,
             done: false,
         }
-    }
-
-    // -- private helpers --------------------------------------------------
-
-    fn time_to_t(&self, now_ms: u32) -> T {
-        if self.duration_ms == 0 || now_ms >= self.end_ms() {
-            return T::one();
-        }
-        if now_ms <= self.t0_ms {
-            return T::zero();
-        }
-        T::from_time_frac(now_ms - self.t0_ms, self.duration_ms)
-    }
-
-    fn t_to_time(&self, t: T) -> u32 {
-        self.t0_ms
-            .saturating_add(t.to_time_offset(self.duration_ms))
     }
 }
 
@@ -226,11 +305,11 @@ where
         match self.schedule.repeat {
             RepeatMode::Once => false,
             RepeatMode::Repeat => {
-                self.t0_ms = self.t0_ms.saturating_add(self.schedule.duration_ms);
+                self.t0_ms = self.t0_ms.wrapping_add(self.schedule.duration_ms);
                 true
             }
             RepeatMode::PingPong => {
-                self.t0_ms = self.t0_ms.saturating_add(self.schedule.duration_ms);
+                self.t0_ms = self.t0_ms.wrapping_add(self.schedule.duration_ms);
                 core::mem::swap(&mut self.start_val, &mut self.end_val);
                 true
             }
@@ -255,7 +334,12 @@ where
         let end_ms = cycle.end_ms();
         let end_val_q = quantize(self.end_val, self.schedule.step, self.schedule.rounding);
 
-        let cycle_finished = dl.deadline_ms >= end_ms || dl.current_val == end_val_q;
+        // Offset space again: comparing `deadline_ms` against `end_ms` under the
+        // half-range convention reports "finished" on the first iteration of any
+        // segment longer than ~24.85 days.
+        let duration_ms = self.schedule.duration_ms;
+        let cycle_finished =
+            dl.deadline_ms.wrapping_sub(self.t0_ms) >= duration_ms || dl.current_val == end_val_q;
 
         if cycle_finished {
             if !self.advance_cycle() {

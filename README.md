@@ -530,6 +530,21 @@ formula = "pow((t + 0.16) / 1.16, 3.0)"
 quantized output value will next change. This lets interrupt-driven firmware
 sleep between value changes instead of polling at a fixed tick rate.
 
+Timestamps are free-running `u32` milliseconds: schedule math uses wrapping
+addition/subtraction so a segment may start near `u32::MAX` and cross the
+~49.7-day rollover. For durations up to `i32::MAX` ms (~24.85 days), before /
+after classification uses the usual half-range signed-delta convention.
+Longer durations remain valid when `now_ms` is segment-relative elapsed time
+with `t0_ms == 0` (a wrapping wall clock cannot uniquely represent a single
+segment longer than half the clock period). Deadlines themselves are clamped
+on offsets from `t0_ms`, which stay bounded by `duration_ms`, so the full
+`u32` duration range works in either mode.
+
+`deadline_ms` may be numerically smaller than `now_ms` when a deadline falls
+past the rollover. Compare with wrapping remaining-time
+(`deadline_ms.wrapping_sub(now_ms)`) rather than absolute ordering; the same
+applies to `end_ms()`, which now wraps rather than saturating.
+
 Supports `RepeatMode::Once`, `RepeatMode::Repeat`, and `RepeatMode::PingPong`.
 
 ### Segment helpers
