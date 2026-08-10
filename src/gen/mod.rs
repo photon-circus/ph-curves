@@ -1,8 +1,14 @@
 //! Host-side TOML → Rust code generation for curves and transfers.
 //!
-//! Enable with `features = ["gen"]` from a `build.rs` or host tool. Firmware
-//! crates should keep the default feature set and `include!` generated source
-//! without enabling this module.
+//! Enable with `features = ["gen-lib"]` from a `build.rs` or host tool.
+//! Firmware crates should keep the default feature set and `include!`
+//! generated source without enabling this module.
+//!
+//! This module is the crate's only `std` consumer. The crate root is
+//! unconditionally `#![no_std]`; `std` is linked by an explicit
+//! `extern crate std` behind the `std` feature, and every module here imports
+//! the prelude by hand. Enabling this feature therefore cannot add `std` or an
+//! allocator to the runtime API.
 //!
 //! # `build.rs` example
 //!

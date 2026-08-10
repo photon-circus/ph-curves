@@ -76,35 +76,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Breaking:** `AffineCalibration::new` rejects `gain == 0` with the new
+- `AffineCalibration::new` rejects `gain == 0` with
   `AffineCalibrationError::ZeroGain`. A zero gain collapses every observation
   onto `offset / scale`, discarding the sensor and leaving the calibration
-  non-invertible. *Migration:* a zero gain was already a bug; supply the real
-  trim constants.
+  non-invertible. Not a baseline change — `AffineCalibration` ships new in
+  0.2.0.
 - The crate's three near-duplicate nearest/ties-away division helpers are now
   one shared implementation, so a quantized value cannot drift depending on
   which module produced it.
-- **Breaking (CLI/features):** the `gen` feature is now the library API only
-  and no longer builds the `ph-curves-gen` binary; the CLI moved behind the
-  new `gen-cli` feature, which implies `gen`. *Migration:* replace
-  `--features gen` with `--features gen-cli` in any invocation that runs or
-  installs the binary. Build scripts calling the library want plain `gen`,
-  which no longer pulls in `clap`.
-- Enabling `gen` turns off `#![no_std]`, because the generator needs
-  `std::fs`. Firmware crates must keep the feature off. Cargo's build-dependency
-  resolution keeps a `build.rs` use separate from the runtime dependency, but a
-  *normal* dependency that enables `ph-curves/gen` will unify the feature and
-  make the firmware build `std`.
+- Host code generation is split into two features. `gen-lib` is the `build.rs`
+  library API (serde + toml, no clap); `gen-cli` adds the `ph-curves-gen`
+  binary. **`gen` is unchanged from 0.1.x** — it is now an alias for `gen-cli`
+  and still builds the binary, so existing `--features gen` invocations keep
+  working. *No migration is required.* Build scripts should prefer `gen-lib`,
+  which skips the clap dependency.
 - Exhausting the greedy transfer fitter's knot budget now reports the
   heuristic limitation without claiming that no alternative knot placement
   could satisfy the requested error.
 
 ### Notes
 
-- Remote GitHub Actions remain disabled (`.github/ci.yml.disabled`).
-  `scripts/local-ci.ps1` is the validated gate and now covers `gen-cli`
-  alongside `gen`. Restoring `.github/workflows/ci.yml` is an outstanding
-  owner decision and blocks landing this release on `main`.
+- **No breaking changes against 0.1.2.** Every addition above is additive, and
+  the two changes that would have broken the baseline — retiring `gen` as the
+  CLI feature, and relaxing `#![no_std]` for host builds — were both reworked
+  so the 0.1.x contract holds. A 0.1.2 dependency declaration and a 0.1.2
+  `cargo run --features gen` invocation both keep working unchanged.
+- **The runtime is `no_std` and `no_alloc`, unconditionally.** `#![no_std]` is
+  not feature-gated, so Cargo's feature unification cannot turn a firmware
+  build into a `std` build when an unrelated crate enables a host feature. CI
+  proves it by building the default feature set against a `core`-only sysroot
+  (`-Z build-std=core`) on thumbv7em, thumbv6m, and riscv32imc: reaching for
+  `alloc` or `std` on the runtime path fails the build.
+- Remote GitHub Actions are restored at `.github/workflows/ci.yml`, covering
+  format, the runtime-purity gate, clippy and tests across `gen-lib` /
+  `gen-cli` / `gen`, a 0.1.x feature-compatibility check, the no-std and Xtensa
+  target matrices, docs, and packaging.
 
 ## [0.1.2] - 2026-08-09
 

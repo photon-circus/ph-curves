@@ -12,15 +12,25 @@ This branch (`release/0.2.0`) is the packing spine for the 0.2.0 release. The an
 | **Decision primitives** | [#6](https://github.com/photon-circus/ph-curves/pull/6) | [decision-primitives.md](./decision-primitives.md) — `Hysteresis` + `Debounce` beside Stabilize; sample-count only; no clock/GPIO |
 | **gen build API** | [#7](https://github.com/photon-circus/ph-curves/pull/7) | [gen-build-api.md](./gen-build-api.md) — `ph_curves::r#gen` for `build.rs`; thin CLI behind `gen-cli`; no proc-macro DSL |
 
-Merge order was #7 → #6 → #4 → #5. Only #4 ↔ #5 conflicted, in `src/transfer.rs` and `src/lib.rs`; both sides were additive and were kept whole.
+Merge order was #7 → #6 → #4 → #5, then #9 (integration gaps) and #10 (restore CI, preserve the 0.1.x baseline). Only #4 ↔ #5 conflicted, in `src/transfer.rs` and `src/lib.rs`; both sides were additive and were kept whole.
 
 ## Validation
 
 `scripts/local-ci.ps1` passes end-to-end on this branch: `fmt --check`; tests under default, `gen`, and `gen-cli`; clippy `--all-targets` at `-D warnings` for all three; rustdoc at `-D warnings`; no-std builds for thumbv7em, thumbv6m, riscv32imac, riscv32imc, and wasm32; ESP32 / S2 / S3 via `+esp` with `-Zbuild-std=core`; and `cargo package`.
 
+## Runtime guarantee
+
+The crate exists so firmware gets deterministic, allocation-free lookup and scheduling. `#![no_std]` is **unconditional** — no feature relaxes it. Host code generation links `std` through an explicit `extern crate std` scoped to `src/gen`, whose modules import the prelude by hand, so a stray `String` on the runtime path is a compile error rather than a silent allocator dependency.
+
+CI enforces this in the `runtime-purity` job: it rejects a feature-conditional `#![no_std]`, then builds the default feature set against a `core`-only sysroot (`-Z build-std=core`) on thumbv7em, thumbv6m, and riscv32imc. A plain `--target` build only proves no-std — bare-metal `rust-std` ships `alloc` — so the core-only build is what proves no-alloc.
+
+## Baseline compatibility
+
+**0.2.0 breaks nothing against 0.1.2.** See [baseline-compatibility.md](./baseline-compatibility.md) for the full assessment of both candidate breaks, why each was reworked instead of shipped, and where the bar for a justified break actually sits.
+
 ## Outstanding gates
 
-- **GitHub Actions are still disabled** (`.github/ci.yml.disabled`). Merging this branch to `main` would land `main` without remote CI. Restoring `.github/workflows/ci.yml` — and updating it for the `gen` / `gen-cli` split — is an owner decision that blocks the merge.
+- Remote CI is restored at `.github/workflows/ci.yml`, covering format, runtime purity, clippy and tests across `gen-lib` / `gen-cli` / `gen`, 0.1.x feature compatibility, the no-std and Xtensa target matrices, docs, and packaging. It runs on `main` and `release/**`.
 - No crates.io publish is implied. `Cargo.toml` is at `0.2.0` and `CHANGELOG.md` has a dated `[0.2.0]` section so the release PR is self-describing; publishing remains a separate step.
 
 ## Integration gaps found and closed

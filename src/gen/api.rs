@@ -1,5 +1,9 @@
 //! Public code-generation entry points for `build.rs` and host tools.
 
+// Host-only module: `std` is linked explicitly, not via the crate prelude.
+// See the `no_std` note in src/lib.rs.
+use std::prelude::v1::*;
+
 use std::fs;
 use std::io;
 use std::path::Path;

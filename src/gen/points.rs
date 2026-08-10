@@ -1,5 +1,9 @@
 //! Piecewise-linear interpolation from control points.
 
+// Host-only module: `std` is linked explicitly, not via the crate prelude.
+// See the `no_std` note in src/lib.rs.
+use std::prelude::v1::*;
+
 /// Build a forward LUT by linearly interpolating between control points.
 ///
 pub fn build(name: &str, points: &[[u16; 2]], lut_size: usize) -> Result<Vec<u32>, String> {

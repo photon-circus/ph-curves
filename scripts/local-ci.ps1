@@ -10,18 +10,30 @@ function Invoke-Cargo {
 }
 
 Invoke-Cargo fmt --all --check
+
+# The runtime no-std / no-alloc guarantee. A feature-conditional `no_std` would
+# let Cargo feature unification turn a firmware build into a std build.
+if (Select-String -Path src/lib.rs -Pattern '^#!\[cfg_attr\(.*no_std' -Quiet) {
+    throw "src/lib.rs: #![no_std] is feature-conditional; it must be unconditional."
+}
+if (-not (Select-String -Path src/lib.rs -Pattern '^#!\[no_std\]$' -Quiet)) {
+    throw "src/lib.rs: missing an unconditional #![no_std]."
+}
+
 Invoke-Cargo test
-Invoke-Cargo test --features gen
-# `gen` is the build.rs library API only. The CLI binary sits behind
+Invoke-Cargo test --features gen-lib
+# `gen-lib` is the build.rs library API only. The CLI binary sits behind
 # `gen-cli`, so without this line `--all-targets` silently stops covering
 # src/bin/gen/main.rs.
 Invoke-Cargo test --features gen-cli
+# `gen` is the 0.1.x compatibility alias and must keep building the CLI.
+Invoke-Cargo test --features gen
 
 $previousRustFlags = $env:RUSTFLAGS
 try {
     $env:RUSTFLAGS = "-Dwarnings"
     Invoke-Cargo clippy --all-targets
-    Invoke-Cargo clippy --all-targets --features gen
+    Invoke-Cargo clippy --all-targets --features gen-lib
     Invoke-Cargo clippy --all-targets --features gen-cli
 } finally {
     $env:RUSTFLAGS = $previousRustFlags
@@ -45,6 +57,19 @@ $targets = @(
 
 foreach ($target in $targets) {
     Invoke-Cargo build --target $target
+}
+
+# Builds the sysroot from `core` alone: if anything on the default-feature path
+# reached for `alloc` or `std`, this fails. A plain --target build only proves
+# no-std; this is the no-alloc proof.
+$coreOnlyTargets = @(
+    "thumbv7em-none-eabi",
+    "thumbv6m-none-eabi",
+    "riscv32imc-unknown-none-elf"
+)
+
+foreach ($target in $coreOnlyTargets) {
+    Invoke-Cargo +nightly build --target $target -Z build-std=core
 }
 
 $xtensaTargets = @(
