@@ -23,6 +23,11 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# The workflow only needs to read the repository. Jobs that need the automatic
+# token inherit this least-privilege baseline explicitly.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -Dwarnings
@@ -32,8 +37,8 @@ jobs:
     name: Format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
           toolchain: "1.92.0"
           components: rustfmt
@@ -53,7 +58,7 @@ jobs:
           - thumbv6m-none-eabi
           - riscv32imc-unknown-none-elf
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # A feature-conditional `no_std` would let Cargo's feature unification
       # turn a firmware build into a std build when some unrelated crate in the
@@ -69,12 +74,12 @@ jobs:
             exit 1
           fi
 
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
           toolchain: nightly
           targets: ${{ matrix.target }}
           components: rust-src
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       # Builds the sysroot from `core` alone. If anything on the default-feature
       # path reached for `alloc` or `std` — directly or through a dependency —
@@ -91,12 +96,12 @@ jobs:
     name: Clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
           toolchain: "1.92.0"
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: cargo clippy --all-targets
       - run: cargo clippy --all-targets --features gen-lib
       # `gen-lib` does not build the CLI binary, so --all-targets misses
@@ -107,11 +112,11 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
           toolchain: "1.92.0"
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: cargo test
       - run: cargo test --features gen-lib
       - run: cargo test --features gen-cli
@@ -122,11 +127,11 @@ jobs:
     name: 0.1.x feature compatibility
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
           toolchain: "1.92.0"
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       # The 0.1.x invocation. If `gen` ever stops producing the binary, this
       # breaks every existing user's build command.
       - name: 'cargo run --features gen still produces the CLI'
@@ -144,12 +149,12 @@ jobs:
           - riscv32imc-unknown-none-elf    # ESP32-C3
           - wasm32-unknown-unknown
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
           toolchain: "1.92.0"
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: cargo build --target ${{ matrix.target }}
 
   build-esp-xtensa:
@@ -162,18 +167,18 @@ jobs:
           - xtensa-esp32s2-none-elf
           - xtensa-esp32s3-none-elf
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # espup queries the GitHub API for the latest Xtensa Rust release.
       # Unauthenticated that shares the anonymous per-IP quota with every other
       # runner and returns 403 under load; the token makes the call use this
       # repository's much larger quota.
-      - uses: esp-rs/xtensa-toolchain@v1.5
+      - uses: esp-rs/xtensa-toolchain@b989c80ffd4be88d30c09606ee9b449bd0d41958 # v1.5
         with:
           default: true
           ldproxy: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: cargo +esp build --target ${{ matrix.target }} -Zbuild-std=core
 
   doc:
@@ -182,19 +187,19 @@ jobs:
     env:
       RUSTDOCFLAGS: -Dwarnings
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
           toolchain: "1.92.0"
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: cargo doc --no-deps
 
   deny:
     name: Dependency policy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
         with:
           command: check
           # RUSTFLAGS=-Dwarnings is irrelevant here and the action warns on it.
@@ -204,9 +209,34 @@ jobs:
     name: Package
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
           toolchain: "1.92.0"
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: cargo package
+
+  # Branch protection requires one stable check name instead of depending on
+  # every matrix-generated check. `always()` ensures this job reports even
+  # when an upstream job fails or is cancelled.
+  ci:
+    if: ${{ always() }}
+    needs:
+      - fmt
+      - runtime-purity
+      - clippy
+      - test
+      - feature-compat
+      - build-no-std
+      - build-esp-xtensa
+      - doc
+      - deny
+      - package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail unless every CI job succeeded
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}
+        run: |
+          echo "One or more CI jobs did not succeed:"
+          echo '${{ toJSON(needs) }}'
+          exit 1
