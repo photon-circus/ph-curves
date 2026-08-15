@@ -27,7 +27,12 @@ use super::{builtin, formula, points, transfer};
 /// Construct via [`Self::from_toml_str`] or [`super::generate_from_str`].
 /// Field access is crate-visible; dependents should prefer the `generate_*`
 /// helpers over hand-building schema graphs.
+///
+/// Unknown top-level keys are rejected so a misspelled table or a newer
+/// schema cannot succeed as empty output. Nested unknown fields are still
+/// ignored; that validation belongs to the family/member schema, not here.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DefinitionsFile {
     /// Normalized LUT curves keyed by TOML table name.
     #[serde(default)]
@@ -348,5 +353,16 @@ monotonic = false
 "#;
         let cf: DefinitionsFile = toml::from_str(toml).unwrap();
         assert!(!cf.curves["wave"].monotonic);
+    }
+
+    #[test]
+    fn from_toml_str_rejects_unknown_top_level_table() {
+        let error = DefinitionsFile::from_toml_str("[transfer_families]\n")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("unknown field `transfer_families`"),
+            "expected the unrecognized field to be named, got: {error}"
+        );
     }
 }

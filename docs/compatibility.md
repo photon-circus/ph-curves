@@ -123,3 +123,21 @@ into the *consumer's* crate, and `#[non_exhaustive]` forbids literal
 construction outside the defining crate. Adding it would break every generated
 file. Future fields therefore need a generator-and-crate lockstep bump, which
 is the tradeoff the codegen design already accepts.
+
+## Host TOML: unknown top-level tables
+
+Host definitions now reject unknown top-level keys. Serde's default is to
+ignore them, so a misspelled `[tranfsers…]` table or a newer schema such as
+`[transfer_families]` / `[gaps]` used to parse as empty `curves` and
+`transfers` maps. `generate_from_str` then succeeded with header-only output,
+which a `build.rs` consumer reads as a compatible generator while every
+expected symbol is missing.
+
+That silent omission cannot be fixed additively while remaining fail-closed:
+keeping the ignore-unknown default would keep dropping tables an older
+generator does not understand. Narrowing formerly accepted documents is the
+cost of making schema evolution explicit. Nested unknown fields are still
+ignored; this change is only the top-level document.
+
+No runtime API is involved. The version that ships this tightening is a
+release decision, not part of the behaviour change.

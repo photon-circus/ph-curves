@@ -122,7 +122,7 @@ pub fn generate_from_toml(path: impl AsRef<Path>, opts: &GenerateOptions) -> Res
 
 /// Parse an in-memory TOML string and return generated Rust source.
 pub fn generate_from_str(toml: &str, opts: &GenerateOptions) -> Result<String, Error> {
-    let defs: DefinitionsFile = toml::from_str(toml)?;
+    let defs = DefinitionsFile::from_toml_str(toml)?;
     generate(&defs, opts)
 }
 
@@ -234,5 +234,32 @@ mod tests {
 
         assert!(matches!(error, Error::Validation(_)));
         assert!(error.to_string().contains("unexpected character"));
+    }
+
+    #[test]
+    fn misspelled_transfers_table_returns_toml_error() {
+        let error =
+            generate_from_str("[tranfsers.sensor]\n", &GenerateOptions::default()).unwrap_err();
+
+        assert!(matches!(error, Error::Toml(_)));
+        let message = error.to_string();
+        assert!(
+            message.contains("unknown field `tranfsers`"),
+            "expected the misspelled table to be named, got: {message}"
+        );
+    }
+
+    #[test]
+    fn unknown_family_schema_returns_toml_error_not_header_only() {
+        let toml = "[transfer_families]\n[gaps]\n";
+        let error = generate_from_str(toml, &GenerateOptions::default()).unwrap_err();
+
+        assert!(matches!(error, Error::Toml(_)));
+        let message = error.to_string();
+        assert!(
+            message.contains("unknown field `transfer_families`")
+                || message.contains("unknown field `gaps`"),
+            "expected a named unknown top-level table, got: {message}"
+        );
     }
 }
