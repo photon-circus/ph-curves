@@ -61,7 +61,10 @@ try {
 $previousRustdocFlags = $env:RUSTDOCFLAGS
 try {
     $env:RUSTDOCFLAGS = "-Dwarnings"
-    Invoke-Cargo doc --no-deps
+    # docs.rs publishes with features = ["gen-lib"] ([package.metadata.docs.rs]).
+    # Without this flag, rustdoc never compiles src/gen, so a broken intra-doc
+    # link there cannot fail the gate.
+    Invoke-Cargo doc --no-deps --features gen-lib
 } finally {
     $env:RUSTDOCFLAGS = $previousRustdocFlags
 }

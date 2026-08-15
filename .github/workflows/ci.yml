@@ -192,7 +192,10 @@ jobs:
         with:
           toolchain: "1.92.0"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      - run: cargo doc --no-deps
+      # docs.rs publishes with features = ["gen-lib"] ([package.metadata.docs.rs]).
+      # Without this flag, rustdoc never compiles src/gen, so a broken intra-doc
+      # link there cannot fail the gate.
+      - run: cargo doc --no-deps --features gen-lib
 
   deny:
     name: Dependency policy
