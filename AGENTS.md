@@ -159,3 +159,36 @@ open gets no CI, so open the PR to get coverage.
 - Releasing is documented in [RELEASING.md](RELEASING.md) and is owner-only.
 - Compatibility policy — including the bar a breaking change must clear — is in
   [docs/compatibility.md](docs/compatibility.md).
+
+## Cursor Cloud specific instructions
+
+This is a pure Rust library crate plus a host-only generator CLI
+(`ph-curves-gen`); there is no long-running service to start. The startup update
+script provisions everything the gate needs, so a fresh agent can go straight to
+building, testing, and running.
+
+- **Toolchains present after startup.** Pinned stable `1.92.0` (auto-selected by
+  `rust-toolchain.toml`, which also installs `rustfmt`/`clippy`/`rust-src` and
+  the embedded targets it lists), plus a `nightly` toolchain with `rust-src` for
+  the core-only no-alloc proof, and `cargo-deny`.
+- **`riscv32imc-unknown-none-elf` is not in `rust-toolchain.toml`.** The CI
+  `build-no-std` / core-only matrices need it (ESP32-C3), so the startup script
+  adds it for both stable and nightly. If a build errors with "can't find crate
+  for `core`" on that target, run `rustup target add riscv32imc-unknown-none-elf`.
+- **`scripts/local-ci.ps1` is PowerShell and `pwsh` is not installed here.** It
+  is still the authoritative list of gate steps — read it and run the `cargo`
+  commands directly. All of them pass in this environment except the ESP32
+  Xtensa slice (below).
+- **ESP32 Xtensa is not runnable out of the box.** The `cargo +esp build
+  --target xtensa-* -Zbuild-std=core` steps need the `esp` toolchain (a custom
+  Rust fork) installed via `espup`, which the startup script does not install
+  because it fetches large artifacts over the GitHub API. Install `espup` and
+  run `espup install` first if you specifically need to reproduce that job;
+  otherwise skip it. CI covers it regardless.
+- **The no-alloc proof requires nightly + `build-std`.** Per hard invariant #3,
+  `cargo build --target thumbv7em-none-eabi` only proves `no_std`; use
+  `cargo +nightly build --target <t> -Z build-std=core` for the no-alloc proof.
+- **Hello-world / smoke check.** `cargo run --features gen-cli --bin
+  ph-curves-gen -- --input assets/curves.toml --output /tmp/out.rs` exercises the
+  headline generator path. Regenerating the checked-in fixture with the
+  `assets/transfers.toml` command above should leave `git diff` empty.
