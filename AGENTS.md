@@ -131,9 +131,9 @@ Run the same gate CI runs:
 ```
 
 It covers format, the `no_std` guards, tests across default / `gen-lib` /
-`gen-cli` / `gen`, clippy at `-D warnings`, rustdoc, the no-std and core-only
-target matrices, ESP32 Xtensa, and packaging. Dependency policy is
-`cargo deny check`.
+`gen-cli` / `gen`, clippy at `-D warnings`, rustdoc with `--features gen-lib`
+(matching docs.rs), the no-std and core-only target matrices, ESP32 Xtensa,
+and packaging. Dependency policy is `cargo deny check`.
 
 CI runs on **pull requests**; `push` is limited to `main`. A branch with no PR
 open gets no CI, so open the PR to get coverage.
@@ -145,7 +145,9 @@ open gets no CI, so open the PR to get coverage.
   plain code span.
 - **Feature-gated modules are invisible on docs.rs by default.**
   `[package.metadata.docs.rs]` sets `features = ["gen-lib"]` so `r#gen` is
-  documented. Check this if you add another gated public module.
+  documented. Local CI and the GitHub Actions docs job use the same feature,
+  so a broken intra-doc link under `src/gen` fails the gate. Check this if you
+  add another gated public module.
 - **Verify a guard fires before trusting it.** Several checks here were written,
   looked right, and did nothing. Break the invariant deliberately, confirm the
   check fails, then restore.

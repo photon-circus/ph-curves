@@ -33,6 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Documentation CI now runs rustdoc with `--features gen-lib`, matching the
+  docs.rs feature set. The previous default-features-only invocation never
+  compiled `src/gen`, so a broken intra-doc link in the host generator could
+  not fail the gate.
 - The host generator now rejects unknown top-level definition tables instead
   of succeeding with header-only output. A misspelled `[tranfsers…]` table, or
   a newer document using tables such as `[transfer_families]` and `[gaps]`,
