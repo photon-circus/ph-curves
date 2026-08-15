@@ -25,13 +25,16 @@ use super::{builtin, formula, points, transfer};
 /// Parsed TOML definitions for normalized curves and physical transfers.
 ///
 /// Construct via [`Self::from_toml_str`] or [`super::generate_from_str`].
-/// Field access is crate-visible; dependents should prefer the `generate_*`
-/// helpers over hand-building schema graphs.
+/// Curve and standalone transfer maps are crate-visible; families and gaps
+/// are inspectable through [`Self::transfer_families`] and [`Self::gaps`].
+/// Dependents should prefer the `generate_*` helpers over hand-building
+/// schema graphs.
 ///
-/// Unknown top-level keys are rejected so a misspelled table or a newer
-/// schema cannot succeed as empty output. Nested unknown fields are still
-/// ignored; that validation belongs to the family/member schema, not here.
-#[derive(Debug, Deserialize)]
+/// Unknown top-level keys are rejected so a misspelled table cannot succeed
+/// as empty output. Nested unknown fields on family, member, applicability,
+/// and gap tables are also rejected. Nested unknown fields on standalone
+/// curve and transfer definitions are still ignored.
+#[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DefinitionsFile {
     /// Normalized LUT curves keyed by TOML table name.
@@ -40,12 +43,70 @@ pub struct DefinitionsFile {
     /// Sparse physical transfer functions keyed by TOML table name.
     #[serde(default)]
     pub(crate) transfers: BTreeMap<String, transfer::TransferDef>,
+    /// Shared-source families expanded into sparse transfers at generation.
+    #[serde(default)]
+    pub(crate) transfer_families: BTreeMap<String, transfer::TransferFamilyDef>,
+    /// Channels or procedures that must not be generated as transfers.
+    #[serde(default)]
+    pub(crate) gaps: BTreeMap<String, transfer::GapDef>,
 }
 
 impl DefinitionsFile {
     /// Parse a TOML definitions document.
     pub fn from_toml_str(toml: &str) -> Result<Self, toml::de::Error> {
         toml::from_str(toml)
+    }
+
+    /// Declared transfer families. Empty on documents that only use `[transfers]`.
+    pub fn transfer_families(&self) -> &BTreeMap<String, transfer::TransferFamilyDef> {
+        &self.transfer_families
+    }
+
+    /// Declared gaps. A missing gap is not the same as an undefined one.
+    pub fn gaps(&self) -> &BTreeMap<String, transfer::GapDef> {
+        &self.gaps
+    }
+
+    /// Standalone transfers plus expanded `status = "emit"` family members.
+    pub(crate) fn resolved_transfers(
+        &self,
+    ) -> Result<BTreeMap<String, transfer::TransferDef>, String> {
+        for (name, gap) in &self.gaps {
+            if gap.reason.trim().is_empty() {
+                return Err(format!("gap `{name}`: reason must not be blank"));
+            }
+            if self.curves.contains_key(name) {
+                return Err(format!("gap `{name}` collides with a [curves] entry"));
+            }
+            if self.transfers.contains_key(name) {
+                return Err(format!("gap `{name}` collides with a [transfers] entry"));
+            }
+            if self.transfer_families.contains_key(name) {
+                return Err(format!(
+                    "gap `{name}` collides with a [transfer_families] entry"
+                ));
+            }
+        }
+
+        let expanded = transfer::family::expand_families(&self.transfer_families)?;
+        for name in expanded.keys() {
+            if self.gaps.contains_key(name) {
+                return Err(format!(
+                    "gap `{name}` collides with an emitted family member"
+                ));
+            }
+            if self.transfers.contains_key(name) {
+                return Err(format!(
+                    "expanded family member `{name}` collides with a standalone [transfers] entry"
+                ));
+            }
+        }
+
+        let mut resolved = self.transfers.clone();
+        for (name, def) in expanded {
+            resolved.insert(name, def);
+        }
+        Ok(resolved)
     }
 }
 
@@ -357,12 +418,19 @@ monotonic = false
 
     #[test]
     fn from_toml_str_rejects_unknown_top_level_table() {
-        let error = DefinitionsFile::from_toml_str("[transfer_families]\n")
+        let error = DefinitionsFile::from_toml_str("[invented]\n")
             .unwrap_err()
             .to_string();
         assert!(
-            error.contains("unknown field `transfer_families`"),
+            error.contains("unknown field `invented`"),
             "expected the unrecognized field to be named, got: {error}"
         );
+    }
+
+    #[test]
+    fn from_toml_str_accepts_empty_families_and_gaps() {
+        let defs = DefinitionsFile::from_toml_str("[transfer_families]\n[gaps]\n").unwrap();
+        assert!(defs.transfer_families().is_empty());
+        assert!(defs.gaps().is_empty());
     }
 }

@@ -127,17 +127,20 @@ is the tradeoff the codegen design already accepts.
 ## Host TOML: unknown top-level tables
 
 Host definitions now reject unknown top-level keys. Serde's default is to
-ignore them, so a misspelled `[tranfsers…]` table or a newer schema such as
-`[transfer_families]` / `[gaps]` used to parse as empty `curves` and
-`transfers` maps. `generate_from_str` then succeeded with header-only output,
-which a `build.rs` consumer reads as a compatible generator while every
-expected symbol is missing.
+ignore them, so a misspelled `[tranfsers…]` table used to parse as empty
+`curves` and `transfers` maps. `generate_from_str` then succeeded with
+header-only output, which a `build.rs` consumer reads as a compatible
+generator while every expected symbol is missing.
 
 That silent omission cannot be fixed additively while remaining fail-closed:
 keeping the ignore-unknown default would keep dropping tables an older
 generator does not understand. Narrowing formerly accepted documents is the
-cost of making schema evolution explicit. Nested unknown fields are still
-ignored; this change is only the top-level document.
+cost of making schema evolution explicit.
 
-No runtime API is involved. The version that ships this tightening is a
+`[transfer_families]` and `[gaps]` are now known top-level tables. Nested
+unknown fields on family, member, applicability, and gap types are rejected.
+Standalone `[curves]` / `[transfers]` definitions still ignore nested unknown
+fields.
+
+No runtime API is involved. The version that ships a TOML tightening is a
 release decision, not part of the behaviour change.

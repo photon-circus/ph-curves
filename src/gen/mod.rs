@@ -45,3 +45,7 @@ pub use api::{
     generate_to_path,
 };
 pub use curve::DefinitionsFile;
+pub use transfer::{
+    ApplicabilityDef, FamilyMemberDef, GapDef, GapStatus, MemberStatus, SelectorValue,
+    TransferFamilyDef,
+};
