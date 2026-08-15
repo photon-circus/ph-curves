@@ -31,6 +31,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   GitHub and crates.io, so the two should not disagree about what the crate
   does.
 
+### Fixed
+
+- The host generator now rejects unknown top-level definition tables instead
+  of succeeding with header-only output. A misspelled `[tranfsers…]` table, or
+  a newer document using tables such as `[transfer_families]` and `[gaps]`,
+  previously parsed as empty `curves`/`transfers` maps and looked like a
+  compatible `build.rs` run while omitting every expected symbol. Parse now
+  returns `Error::Toml` and names the unrecognized field. Nested unknown
+  fields are unchanged; that validation belongs to the family/member schema.
+
 ## [0.2.1] - 2026-08-10
 
 ### Added
