@@ -320,7 +320,7 @@ impl DefinitionsFile {
     /// Standalone transfers plus expanded `status = "emit"` family members.
     pub(crate) fn resolved_transfers(
         &self,
-    ) -> Result<BTreeMap<String, transfer::TransferDef>, String> {
+    ) -> Result<BTreeMap<String, transfer::ResolvedTransfer>, String> {
         for (name, gap) in &self.gaps {
             if gap.reason.trim().is_empty() {
                 return Err(format!("gap `{name}`: reason must not be blank"));
@@ -352,9 +352,18 @@ impl DefinitionsFile {
             }
         }
 
-        let mut resolved = self.transfers.clone();
-        for (name, def) in expanded {
-            resolved.insert(name, def);
+        let mut resolved = BTreeMap::new();
+        for (name, def) in &self.transfers {
+            resolved.insert(
+                name.clone(),
+                transfer::ResolvedTransfer {
+                    def: def.clone(),
+                    origin: None,
+                },
+            );
+        }
+        for (name, expanded) in expanded {
+            resolved.insert(name, expanded);
         }
         Ok(resolved)
     }

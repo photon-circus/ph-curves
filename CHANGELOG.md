@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Host-only generation reports and optional family aggregate resource
+  budgets. `generate_report`, `generate_from_str_report`, and
+  `generate_from_toml_report` return the generated source together with
+  per-transfer metrics (identity, symbol, domain/range, requested and
+  achieved error, worst-case input, knot count, array-payload bytes,
+  fitting path, and observation-guard metadata). Family and document
+  totals count every emitted table; duplicate payload is not coalesced.
+  Array payload is six bytes per knot (`u16` input + `i32` output);
+  `PiecewiseLinearTransfer` fields, `_METADATA`, `_OBSERVATION_GUARD`,
+  and symbol overhead are excluded. Optional family
+  `max_total_knots` / `max_table_bytes` fail closed after every member
+  has fitted, naming the family, requested limit, and achieved amount.
+  Per-member `max_knots` is unchanged. Existing `String`-returning
+  helpers call the report path and cannot bypass a budget. No report
+  type enters the default-feature runtime path.
 - Issue forms for bug reports and feature requests, and a pull request
   template. Blank issues are disabled so the chooser always renders, which is
   what puts the private disclosure route in front of someone about to paste a

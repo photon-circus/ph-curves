@@ -38,9 +38,23 @@ pub fn generate_to_path(input: impl AsRef<Path>, output: impl AsRef<Path>, opts:
     -> Result<(), Error>;
 pub fn generate(defs: &DefinitionsFile, opts: &GenerateOptions)
     -> Result<String, Error>;
+pub fn generate_report(defs: &DefinitionsFile, opts: &GenerateOptions)
+    -> Result<GenerationResult, Error>;
+pub fn generate_from_str_report(toml: &str, opts: &GenerateOptions)
+    -> Result<GenerationResult, Error>;
+pub fn generate_from_toml_report(path: impl AsRef<Path>, opts: &GenerateOptions)
+    -> Result<GenerationResult, Error>;
 
 pub struct GenerateOptions { /* value_type, lut_size; ignored without [curves] */ }
 pub fn GenerateOptions::transfers_only() -> Self;
+
+pub const TABLE_BYTES_PER_KNOT: usize = 6; // u16 input + i32 output arrays only
+pub struct GenerationResult { pub source: String, pub report: GenerationReport }
+pub struct GenerationReport {
+    pub transfers: Vec<TransferReport>, // sorted by table name
+    pub families: Vec<FamilyReport>,    // sorted by family name; emit members
+    pub totals: ResourceTotals,         // all emitted transfers; no curve LUTs
+}
 
 // Inspection / extension IR (host-only; not a plugin ABI)
 impl DefinitionsFile {
@@ -54,6 +68,7 @@ impl DefinitionsFile {
 impl ValidatedDefinitions {
     pub fn set_source(&mut self, name: &str, source: TransferSource) -> Result<(), Error>;
     pub fn generate(&self, opts: &GenerateOptions) -> Result<String, Error>;
+    pub fn generate_report(&self, opts: &GenerateOptions) -> Result<GenerationResult, Error>;
 }
 pub enum Error { Io(...), Toml(...), Validation(...) }
 ```
@@ -82,6 +97,8 @@ generate_to_path("assets/curves.toml", &out, &GenerateOptions::default())?;
   [host-transfer-ir.md](host-transfer-ir.md) instead of a callback/trait plugin.
 - Keep CLI flags and generated source shape stable where practical
 - Library generate path does not print transfer-fit progress to stderr (avoids spamming `build.rs` logs); the CLI may report write status separately
+- String-returning `generate*` helpers stay; they call the report pipeline so family aggregate budgets fail closed without a CLI `--report` flag
+- Array payload in reports is `_INPUTS` + `_OUTPUTS` only (`TABLE_BYTES_PER_KNOT = 6`); structural/runtime overhead is excluded
 
 ## Non-goals
 

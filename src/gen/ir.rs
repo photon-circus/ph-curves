@@ -9,6 +9,7 @@ use std::prelude::v1::*;
 
 use super::api::{Error, GenerateOptions};
 use super::curve::DefinitionsFile;
+use super::report::GenerationResult;
 use super::transfer::family::expanded_name;
 use super::transfer::{
     ApplicabilityDef, GapDef, InputTransform, MemberStatus, SelectorValue, TransferFamilyDef,
@@ -104,7 +105,10 @@ impl DefinitionsFile {
     pub fn validate(&self) -> Result<ValidatedDefinitions, Error> {
         let resolved = self.resolved_transfers().map_err(Error::Validation)?;
         let curves: Vec<_> = self.curves.iter().collect();
-        let transfers: Vec<_> = resolved.iter().collect();
+        let transfers: Vec<_> = resolved
+            .iter()
+            .map(|(name, resolved)| (name, &resolved.def))
+            .collect();
         super::codegen::emitted_const_names(&curves, &transfers).map_err(Error::Validation)?;
         let families = inspect_families(&self.transfer_families).map_err(Error::Validation)?;
         let family_overlay_domains =
@@ -186,7 +190,7 @@ fn inspect_families(
 
 fn family_overlay_domains(
     families: &[ValidatedFamily],
-    resolved: &BTreeMap<String, super::transfer::TransferDef>,
+    resolved: &BTreeMap<String, super::transfer::ResolvedTransfer>,
 ) -> Result<BTreeMap<String, [u16; 2]>, String> {
     let mut domains = BTreeMap::new();
     for family in families {
@@ -200,7 +204,7 @@ fn family_overlay_domains(
                     family.name, member.expanded_name
                 )
             })?;
-            let domain = family_source_observation_domain(&member.expanded_name, def)?;
+            let domain = family_source_observation_domain(&member.expanded_name, &def.def)?;
             domains.insert(member.expanded_name.clone(), domain);
         }
     }
@@ -276,6 +280,13 @@ impl ValidatedDefinitions {
     /// Emit Rust source. LUT options are required only when the document has curves.
     pub fn generate(&self, opts: &GenerateOptions) -> Result<String, Error> {
         super::api::generate(&self.defs, opts)
+    }
+
+    /// Emit Rust source plus the host audit report.
+    ///
+    /// Family aggregate budgets fail closed here, matching [`Self::generate`].
+    pub fn generate_report(&self, opts: &GenerateOptions) -> Result<GenerationResult, Error> {
+        super::api::generate_report(&self.defs, opts)
     }
 
     fn is_description_only(&self, name: &str) -> bool {

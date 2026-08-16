@@ -222,3 +222,22 @@ generation may use `GenerateOptions::transfers_only()`; mismatched LUT fields
 are ignored rather than rejected. Documents that still contain curves keep the
 existing full-domain LUT check. No runtime API is involved; the change is
 additive for `gen-lib` callers.
+
+## Host generation reports and family aggregate budgets
+
+`generate_report` / `generate_from_str_report` / `generate_from_toml_report`
+and `ValidatedDefinitions::generate_report` are additive `gen-lib` APIs. The
+existing `String`-returning helpers remain and internally run the report
+pipeline, so an aggregate budget cannot be bypassed by calling `generate`.
+No report type is on the default-feature runtime path.
+
+Optional family keys `max_total_knots` and `max_table_bytes` are part of the
+unreleased `[transfer_families]` publish shape, not a 0.2.1 document break.
+Omitted keys mean no aggregate cap. Payload accounting includes only the
+emitted `_INPUTS` and `_OUTPUTS` arrays (six bytes per knot). It excludes
+`PiecewiseLinearTransfer` fields, `_METADATA`, `_OBSERVATION_GUARD`, and
+symbol/section overhead. Curve LUT bytes are excluded from transfer document
+totals. Duplicate tables are counted once per member.
+
+`TransferMetadata` is unchanged. Observation-guard facts stay on the adjacent
+companion constant and are copied into the host report when present.

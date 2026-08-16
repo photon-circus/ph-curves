@@ -5,6 +5,7 @@ extern crate std;
 
 use std::collections::BTreeMap;
 use std::format;
+use std::ops::Deref;
 use std::prelude::v1::*;
 
 use serde::Deserialize;
@@ -67,6 +68,18 @@ pub struct TransferFamilyDef {
     /// Knot budget for each emitted member (default 64, hard cap 256).
     #[serde(default = "default_family_max_knots")]
     pub max_knots: usize,
+    /// Optional aggregate knot budget across every emitted member.
+    ///
+    /// Omitted means no family-total cap. Per-member [`Self::max_knots`] still
+    /// applies. Zero is rejected during validation.
+    #[serde(default)]
+    pub max_total_knots: Option<usize>,
+    /// Optional aggregate `_INPUTS` + `_OUTPUTS` array-payload budget.
+    ///
+    /// Counted at six bytes per knot. Structural runtime overhead is excluded.
+    /// Omitted means no family-total cap. Zero is rejected during validation.
+    #[serde(default)]
+    pub max_table_bytes: Option<usize>,
     #[serde(default = "default_boundary")]
     pub(crate) below: BoundaryDef,
     #[serde(default = "default_boundary")]
@@ -296,12 +309,35 @@ pub enum GapStatus {
     Undefined,
 }
 
+/// Family identity retained through expansion so generation reports do not
+/// reconstruct members by matching expanded names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FamilyMemberOrigin {
+    pub family: String,
+    pub selectors: BTreeMap<String, SelectorValue>,
+}
+
+/// Standalone transfer or expanded family member, with optional family origin.
+#[derive(Clone, Debug)]
+pub(crate) struct ResolvedTransfer {
+    pub def: TransferDef,
+    pub origin: Option<FamilyMemberOrigin>,
+}
+
+impl Deref for ResolvedTransfer {
+    type Target = TransferDef;
+
+    fn deref(&self) -> &TransferDef {
+        &self.def
+    }
+}
+
 /// Expand families into standalone transfer defs.
 ///
 /// Every member is validated before non-`emit` statuses are filtered.
 pub(crate) fn expand_families(
     families: &BTreeMap<String, TransferFamilyDef>,
-) -> Result<BTreeMap<String, TransferDef>, String> {
+) -> Result<BTreeMap<String, ResolvedTransfer>, String> {
     let mut out = BTreeMap::new();
     for (family_name, family) in families {
         validate_family(family_name, family)?;
@@ -313,7 +349,14 @@ pub(crate) fn expand_families(
             }
             let member_name = expanded_name(family_name, &member.selectors)?;
             let def = member_transfer(family_name, family, member)?;
-            if let Some(_previous) = out.insert(member_name.clone(), def) {
+            let resolved = ResolvedTransfer {
+                def,
+                origin: Some(FamilyMemberOrigin {
+                    family: family_name.clone(),
+                    selectors: member.selectors.clone(),
+                }),
+            };
+            if let Some(_previous) = out.insert(member_name.clone(), resolved) {
                 return Err(format!(
                     "transfer family `{family_name}`: duplicate expanded name `{member_name}` \
                      from selectors {}",
@@ -335,6 +378,16 @@ fn validate_family(family_name: &str, family: &TransferFamilyDef) -> Result<(), 
     if !(2..=FAMILY_MAX_KNOTS_HARD).contains(&family.max_knots) {
         return Err(format!(
             "transfer family `{family_name}`: max_knots must be in 2..={FAMILY_MAX_KNOTS_HARD}"
+        ));
+    }
+    if family.max_total_knots == Some(0) {
+        return Err(format!(
+            "transfer family `{family_name}`: max_total_knots must be positive"
+        ));
+    }
+    if family.max_table_bytes == Some(0) {
+        return Err(format!(
+            "transfer family `{family_name}`: max_table_bytes must be positive"
         ));
     }
     let source_count = family.points.is_some() as u8
@@ -839,6 +892,8 @@ mod tests {
             output_scale: 1000,
             max_interpolation_error: 50,
             max_knots: 64,
+            max_total_knots: None,
+            max_table_bytes: None,
             below: BoundaryDef::Error,
             above: BoundaryDef::Error,
             observation_guard: None,
@@ -859,6 +914,8 @@ mod tests {
             output_scale: 1,
             max_interpolation_error: 1,
             max_knots: 64,
+            max_total_knots: None,
+            max_table_bytes: None,
             below: BoundaryDef::Error,
             above: BoundaryDef::Error,
             observation_guard: None,

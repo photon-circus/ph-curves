@@ -51,6 +51,10 @@ Extension:
 - `ValidatedDefinitions::set_source` overlays truth or knots on a standalone
   transfer or an **emitted** family member. Description-only members reject
   overlays so source facts and generation input stay distinct.
+- `ValidatedDefinitions::generate` / `generate_report` emit ordinary
+  `PiecewiseLinearTransfer` constants. The report path is the source of
+  family totals and aggregate budget diagnostics; the `String` helper
+  discards the report after the same checks.
 - Evaluated truth is dense unscaled physical samples; the existing greedy
   fitter runs.
 - Prefitted knots skip the fitter. Inverse-code-error measurement and
@@ -71,7 +75,9 @@ makes older generators reject rather than silently omit the guard.
 `GenerateOptions::transfers_only` exists so transfer-only generation does not
 need meaningful `value_type` / `lut_size`. Those fields are validated only
 when the document contains `[curves]`. Fit policy (`max_interpolation_error`,
-`max_knots`, boundaries) lives on the transfer/family spec.
+`max_knots`, boundaries) lives on the transfer/family spec. Optional family
+`max_total_knots` / `max_table_bytes` are aggregate generation budgets, not
+LUT options; `generate` and `generate_report` both enforce them.
 
 ## Keep-outs
 
