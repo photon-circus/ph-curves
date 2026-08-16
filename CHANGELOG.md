@@ -32,6 +32,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   codegen. Prefitted knots require dense truth so emitted accuracy metadata is
   always verified. `GenerateOptions::transfers_only` skips dense LUT validation
   when the document has no `[curves]`. There is still no plugin/evaluator ABI.
+- Host-only `kind = "scaled_polynomial"` models. Coefficients are
+  `[c0, c1, ...]` for `y = c0 + c1*u + c2*u^2 + ...` with Horner evaluation.
+  Model input is the exact rational `u = count * scale / 1e6` (integer product
+  first). Family members keep shared coefficients and required per-member
+  scale; standalone definitions carry their own scale and observation domain.
+  Inclusive applicability bounds convert to codes without the floating-point
+  off-by-one from pre-rounding `scale / 1e6`. `u16::MAX` is legal unless the
+  caller excludes it. Empty or non-finite coefficients, zero scale, invalid
+  domain, non-monotonic truth, non-finite output, and scaled `i32` overflow
+  fail closed. Generated firmware remains integer knots.
 
 ### Changed
 

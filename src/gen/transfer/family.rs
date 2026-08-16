@@ -31,7 +31,7 @@ pub enum DeclaredSource {
     Formula,
     /// Sparse physical control points.
     Points,
-    /// A built-in host model (currently the NTC Beta-divider).
+    /// A built-in host model (NTC Beta-divider or scaled polynomial).
     Model,
 }
 
@@ -94,12 +94,13 @@ impl TransferFamilyDef {
         self.points.as_deref()
     }
 
-    /// Inclusive observation domain, required for formula sources.
+    /// Inclusive observation domain, required for formula sources. Derived from
+    /// applicability for scaled-polynomial families.
     pub fn domain(&self) -> Option<[u16; 2]> {
         self.domain
     }
 
-    /// Physical output window, required for model sources.
+    /// Physical output window, required for output-range models (NTC).
     pub fn output_range(&self) -> Option<[f64; 2]> {
         self.output_range
     }
@@ -132,7 +133,10 @@ pub struct FamilyMemberDef {
     pub selectors: BTreeMap<String, SelectorValue>,
     /// Model-input scale for this member. Required and must be nonzero.
     ///
-    /// Inspectable in this schema; applying it to truth is a later model.
+    /// For `kind = "scaled_polynomial"`, expansion applies this scale to host
+    /// truth (`u = count * scale / 1e6`) and converts `applicability.model_input`
+    /// to an observation-domain window. Formula and points sources leave it
+    /// inspectable only.
     pub scale: u32,
     /// Whether this member is generated or description-only.
     pub status: MemberStatus,
@@ -258,7 +262,7 @@ pub(crate) fn expand_families(
                 continue;
             }
             let member_name = expanded_name(family_name, &member.selectors)?;
-            let def = member_transfer(family);
+            let def = member_transfer(family_name, family, member)?;
             if let Some(_previous) = out.insert(member_name.clone(), def) {
                 return Err(format!(
                     "transfer family `{family_name}`: duplicate expanded name `{member_name}` \
@@ -302,11 +306,35 @@ fn validate_family(family_name: &str, family: &TransferFamilyDef) -> Result<(), 
             "transfer family `{family_name}`: members must not be empty"
         ));
     }
+    if let Some(ModelDef::ScaledPolynomial {
+        scale,
+        coefficients,
+        ..
+    }) = &family.model
+    {
+        if scale.is_some() {
+            return Err(format!(
+                "transfer family `{family_name}`: scale belongs on members, not the shared model"
+            ));
+        }
+        if family.domain.is_some() {
+            return Err(format!(
+                "transfer family `{family_name}`: domain is derived from applicability for scaled_polynomial"
+            ));
+        }
+        if family.output_range.is_some() {
+            return Err(format!(
+                "transfer family `{family_name}`: output_range is forbidden for scaled_polynomial"
+            ));
+        }
+        super::model::validate_coefficients(coefficients)
+            .map_err(|error| format!("transfer family `{family_name}`: {error}"))?;
+    }
 
     let mut seen_identities: BTreeMap<&BTreeMap<String, SelectorValue>, usize> = BTreeMap::new();
     let mut seen_emitted_names: BTreeMap<String, String> = BTreeMap::new();
     for (index, member) in family.members.iter().enumerate() {
-        validate_member(family_name, index, member)?;
+        validate_member(family_name, family, index, member)?;
         if let Some(&previous) = seen_identities.get(&member.selectors) {
             return Err(format!(
                 "transfer family `{family_name}`: members {previous} and {index} share selector identity {}",
@@ -333,6 +361,7 @@ fn validate_family(family_name: &str, family: &TransferFamilyDef) -> Result<(), 
 
 fn validate_member(
     family_name: &str,
+    family: &TransferFamilyDef,
     index: usize,
     member: &FamilyMemberDef,
 ) -> Result<(), String> {
@@ -367,11 +396,35 @@ fn validate_member(
              must be two strictly increasing finite values"
         ));
     }
+    if matches!(family.model, Some(ModelDef::ScaledPolynomial { .. })) {
+        super::model::observation_domain(member.scale, member.applicability.model_input)
+            .map_err(|error| format!("transfer family `{family_name}` member {index}: {error}"))?;
+    }
     Ok(())
 }
 
-fn member_transfer(family: &TransferFamilyDef) -> TransferDef {
-    TransferDef {
+fn member_transfer(
+    family_name: &str,
+    family: &TransferFamilyDef,
+    member: &FamilyMemberDef,
+) -> Result<TransferDef, String> {
+    let (model, domain, output_range) = match &family.model {
+        Some(ModelDef::ScaledPolynomial { coefficients, .. }) => {
+            let domain =
+                super::model::observation_domain(member.scale, member.applicability.model_input)
+                    .map_err(|error| format!("transfer family `{family_name}`: {error}"))?;
+            (
+                Some(ModelDef::ScaledPolynomial {
+                    coefficients: coefficients.clone(),
+                    scale: Some(member.scale),
+                }),
+                Some(domain),
+                None,
+            )
+        }
+        other => (other.clone(), family.domain, family.output_range),
+    };
+    Ok(TransferDef {
         input_unit: family.input_unit.clone(),
         output_unit: family.output_unit.clone(),
         output_scale: family.output_scale,
@@ -381,10 +434,10 @@ fn member_transfer(family: &TransferFamilyDef) -> TransferDef {
         above: family.above,
         points: family.points.clone(),
         formula: family.formula.clone(),
-        model: family.model.clone(),
-        domain: family.domain,
-        output_range: family.output_range,
-    }
+        model,
+        domain,
+        output_range,
+    })
 }
 
 pub(crate) fn expanded_name(
@@ -458,6 +511,31 @@ mod tests {
             formula: Some("x".into()),
             model: None,
             domain: Some([1, 10]),
+            output_range: None,
+            members,
+        }
+    }
+
+    fn scaled_poly_family(
+        coefficients: Vec<f64>,
+        members: Vec<FamilyMemberDef>,
+    ) -> TransferFamilyDef {
+        TransferFamilyDef {
+            input_unit: "count".into(),
+            output_unit: "unit".into(),
+            output_scale: 1,
+            max_interpolation_error: 1,
+            max_knots: 64,
+            interpolate_selectors: false,
+            below: BoundaryDef::Error,
+            above: BoundaryDef::Error,
+            points: None,
+            formula: None,
+            model: Some(ModelDef::ScaledPolynomial {
+                coefficients,
+                scale: None,
+            }),
+            domain: None,
             output_range: None,
             members,
         }
@@ -830,5 +908,105 @@ members = []
         )
         .unwrap_err();
         assert!(error.contains("unknown field `saturation`"), "{error}");
+    }
+
+    #[test]
+    fn scaled_polynomial_family_injects_per_member_scale_and_domain() {
+        let mut low = emit_member("div4", 800, 33_600);
+        low.applicability.model_input = [63.0, 100.0];
+        let mut high = emit_member("div4", 400, 67_200);
+        high.applicability.model_input = [63.0, 100.0];
+        let mut families = BTreeMap::new();
+        families.insert(
+            "als".into(),
+            scaled_poly_family(vec![0.0, 1.0], vec![low, high]),
+        );
+        let expanded = expand_families(&families).unwrap();
+
+        let slow = &expanded["als_gain_div4_integration_time_ms_800"];
+        assert_eq!(slow.domain.unwrap()[0], 1875);
+        match &slow.model {
+            Some(ModelDef::ScaledPolynomial {
+                scale: Some(33_600),
+                coefficients,
+            }) => assert_eq!(coefficients, &vec![0.0, 1.0]),
+            other => panic!("expected injected scale 33600, got {other:?}"),
+        }
+
+        let fast = &expanded["als_gain_div4_integration_time_ms_400"];
+        assert_eq!(fast.domain.unwrap()[0], 938);
+        match &fast.model {
+            Some(ModelDef::ScaledPolynomial {
+                scale: Some(67_200),
+                ..
+            }) => {}
+            other => panic!("expected injected scale 67200, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn scaled_polynomial_family_rejects_scale_on_the_shared_model() {
+        let mut family = scaled_poly_family(vec![0.0, 1.0], vec![emit_member("div4", 100, 33_600)]);
+        if let Some(ModelDef::ScaledPolynomial { scale, .. }) = &mut family.model {
+            *scale = Some(33_600);
+        }
+        let mut families = BTreeMap::new();
+        families.insert("als".into(), family);
+        let error = expand_families(&families).unwrap_err();
+        assert!(error.contains("scale belongs on members"), "{error}");
+    }
+
+    #[test]
+    fn scaled_polynomial_family_rejects_family_level_domain() {
+        let mut family = scaled_poly_family(vec![0.0, 1.0], vec![emit_member("div4", 100, 33_600)]);
+        family.domain = Some([1, 10]);
+        let mut families = BTreeMap::new();
+        families.insert("als".into(), family);
+        let error = expand_families(&families).unwrap_err();
+        assert!(error.contains("derived from applicability"), "{error}");
+    }
+
+    #[test]
+    fn scaled_polynomial_empty_applicability_window_fails_for_every_member() {
+        let mut bad = emit_member("div4", 100, 33_600);
+        bad.applicability.model_input = [0.0, 0.01];
+        bad.status = MemberStatus::DoNotUse;
+        let mut families = BTreeMap::new();
+        families.insert(
+            "als".into(),
+            scaled_poly_family(vec![0.0, 1.0], vec![emit_member("div8", 100, 67_200), bad]),
+        );
+        let error = expand_families(&families).unwrap_err();
+        assert!(error.contains("member 1"), "{error}");
+        assert!(error.contains("fewer than two"), "{error}");
+    }
+
+    #[test]
+    fn scaled_polynomial_optical_model_field_is_rejected() {
+        let error = parse_family(
+            r#"
+[transfer_families.als]
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+
+[transfer_families.als.model]
+kind = "scaled_polynomial"
+coefficients = [0.0, 1.0]
+scale_micro_lux_per_count = 33600
+
+[[transfer_families.als.members]]
+selectors = { gain = "div4" }
+scale = 33600
+status = "emit"
+applicability = { model_input = [63.0, 100.0] }
+"#,
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("unknown field `scale_micro_lux_per_count`"),
+            "{error}"
+        );
     }
 }

@@ -8,8 +8,14 @@ use std::prelude::v1::*;
 
 use serde::Deserialize;
 
+/// Denominator for the rational model-input scale: `u = count * scale / 1e6`.
+///
+/// `scale` is stored as an integer so `u16 * u32` stays below `2^48` and is
+/// therefore exact in `f64` before this division.
+pub(crate) const MODEL_INPUT_SCALE_DENOMINATOR: u64 = 1_000_000;
+
 #[derive(Clone, Debug, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ModelDef {
     NtcBetaDivider {
         nominal_resistance_ohms: f64,
@@ -19,6 +25,16 @@ pub enum ModelDef {
         adc_max_code: u16,
         topology: DividerTopology,
     },
+    /// `y = c0 + c1*u + c2*u^2 + ...` with `u = count * scale / 1e6`.
+    ///
+    /// Standalone TOML supplies `scale`. Family TOML omits it (defaults to
+    /// `None`); expansion fills it from the member so shared coefficients stay
+    /// distinct from per-member scale.
+    ScaledPolynomial {
+        coefficients: Vec<f64>,
+        #[serde(default)]
+        scale: Option<u32>,
+    },
 }
 
 #[derive(Copy, Clone, Debug, Deserialize)]
@@ -26,6 +42,52 @@ pub enum ModelDef {
 pub enum DividerTopology {
     NtcToGround,
     NtcToSupply,
+}
+
+/// Model input `u` from an observation code using exact integer-product scale.
+///
+/// Computes `(count as u64 * scale as u64) as f64 / 1e6`. The product is
+/// less than `2^48`, so it is exact in `f64` before the divide. Pre-rounding
+/// `scale / 1e6` then multiplying by `count` is the off-by-one this exists
+/// to prevent.
+pub(crate) fn scaled_input(count: u16, scale: u32) -> f64 {
+    let product = u64::from(count) * u64::from(scale);
+    (product as f64) / MODEL_INPUT_SCALE_DENOMINATOR as f64
+}
+
+/// Inclusive observation-domain window covering `model_input` at `scale`.
+///
+/// Uses the same `u(count)` as evaluation: smallest code with `u >= min`,
+/// largest with `u <= max`. `u16::MAX` is included when it falls inside the
+/// window. Fewer than two codes is an error.
+pub(crate) fn observation_domain(scale: u32, model_input: [f64; 2]) -> Result<[u16; 2], String> {
+    if scale == 0 {
+        return Err("scale must be positive".into());
+    }
+    let [min, max] = model_input;
+    if !min.is_finite() || !max.is_finite() || min >= max {
+        return Err(
+            "applicability.model_input must be two strictly increasing finite values".into(),
+        );
+    }
+
+    let mut first = None;
+    let mut last = None;
+    for code in 0..=u16::MAX {
+        let u = scaled_input(code, scale);
+        if u >= min && u <= max {
+            if first.is_none() {
+                first = Some(code);
+            }
+            last = Some(code);
+        } else if first.is_some() && u > max {
+            break;
+        }
+    }
+    match (first, last) {
+        (Some(lo), Some(hi)) if lo < hi => Ok([lo, hi]),
+        _ => Err("applicability window contains fewer than two observation codes".into()),
+    }
 }
 
 pub fn evaluate(
@@ -116,7 +178,78 @@ pub fn evaluate(
             );
             Ok((minimum, values, description))
         }
+        ModelDef::ScaledPolynomial { .. } => Err(format!(
+            "transfer `{name}`: scaled_polynomial is not an output_range model; use domain"
+        )),
     }
+}
+
+/// Evaluate `y = poly(u)` on an inclusive observation domain.
+///
+/// Coefficients are `[c0, c1, c2, ...]` for `y = c0 + c1*u + c2*u^2 + ...`,
+/// evaluated with Horner from the high-degree end. `u16::MAX` is a legal
+/// domain endpoint; saturation policy is a later schema.
+pub fn evaluate_scaled_polynomial(
+    name: &str,
+    coefficients: &[f64],
+    scale: u32,
+    domain: [u16; 2],
+) -> Result<(u16, Vec<f64>, String), String> {
+    validate_coefficients(coefficients).map_err(|error| format!("transfer `{name}`: {error}"))?;
+    if scale == 0 {
+        return Err(format!(
+            "transfer `{name}`: scaled_polynomial scale must be positive"
+        ));
+    }
+    let [minimum, maximum] = domain;
+    if minimum >= maximum {
+        return Err(format!(
+            "transfer `{name}`: domain must be strictly increasing"
+        ));
+    }
+
+    let mut values = Vec::with_capacity(usize::from(maximum - minimum) + 1);
+    for code in minimum..=maximum {
+        let u = scaled_input(code, scale);
+        let y = horner(coefficients, u);
+        if !y.is_finite() {
+            return Err(format!(
+                "transfer `{name}`: scaled_polynomial produced a non-finite value at code {code}"
+            ));
+        }
+        values.push(y);
+    }
+
+    Ok((
+        minimum,
+        values,
+        format!(
+            "scaled polynomial ({} coefficients, scale={scale})",
+            coefficients.len()
+        ),
+    ))
+}
+
+pub(crate) fn validate_coefficients(coefficients: &[f64]) -> Result<(), String> {
+    if coefficients.is_empty() {
+        return Err("scaled_polynomial coefficients must not be empty".into());
+    }
+    for (index, value) in coefficients.iter().enumerate() {
+        if !value.is_finite() {
+            return Err(format!(
+                "scaled_polynomial coefficient {index} must be finite"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn horner(coefficients: &[f64], u: f64) -> f64 {
+    let mut acc = 0.0;
+    for &coefficient in coefficients.iter().rev() {
+        acc = acc * u + coefficient;
+    }
+    acc
 }
 
 fn ntc_temperature(
@@ -136,4 +269,42 @@ fn ntc_temperature(
     let nominal_kelvin = nominal_temperature_celsius + 273.15;
     let kelvin = 1.0 / (1.0 / nominal_kelvin + (resistance / nominal_resistance).ln() / beta);
     kelvin - 273.15
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scaled_input_keeps_the_integer_product_exact() {
+        assert_eq!(scaled_input(1875, 33_600), 63.0);
+        assert!(scaled_input(1874, 33_600) < 63.0);
+        assert_eq!(scaled_input(5581, 268_800), 1500.1728);
+    }
+
+    #[test]
+    fn inclusive_lower_bound_includes_the_exact_endpoint_code() {
+        let [lo, _] = observation_domain(33_600, [63.0, 100.0]).unwrap();
+        assert_eq!(lo, 1875);
+    }
+
+    #[test]
+    fn observation_domain_may_include_u16_max() {
+        let [_, hi] = observation_domain(1_000, [0.0, 100.0]).unwrap();
+        assert_eq!(hi, u16::MAX);
+    }
+
+    #[test]
+    fn empty_observation_window_fails_closed() {
+        let error = observation_domain(33_600, [0.0, 0.01]).unwrap_err();
+        assert!(error.contains("fewer than two"), "{error}");
+    }
+
+    #[test]
+    fn horner_matches_explicit_powers() {
+        let coefficients = [1.0, 2.0, 3.0];
+        let u = 4.0;
+        let expected = 1.0 + 2.0 * u + 3.0 * u * u;
+        assert_eq!(horner(&coefficients, u), expected);
+    }
 }

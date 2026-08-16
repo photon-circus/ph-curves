@@ -797,6 +797,37 @@ domain = [1, 10]
     }
 
     #[test]
+    fn scaled_polynomial_family_emits_sparse_integer_transfers_without_floats() {
+        let toml = r#"
+[transfer_families.als]
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+max_knots = 8
+interpolate_selectors = false
+
+[transfer_families.als.model]
+kind = "scaled_polynomial"
+coefficients = [0.0, 0.5]
+
+[[transfer_families.als.members]]
+selectors = { gain = "div4", integration_time_ms = 800 }
+scale = 33600
+status = "emit"
+applicability = { model_input = [63.0, 64.0] }
+"#;
+        let definition: DefinitionsFile = toml::from_str(toml).unwrap();
+        let output = generate(&definition, "u8", 256).unwrap();
+        assert!(output.contains("PiecewiseLinearTransfer"));
+        assert!(output.contains("pub const ALS_GAIN_DIV4_INTEGRATION_TIME_MS_800"));
+        assert!(output.contains("1875"));
+        assert!(!output.contains("CurveLut"));
+        assert!(!output.contains("f32"));
+        assert!(!output.contains("f64"));
+    }
+
+    #[test]
     fn twenty_four_member_family_inspects_all_and_emits_twelve_once() {
         let toml = twenty_four_member_family_toml();
         let definition: DefinitionsFile = toml::from_str(&toml).unwrap();

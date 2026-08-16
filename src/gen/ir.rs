@@ -61,7 +61,10 @@ impl ValidatedMember {
         &self.selectors
     }
 
-    /// Per-member model-input scale. Not applied to truth by this crate.
+    /// Per-member model-input scale.
+    ///
+    /// Applied to host truth for `kind = "scaled_polynomial"`
+    /// (`u = count * scale / 1e6`). Inspectable for formula and points sources.
     pub fn scale(&self) -> u32 {
         self.scale
     }
