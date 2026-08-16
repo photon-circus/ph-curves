@@ -41,7 +41,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   off-by-one from pre-rounding `scale / 1e6`. `u16::MAX` is legal unless the
   caller excludes it. Empty or non-finite coefficients, zero scale, invalid
   domain, non-monotonic truth, non-finite output, and scaled `i32` overflow
-  fail closed. Generated firmware remains integer knots.
+  fail closed. Unknown scaled-polynomial model fields are rejected without
+  tightening the existing standalone NTC parser. Generated firmware remains
+  integer knots.
 
 ### Changed
 

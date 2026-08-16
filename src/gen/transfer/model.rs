@@ -6,7 +6,7 @@ extern crate std;
 use std::format;
 use std::prelude::v1::*;
 
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 
 /// Denominator for the rational model-input scale: `u = count * scale / 1e6`.
 ///
@@ -14,8 +14,7 @@ use serde::Deserialize;
 /// therefore exact in `f64` before this division.
 pub(crate) const MODEL_INPUT_SCALE_DENOMINATOR: u64 = 1_000_000;
 
-#[derive(Clone, Debug, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[derive(Clone, Debug)]
 pub enum ModelDef {
     NtcBetaDivider {
         nominal_resistance_ohms: f64,
@@ -32,9 +31,61 @@ pub enum ModelDef {
     /// distinct from per-member scale.
     ScaledPolynomial {
         coefficients: Vec<f64>,
-        #[serde(default)]
         scale: Option<u32>,
     },
+}
+
+// Preserve the documented permissive parser for existing NTC models while
+// keeping the new scaled-polynomial vocabulary fail-closed.
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum ModelDefWire {
+    NtcBetaDivider {
+        nominal_resistance_ohms: f64,
+        beta_kelvin: f64,
+        nominal_temperature_celsius: f64,
+        fixed_resistance_ohms: f64,
+        adc_max_code: u16,
+        topology: DividerTopology,
+    },
+    ScaledPolynomial(ScaledPolynomialWire),
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScaledPolynomialWire {
+    coefficients: Vec<f64>,
+    #[serde(default)]
+    scale: Option<u32>,
+}
+
+impl<'de> Deserialize<'de> for ModelDef {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(match ModelDefWire::deserialize(deserializer)? {
+            ModelDefWire::NtcBetaDivider {
+                nominal_resistance_ohms,
+                beta_kelvin,
+                nominal_temperature_celsius,
+                fixed_resistance_ohms,
+                adc_max_code,
+                topology,
+            } => Self::NtcBetaDivider {
+                nominal_resistance_ohms,
+                beta_kelvin,
+                nominal_temperature_celsius,
+                fixed_resistance_ohms,
+                adc_max_code,
+                topology,
+            },
+            ModelDefWire::ScaledPolynomial(ScaledPolynomialWire {
+                coefficients,
+                scale,
+            }) => Self::ScaledPolynomial {
+                coefficients,
+                scale,
+            },
+        })
+    }
 }
 
 #[derive(Copy, Clone, Debug, Deserialize)]
@@ -274,6 +325,42 @@ fn ntc_temperature(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ntc_model_keeps_ignoring_unknown_fields() {
+        let model: ModelDef = toml::from_str(
+            r#"
+kind = "ntc_beta_divider"
+nominal_resistance_ohms = 10000.0
+beta_kelvin = 3950.0
+nominal_temperature_celsius = 25.0
+fixed_resistance_ohms = 10000.0
+adc_max_code = 4095
+topology = "ntc_to_ground"
+future_calibration_field = "ignored for compatibility"
+"#,
+        )
+        .unwrap();
+        assert!(matches!(model, ModelDef::NtcBetaDivider { .. }));
+    }
+
+    #[test]
+    fn scaled_polynomial_rejects_unknown_fields() {
+        let error = toml::from_str::<ModelDef>(
+            r#"
+kind = "scaled_polynomial"
+coefficients = [0.0, 1.0]
+scale = 33600
+scale_micro_lux_per_count = 33600
+"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("unknown field `scale_micro_lux_per_count`"),
+            "{error}"
+        );
+    }
 
     #[test]
     fn scaled_input_keeps_the_integer_product_exact() {
