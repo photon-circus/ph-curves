@@ -394,9 +394,13 @@ Inspect parsed families and gaps through
 `DefinitionsFile::transfer_families` and `gaps`. `DefinitionsFile::validate`
 returns a `ValidatedDefinitions` graph that includes description-only members,
 family-scoped gaps, the declared selector universe, and completeness status.
-Document-level gap reasons remain on `ValidatedDefinitions::gaps`. A host tool that owns device evaluation can overlay
-`TransferSource::evaluated_truth` or prefitted knots on an emitted member and
-still receive ordinary generated tables. A family-member overlay must span
+The universe exposes a checked `identity_count`; Cartesian overflow is a
+validation error, completeness is proven from indexed occupancy counts, and
+`identities()` enumerates lazily without materializing the axis product.
+Document-level gap reasons remain on `ValidatedDefinitions::gaps`. A host
+tool that owns device evaluation can overlay `TransferSource::evaluated_truth`
+or prefitted knots on an emitted member and still receive ordinary generated
+tables. A family-member overlay must span
 the member's resolved observation domain; a standalone overlay replaces its
 declared source and may define a different domain. Transfer-only generation
 uses `GenerateOptions::transfers_only()`; curve LUT `value_type` / `lut_size`

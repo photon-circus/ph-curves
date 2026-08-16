@@ -47,11 +47,20 @@ already on `ValidatedFamily` ([#40](https://github.com/photon-circus/ph-curves/i
 
 Host tools inspect through nameable types: `ValidatedDefinitions`,
 `ValidatedFamily`, `ValidatedMember`, `ValidatedFamilyGap`,
-`SelectorUniverse`, `FamilyCompleteness`, `DeclaredSource`,
+`SelectorUniverse`, its lazy `SelectorIdentities` iterator,
+`FamilyCompleteness`, `DeclaredSource`,
 `TransferFamilyDef` accessors, `DefinitionsFile::curves` / `transfers` /
 `transfer_families` / `gaps`. `ValidatedFamily::gaps` is the family-scoped
 selector list; `ValidatedDefinitions::gaps` is the document-level named map.
 Built-in `ModelDef` remains crate-private.
+
+`SelectorUniverse::identity_count` is the explicit-list length or checked
+Cartesian axis-length product. Family validation rejects a Cartesian product
+that does not fit the host's `usize`. Completeness follows from indexed
+in-universe membership, duplicate rejection, and equality between occupied
+and expected counts; validation never materializes the product.
+`SelectorUniverse::identities` yields maps lazily in deterministic axis/value
+order for callers that need independent enumeration.
 
 Extension:
 

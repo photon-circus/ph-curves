@@ -55,6 +55,6 @@ pub use ir::{ValidatedDefinitions, ValidatedFamily, ValidatedFamilyGap, Validate
 pub use transfer::{
     ApplicabilityDef, BoundaryDef, DeclaredSource, EvaluatedTruth, FamilyCompleteness,
     FamilyGapDef, FamilyMemberDef, GapDef, GapStatus, InputTransform, MemberStatus,
-    ObservationGuardBehaviorDef, ObservationGuardDef, PhysicalPoint, SelectorUniverse,
-    SelectorValue, TransferDef, TransferFamilyDef, TransferSource, TransferSpec,
+    ObservationGuardBehaviorDef, ObservationGuardDef, PhysicalPoint, SelectorIdentities,
+    SelectorUniverse, SelectorValue, TransferDef, TransferFamilyDef, TransferSource, TransferSpec,
 };

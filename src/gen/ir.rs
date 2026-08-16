@@ -45,6 +45,10 @@ impl ValidatedFamily {
     }
 
     /// Declared expected selector identities (Cartesian axes or an explicit set).
+    ///
+    /// [`SelectorUniverse::identity_count`] reports the checked cardinality;
+    /// [`SelectorUniverse::identities`] enumerates lazily without materializing
+    /// a Cartesian product.
     pub fn selector_universe(&self) -> &SelectorUniverse {
         &self.selector_universe
     }
@@ -448,7 +452,8 @@ reason = "counts only; no conversion"
             }
             other => panic!("expected cartesian universe, got {other:?}"),
         }
-        assert_eq!(family.selector_universe().identities().len(), 3);
+        assert_eq!(family.selector_universe().identity_count(), Some(3));
+        assert_eq!(family.selector_universe().identities().count(), 3);
     }
 
     #[test]
@@ -504,7 +509,7 @@ reason = "counts only; no conversion"
             family.gaps()[0].selectors()["gain"],
             SelectorValue::Integer(8)
         );
-        let identities = family.selector_universe().identities();
+        let identities: Vec<_> = family.selector_universe().identities().collect();
         assert_eq!(identities.len(), 4);
         assert!(identities.iter().any(|identity| {
             identity.get("range") == Some(&SelectorValue::String("low".into()))

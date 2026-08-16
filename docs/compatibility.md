@@ -154,7 +154,10 @@ source coordinates. Every family also declares its expected selector universe
 with exactly one of `selector_axes` (Cartesian product) or
 `expected_selectors` (explicit maps). Each expected identity is occupied by
 exactly one member or family-scoped gap; document-level `[gaps]` do not
-satisfy that occupancy. That is the publish shape. `[transfer_families]` has
+satisfy that occupancy. Cartesian cardinality uses checked multiplication and
+must fit the generator host's `usize`; completeness validation compares that
+count with indexed, duplicate-free occupancy without materializing the
+product. That is the publish shape. `[transfer_families]` has
 not shipped in 0.2.1, so this is not a 0.2.x document break. Standalone
 transfer TOML (`scale` / `1e6`, `domain`) is unchanged. The first release that
 publishes families must include this matrix and the required universe; do not

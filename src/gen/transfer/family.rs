@@ -84,7 +84,8 @@ pub struct TransferFamilyDef {
     /// Named selector axes whose Cartesian product is the expected universe.
     ///
     /// Mutually exclusive with [`Self::expected_selectors`]. Exactly one of
-    /// the two must be set.
+    /// the two must be set. The checked product of axis lengths must fit the
+    /// generator host's `usize`.
     #[serde(default)]
     pub selector_axes: Option<BTreeMap<String, Vec<SelectorValue>>>,
     /// Explicit expected selector maps for a non-Cartesian family.
@@ -313,7 +314,8 @@ impl SelectorValue {
 /// written; missing product cells are not invented.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SelectorUniverse {
-    /// Named axes whose Cartesian product is expected.
+    /// Named axes whose Cartesian product is expected. Validated products have
+    /// a cardinality representable by `usize`.
     Cartesian {
         /// Axis name → allowed typed values in declaration order.
         axes: BTreeMap<String, Vec<SelectorValue>>,
@@ -326,62 +328,136 @@ pub enum SelectorUniverse {
 }
 
 impl SelectorUniverse {
-    /// Every expected selector identity, independently enumerable.
+    /// Lazily enumerate every expected selector identity.
     ///
     /// Cartesian identities follow `BTreeMap` axis-key order, then each axis's
-    /// declared value order. Explicit identities keep declaration order.
-    pub fn identities(&self) -> Vec<BTreeMap<String, SelectorValue>> {
-        match self {
-            Self::Cartesian { axes } => cartesian_identities(axes),
-            Self::Explicit { identities } => identities.clone(),
-        }
+    /// declared value order, with the last axis changing fastest. Explicit
+    /// identities keep declaration order. Constructing the iterator uses
+    /// memory proportional to the number of axes; it never materializes the
+    /// Cartesian product.
+    pub fn identities(&self) -> SelectorIdentities<'_> {
+        SelectorIdentities::new(self)
     }
 
-    fn key_set(&self) -> BTreeSet<String> {
-        match self {
-            Self::Cartesian { axes } => axes.keys().cloned().collect(),
-            Self::Explicit { identities } => identities
-                .first()
-                .map(|map| map.keys().cloned().collect())
-                .unwrap_or_default(),
-        }
-    }
-
-    fn types_for(&self, key: &str) -> SelectorTypeSet {
-        let mut types = SelectorTypeSet::default();
+    /// Checked number of expected identities.
+    ///
+    /// Explicit universes always return their list length. Cartesian
+    /// universes return the checked product of their axis lengths, or `None`
+    /// when that product cannot be represented by `usize`. Family validation
+    /// rejects the overflow case, so a universe obtained from a validated
+    /// family always returns `Some`.
+    pub fn identity_count(&self) -> Option<usize> {
         match self {
             Self::Cartesian { axes } => {
-                if let Some(values) = axes.get(key) {
-                    for value in values {
-                        types.add(value);
-                    }
+                if axes.values().any(Vec::is_empty) {
+                    return Some(0);
                 }
+                axes.values()
+                    .try_fold(1usize, |count, values| count.checked_mul(values.len()))
             }
-            Self::Explicit { identities } => {
-                for identity in identities {
-                    if let Some(value) = identity.get(key) {
-                        types.add(value);
-                    }
-                }
-            }
-        }
-        types
-    }
-
-    fn contains(&self, selectors: &BTreeMap<String, SelectorValue>) -> bool {
-        match self {
-            Self::Cartesian { axes } => {
-                selectors.len() == axes.len()
-                    && selectors.iter().all(|(key, value)| {
-                        axes.get(key).is_some_and(|values| values.contains(value))
-                    })
-            }
-            Self::Explicit { identities } => {
-                identities.iter().any(|identity| identity == selectors)
-            }
+            Self::Explicit { identities } => Some(identities.len()),
         }
     }
 }
+
+/// Lazy iterator over a selector universe's expected identities.
+///
+/// The iterator owns only axis positions and produces one selector map at a
+/// time. In particular, obtaining or partially consuming it cannot allocate
+/// the full Cartesian product.
+#[must_use = "iterators are lazy and do nothing unless consumed"]
+pub struct SelectorIdentities<'a> {
+    inner: SelectorIdentitiesInner<'a>,
+}
+
+enum SelectorIdentitiesInner<'a> {
+    Cartesian(CartesianIdentities<'a>),
+    Explicit(std::slice::Iter<'a, BTreeMap<String, SelectorValue>>),
+}
+
+impl<'a> SelectorIdentities<'a> {
+    fn new(universe: &'a SelectorUniverse) -> Self {
+        let inner = match universe {
+            SelectorUniverse::Cartesian { axes } => {
+                SelectorIdentitiesInner::Cartesian(CartesianIdentities::new(axes))
+            }
+            SelectorUniverse::Explicit { identities } => {
+                SelectorIdentitiesInner::Explicit(identities.iter())
+            }
+        };
+        Self { inner }
+    }
+}
+
+impl Iterator for SelectorIdentities<'_> {
+    type Item = BTreeMap<String, SelectorValue>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match &mut self.inner {
+            SelectorIdentitiesInner::Cartesian(iter) => iter.next(),
+            SelectorIdentitiesInner::Explicit(iter) => iter.next().cloned(),
+        }
+    }
+}
+
+impl std::iter::FusedIterator for SelectorIdentities<'_> {}
+
+struct CartesianIdentities<'a> {
+    axes: Vec<(&'a str, &'a [SelectorValue])>,
+    positions: Vec<usize>,
+    finished: bool,
+}
+
+impl<'a> CartesianIdentities<'a> {
+    fn new(axes: &'a BTreeMap<String, Vec<SelectorValue>>) -> Self {
+        let axes: Vec<_> = axes
+            .iter()
+            .map(|(name, values)| (name.as_str(), values.as_slice()))
+            .collect();
+        let finished = axes.iter().any(|(_, values)| values.is_empty());
+        let positions = vec![0; axes.len()];
+        Self {
+            axes,
+            positions,
+            finished,
+        }
+    }
+}
+
+impl Iterator for CartesianIdentities<'_> {
+    type Item = BTreeMap<String, SelectorValue>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
+
+        let identity = self
+            .axes
+            .iter()
+            .zip(&self.positions)
+            .map(|((name, values), &position)| ((*name).to_string(), values[position].clone()))
+            .collect();
+
+        if self.axes.is_empty() {
+            self.finished = true;
+            return Some(identity);
+        }
+
+        for axis in (0..self.axes.len()).rev() {
+            let next = self.positions[axis] + 1;
+            if next < self.axes[axis].1.len() {
+                self.positions[axis] = next;
+                return Some(identity);
+            }
+            self.positions[axis] = 0;
+        }
+        self.finished = true;
+        Some(identity)
+    }
+}
+
+impl std::iter::FusedIterator for CartesianIdentities<'_> {}
 
 #[derive(Clone, Copy, Default)]
 struct SelectorTypeSet {
@@ -418,11 +494,89 @@ impl SelectorTypeSet {
     }
 }
 
+struct SelectorUniverseIndex {
+    keys: BTreeSet<String>,
+    types: BTreeMap<String, SelectorTypeSet>,
+    membership: SelectorMembershipIndex,
+    identity_count: usize,
+}
+
+enum SelectorMembershipIndex {
+    Cartesian(BTreeMap<String, BTreeSet<SelectorValue>>),
+    Explicit(BTreeSet<BTreeMap<String, SelectorValue>>),
+}
+
+impl SelectorUniverseIndex {
+    fn new(universe: &SelectorUniverse) -> Self {
+        match universe {
+            SelectorUniverse::Cartesian { axes } => {
+                let mut types = BTreeMap::new();
+                let membership = axes
+                    .iter()
+                    .map(|(key, values)| {
+                        let mut value_types = SelectorTypeSet::default();
+                        for value in values {
+                            value_types.add(value);
+                        }
+                        types.insert(key.clone(), value_types);
+                        (key.clone(), values.iter().cloned().collect())
+                    })
+                    .collect();
+                Self {
+                    keys: axes.keys().cloned().collect(),
+                    types,
+                    membership: SelectorMembershipIndex::Cartesian(membership),
+                    identity_count: universe
+                        .identity_count()
+                        .expect("validated Cartesian cardinality"),
+                }
+            }
+            SelectorUniverse::Explicit { identities } => {
+                let keys = identities
+                    .first()
+                    .map(|identity| identity.keys().cloned().collect())
+                    .unwrap_or_default();
+                let mut types: BTreeMap<String, SelectorTypeSet> = BTreeMap::new();
+                for identity in identities {
+                    for (key, value) in identity {
+                        types.entry(key.clone()).or_default().add(value);
+                    }
+                }
+                Self {
+                    keys,
+                    types,
+                    membership: SelectorMembershipIndex::Explicit(
+                        identities.iter().cloned().collect(),
+                    ),
+                    identity_count: identities.len(),
+                }
+            }
+        }
+    }
+
+    fn types_for(&self, key: &str) -> SelectorTypeSet {
+        self.types.get(key).copied().unwrap_or_default()
+    }
+
+    fn contains(&self, selectors: &BTreeMap<String, SelectorValue>) -> bool {
+        match &self.membership {
+            SelectorMembershipIndex::Cartesian(axes) => {
+                selectors.len() == axes.len()
+                    && selectors.iter().all(|(key, value)| {
+                        axes.get(key).is_some_and(|values| values.contains(value))
+                    })
+            }
+            SelectorMembershipIndex::Explicit(identities) => identities.contains(selectors),
+        }
+    }
+}
+
 /// Completeness of a validated family's selector occupancy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FamilyCompleteness {
     /// Every declared expected selector identity is occupied by exactly one
-    /// member or family-scoped gap.
+    /// member or family-scoped gap. Validation proves this from exact indexed
+    /// membership, duplicate rejection, and checked cardinality equality.
     Complete,
 }
 
@@ -543,6 +697,7 @@ fn validate_family(family_name: &str, family: &TransferFamilyDef) -> Result<(), 
     }
 
     let universe = resolved_selector_universe(family_name, family)?;
+    let universe_index = SelectorUniverseIndex::new(&universe);
 
     let mut seen_emitted_names: BTreeMap<String, String> = BTreeMap::new();
     for (index, member) in family.members.iter().enumerate() {
@@ -550,7 +705,7 @@ fn validate_family(family_name: &str, family: &TransferFamilyDef) -> Result<(), 
             &member_label(family_name, index),
             family_name,
             &member.selectors,
-            &universe,
+            &universe_index,
         )?;
         if member.status == MemberStatus::Emit {
             let member_name = expanded_name(family_name, &member.selectors)?;
@@ -589,11 +744,11 @@ fn validate_family(family_name: &str, family: &TransferFamilyDef) -> Result<(), 
             &gap_label(family_name, index),
             family_name,
             &gap.selectors,
-            &universe,
+            &universe_index,
         )?;
     }
 
-    validate_completeness(family_name, family, &universe)?;
+    validate_completeness(family_name, family, &universe_index)?;
     Ok(())
 }
 
@@ -603,24 +758,35 @@ pub(crate) fn resolved_selector_universe(
     family_name: &str,
     family: &TransferFamilyDef,
 ) -> Result<SelectorUniverse, String> {
-    match (
+    let universe = match (
         family.selector_axes.as_ref(),
         family.expected_selectors.as_ref(),
     ) {
-        (None, None) => Err(format!(
-            "transfer family `{family_name}`: exactly one of selector_axes or expected_selectors \
+        (None, None) => {
+            return Err(format!(
+                "transfer family `{family_name}`: exactly one of selector_axes or expected_selectors \
              must be specified"
-        )),
-        (Some(_), Some(_)) => Err(format!(
-            "transfer family `{family_name}`: selector_axes and expected_selectors are mutually exclusive"
-        )),
-        (Some(axes), None) => Ok(SelectorUniverse::Cartesian {
+            ));
+        }
+        (Some(_), Some(_)) => {
+            return Err(format!(
+                "transfer family `{family_name}`: selector_axes and expected_selectors are mutually exclusive"
+            ));
+        }
+        (Some(axes), None) => SelectorUniverse::Cartesian {
             axes: validate_selector_axes(family_name, axes)?,
-        }),
-        (None, Some(identities)) => Ok(SelectorUniverse::Explicit {
+        },
+        (None, Some(identities)) => SelectorUniverse::Explicit {
             identities: validate_expected_selectors(family_name, identities)?,
-        }),
+        },
+    };
+    if universe.identity_count().is_none() {
+        return Err(format!(
+            "transfer family `{family_name}`: selector_axes Cartesian product cardinality \
+             exceeds this platform's usize capacity"
+        ));
     }
+    Ok(universe)
 }
 
 fn validate_selector_axes(
@@ -748,23 +914,21 @@ fn validate_family_gap(family_name: &str, index: usize, gap: &FamilyGapDef) -> R
 fn validate_completeness(
     family_name: &str,
     family: &TransferFamilyDef,
-    universe: &SelectorUniverse,
+    universe: &SelectorUniverseIndex,
 ) -> Result<(), String> {
-    let occupied: BTreeSet<&BTreeMap<String, SelectorValue>> = family
+    let occupied_count = family
         .members
-        .iter()
-        .map(|member| &member.selectors)
-        .chain(family.gaps.iter().map(|gap| &gap.selectors))
-        .collect();
-
-    for identity in universe.identities() {
-        if !occupied.contains(&identity) {
-            return Err(format!(
-                "transfer family `{family_name}`: expected selector identity {} is not occupied \
-                 by a member or family-scoped gap",
-                format_selectors(&identity)
-            ));
-        }
+        .len()
+        .checked_add(family.gaps.len())
+        .ok_or_else(|| {
+            format!("transfer family `{family_name}`: selector occupancy count exceeds usize")
+        })?;
+    if occupied_count != universe.identity_count {
+        return Err(format!(
+            "transfer family `{family_name}`: declared selector universe contains {} identities, \
+             but members and family-scoped gaps occupy {occupied_count}",
+            universe.identity_count
+        ));
     }
     Ok(())
 }
@@ -773,15 +937,14 @@ fn validate_identity_in_universe(
     label: &str,
     family_name: &str,
     selectors: &BTreeMap<String, SelectorValue>,
-    universe: &SelectorUniverse,
+    universe: &SelectorUniverseIndex,
 ) -> Result<(), String> {
-    let expected_keys = universe.key_set();
     let actual_keys: BTreeSet<String> = selectors.keys().cloned().collect();
-    if actual_keys != expected_keys {
+    if actual_keys != universe.keys {
         return Err(format!(
             "{label}: selector keys {} do not match the declared universe keys {}",
             format_keys(&actual_keys),
-            format_keys(&expected_keys)
+            format_keys(&universe.keys)
         ));
     }
     for (key, value) in selectors {
@@ -801,24 +964,6 @@ fn validate_identity_in_universe(
         ));
     }
     Ok(())
-}
-
-fn cartesian_identities(
-    axes: &BTreeMap<String, Vec<SelectorValue>>,
-) -> Vec<BTreeMap<String, SelectorValue>> {
-    let mut identities = vec![BTreeMap::new()];
-    for (key, values) in axes {
-        let mut next = Vec::new();
-        for identity in &identities {
-            for value in values {
-                let mut map = identity.clone();
-                map.insert(key.clone(), value.clone());
-                next.push(map);
-            }
-        }
-        identities = next;
-    }
-    identities
 }
 
 fn format_keys(keys: &BTreeSet<String>) -> String {
@@ -2398,6 +2543,17 @@ applicability = { observation = [1, 10] }
         family
     }
 
+    fn binary_axes(axis_count: usize) -> BTreeMap<String, Vec<SelectorValue>> {
+        (0..axis_count)
+            .map(|index| {
+                (
+                    format!("axis_{index:03}"),
+                    vec![SelectorValue::Integer(0), SelectorValue::Integer(1)],
+                )
+            })
+            .collect()
+    }
+
     #[test]
     fn omitted_cartesian_cell_is_rejected() {
         let family = cartesian_family(
@@ -2409,12 +2565,64 @@ applicability = { observation = [1, 10] }
             Vec::new(),
         );
         let error = expand_families(&BTreeMap::from([("front_end".into(), family)])).unwrap_err();
+        assert!(error.contains("contains 4 identities"), "{error}");
+        assert!(error.contains("occupy 3"), "{error}");
+    }
+
+    #[test]
+    fn cartesian_cardinality_overflow_is_rejected_without_expansion() {
+        let axes = binary_axes(usize::BITS as usize);
+        let mut member = emit_member("div4", 100);
+        member.selectors = axes
+            .keys()
+            .map(|key| (key.clone(), SelectorValue::Integer(0)))
+            .collect();
+        let mut family = formula_family(vec![member]);
+        family.selector_axes = Some(axes);
+        family.expected_selectors = None;
+
+        let error = expand_families(&BTreeMap::from([("front_end".into(), family)])).unwrap_err();
+        assert!(error.contains("Cartesian product cardinality"), "{error}");
+        assert!(error.contains("usize capacity"), "{error}");
+    }
+
+    #[test]
+    fn cartesian_identity_enumeration_is_lazy_even_when_cardinality_overflows() {
+        let axis_count = usize::BITS as usize;
+        let universe = SelectorUniverse::Cartesian {
+            axes: binary_axes(axis_count),
+        };
+        assert_eq!(universe.identity_count(), None);
+
+        let identities: Vec<_> = universe.identities().take(3).collect();
+        assert_eq!(identities.len(), 3);
         assert!(
-            error.contains("expected selector identity") && error.contains("is not occupied"),
-            "{error}"
+            identities[0]
+                .values()
+                .all(|value| value == &SelectorValue::Integer(0))
         );
-        assert!(error.contains("range=\"low\""), "{error}");
-        assert!(error.contains("gain=8"), "{error}");
+        assert_eq!(
+            identities[1][&format!("axis_{:03}", axis_count - 1)],
+            SelectorValue::Integer(1)
+        );
+        assert_eq!(
+            identities[2][&format!("axis_{:03}", axis_count - 2)],
+            SelectorValue::Integer(1)
+        );
+        assert_eq!(
+            identities[2][&format!("axis_{:03}", axis_count - 1)],
+            SelectorValue::Integer(0)
+        );
+    }
+
+    #[test]
+    fn empty_axis_makes_cardinality_zero_after_an_overflowing_prefix() {
+        let mut axes = binary_axes(usize::BITS as usize);
+        axes.insert("zzz_empty".into(), Vec::new());
+        let universe = SelectorUniverse::Cartesian { axes };
+
+        assert_eq!(universe.identity_count(), Some(0));
+        assert_eq!(universe.identities().count(), 0);
     }
 
     #[test]
@@ -2472,8 +2680,8 @@ reason = "named globally; not a family-scoped identity"
             .validate()
             .unwrap_err()
             .to_string();
-        assert!(error.contains("is not occupied"), "{error}");
-        assert!(error.contains("gain=8"), "{error}");
+        assert!(error.contains("contains 4 identities"), "{error}");
+        assert!(error.contains("occupy 3"), "{error}");
     }
 
     #[test]
@@ -2507,9 +2715,43 @@ applicability = { observation = [1, 10] }
             SelectorUniverse::Explicit { identities } => assert_eq!(identities.len(), 2),
             other => panic!("expected explicit universe, got {other:?}"),
         }
-        assert_eq!(family.selector_universe().identities().len(), 2);
+        assert_eq!(family.selector_universe().identity_count(), Some(2));
+        assert_eq!(family.selector_universe().identities().count(), 2);
         assert_eq!(family.completeness(), FamilyCompleteness::Complete);
         assert_eq!(validated.emitted_transfer_names().count(), 2);
+    }
+
+    #[test]
+    fn large_explicit_universe_uses_indexed_membership() {
+        const IDENTITY_COUNT: i64 = 4_096;
+        let mut identities = Vec::with_capacity(IDENTITY_COUNT as usize);
+        let mut members = Vec::with_capacity(IDENTITY_COUNT as usize);
+        for value in 0..IDENTITY_COUNT {
+            let selectors = BTreeMap::from([("n".into(), SelectorValue::Integer(value))]);
+            identities.push(selectors.clone());
+            let member = if value == 0 {
+                let mut member = emit_member("div4", 100);
+                member.selectors = selectors;
+                member
+            } else {
+                FamilyMemberDef {
+                    selectors,
+                    input_transform: None,
+                    status: MemberStatus::Unsupported,
+                    reason: Some("not supported by the shared source".into()),
+                    applicability: ApplicabilityDef::default(),
+                }
+            };
+            members.push(member);
+        }
+
+        let mut family = formula_family(vec![members[0].clone()]);
+        family.members = members;
+        family.selector_axes = None;
+        family.expected_selectors = Some(identities);
+        let expanded = expand_families(&BTreeMap::from([("large".into(), family)])).unwrap();
+        assert_eq!(expanded.len(), 1);
+        assert!(expanded.contains_key("large_n_0"));
     }
 
     #[test]
@@ -2523,8 +2765,8 @@ applicability = { observation = [1, 10] }
             vec![SelectorValue::Integer(1), SelectorValue::String("1".into())],
         )]));
         let error = expand_families(&BTreeMap::from([("als".into(), family)])).unwrap_err();
-        assert!(error.contains("is not occupied"), "{error}");
-        assert!(error.contains("n=\"1\""), "{error}");
+        assert!(error.contains("contains 2 identities"), "{error}");
+        assert!(error.contains("occupy 1"), "{error}");
     }
 
     #[test]

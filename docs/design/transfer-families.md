@@ -43,6 +43,12 @@ Every family declares its expected selector universe with exactly one of:
 - `expected_selectors` — an explicit list of selector maps for a non-Cartesian
   family. Missing product cells are not invented.
 
+Cartesian cardinality is the checked product of the declared axis lengths.
+Validation rejects a product that cannot be represented by the host's
+`usize`; it never allocates the Cartesian product. Explicit universes are
+indexed once for exact identity and per-key type checks instead of being
+rescanned for every member.
+
 Every expected identity is occupied by exactly one member (any status) or one
 family-scoped gap. A missing occupancy is an error; so is a member or
 family-scoped gap outside the universe, a wrong or missing selector key, a
@@ -111,12 +117,15 @@ also define their own domain.
 3. Resolve the declared selector universe (`selector_axes` xor
    `expected_selectors`). Reject empty axes, duplicate typed axis values,
    empty or duplicate expected maps, and heterogeneous key sets in
-   `expected_selectors`.
+   `expected_selectors`. Reject Cartesian cardinality overflow using checked
+   multiplication.
 4. Check every member and family-scoped gap against that universe (keys,
    value types, and membership). Duplicate member identities, duplicate
    family-scoped gap identities, and member/gap occupancy of the same map
-   fail here. Then require every expected identity to be occupied exactly
-   once.
+   fail here. Because those checks prove that occupied identities are a
+   duplicate-free subset of the universe, completeness is exactly
+   `occupied_count == checked_universe_cardinality`; validation does not
+   materialize or enumerate a Cartesian product.
 5. Expand only `status = "emit"` members into ordinary `TransferDef` values.
    Scaled-polynomial members receive the member's `input_transform` and an
    observation `domain` converted from `applicability.model_input`. Formula
@@ -132,6 +141,12 @@ Canonical identity is the selector map itself: keys, value types, and values.
 Value-only concatenation is not an identity. Generated names include selector
 keys (`als_gain_div4_integration_time_ms_100`). If two distinct maps would
 emit the same name, generation fails and prints both maps.
+
+Validated host IR exposes the checked count through
+`SelectorUniverse::identity_count`. `SelectorUniverse::identities` is lazy:
+it yields one owned selector map at a time in the documented order and stores
+only axis references and positions, so inspecting a prefix never allocates the
+full product.
 
 ## Emission
 

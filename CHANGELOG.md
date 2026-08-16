@@ -29,6 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `expected_selectors` (explicit maps); each expected identity is occupied
   by exactly one member or family-scoped gap with a typed selector map and
   a non-blank reason. Document-level `[gaps]` do not satisfy that occupancy.
+  Cartesian cardinality is checked for overflow, completeness is proven from
+  indexed duplicate-free occupancy and count equality without materializing
+  the product, and host IR enumeration is lazy. Explicit-universe membership
+  and selector-type checks use a single precomputed index rather than repeated
+  linear scans.
   Selectors are never interpolated, unknown nested family source,
   member, applicability, and gap fields are rejected, and every member is
   validated before non-emitted statuses are filtered. Mapped member fields
