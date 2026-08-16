@@ -329,6 +329,7 @@ channels the sources leave undefined:
 
 ```toml
 [transfer_families.als]
+provenance = { identity = "synthetic ALS application note", locator = "Table 1" }
 input_unit = "count"
 output_unit = "unit"
 output_scale = 1000
@@ -343,6 +344,7 @@ applicability = { observation = [1, 10] }
 [gaps.white_channel]
 status = "undefined"
 reason = "counts only; no conversion"
+provenance = { identity = "synthetic ALS application note", locator = "§9 white channel" }
 ```
 
 Families may share a document with unrelated `[curves]`. Dense LUT generation
@@ -380,7 +382,13 @@ Generated output is still independent `PiecewiseLinearTransfer` constants.
 Inspect parsed families and gaps through
 `DefinitionsFile::transfer_families` and `gaps`. `DefinitionsFile::validate`
 returns a `ValidatedDefinitions` graph that includes description-only members
-and gap reasons. A host tool that owns device evaluation can overlay
+and gap reasons. Family citations are a structured `provenance` table
+(identity, optional revision/locator/URL/note), distinct from fit policy,
+boundaries, emission status, and observation-guard classification. Members
+inherit the family citation unless they declare an override. Inspect
+`ValidatedFamily::provenance` and `ValidatedFamily::policy` separately; generated
+rustdoc labels them the same way. Runtime transfer objects do not retain citation
+strings. A host tool that owns device evaluation can overlay
 `TransferSource::evaluated_truth` or prefitted knots on an emitted member and
 still receive ordinary generated tables. A family-member overlay must span
 the member's resolved observation domain; a standalone overlay replaces its

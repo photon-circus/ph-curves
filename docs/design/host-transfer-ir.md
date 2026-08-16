@@ -24,8 +24,10 @@ plugin ABI: README and `docs/design/gen-build-api.md` keep that as a non-goal.
    `unsupported`, and `forbidden`, is inspectable. Expanded names are reserved
    only for `emit`.
 3. **Generation sources** — TOML formula/points/model, or a `TransferSource`
-   overlay (`EvaluatedTruth`, `PrefittedKnots`, `Points`). Source facts stay on
-   the graph; fit policy stays on the transfer spec. `kind = "scaled_polynomial"`
+   overlay (`EvaluatedTruth`, `PrefittedKnots`, `Points`). Source *citations*
+   (`SourceProvenance`) stay on the graph and are distinct from the selected
+   representation (formula text, point count, NTC parameters) and from fit
+   policy on the transfer spec. `kind = "scaled_polynomial"`
    applies per-member `input_transform` as exact
    `u = count * numerator / denominator` (standalone TOML still uses `scale` /
    `1e6`) and evaluates `[c0, c1, ...]` with Horner; firmware still sees integer
@@ -41,13 +43,18 @@ complete public family IR remains part of
 ## Public surface
 
 Host tools inspect through nameable types: `ValidatedDefinitions`,
-`ValidatedFamily`, `ValidatedMember`, `DeclaredSource`, `TransferFamilyDef`
+`ValidatedFamily`, `ValidatedMember`, `DeclaredSource`, `SourceProvenance`,
+`GenerationPolicy`, `TransferFamilyDef`
 accessors, `DefinitionsFile::curves` / `transfers` / `transfer_families` /
-`gaps`. Built-in `ModelDef` remains crate-private.
+`gaps`. Built-in `ModelDef` remains crate-private. `ValidatedFamily::provenance`
+and `ValidatedFamily::policy` are separately inspectable; members expose the
+resolved citation plus any override. Overlays replace representation, not
+citation.
 
 Extension:
 
 - `TransferSpec` + `TransferSource` construct a standalone transfer without TOML.
+  `TransferSpec::with_provenance` attaches the same citation type as TOML.
 - `ValidatedDefinitions::set_source` overlays truth or knots on a standalone
   transfer or an **emitted** family member. Description-only members reject
   overlays so source facts and generation input stay distinct.
@@ -80,3 +87,4 @@ when the document contains `[curves]`. Fit policy (`max_interpolation_error`,
 - VEML knot budget and vendor oracle (#29)
 - `kind = "veml7700"` or any device lifecycle API
 - Runtime family types, `std` / alloc / float on the default-feature API
+- Fetching provenance URLs or embedding citation strings in runtime transfers

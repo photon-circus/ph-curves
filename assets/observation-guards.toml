@@ -16,6 +16,7 @@ formula = "x"
 domain = [1, 10]
 
 [transfer_families.guarded_family]
+provenance = { identity = "test fixture" }
 input_unit = "count"
 output_unit = "unit"
 output_scale = 1

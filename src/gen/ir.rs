@@ -9,10 +9,11 @@ use std::prelude::v1::*;
 
 use super::api::{Error, GenerateOptions};
 use super::curve::DefinitionsFile;
-use super::transfer::family::expanded_name;
+use super::transfer::family::{expanded_name, resolved_member_provenance};
 use super::transfer::{
-    ApplicabilityDef, GapDef, InputTransform, MemberStatus, SelectorValue, TransferFamilyDef,
-    TransferSource, TransferSpec, family_source_observation_domain, overlay_observation_span,
+    ApplicabilityDef, GapDef, GenerationPolicy, InputTransform, MemberStatus, SelectorValue,
+    SourceProvenance, SourceProvenanceOverride, TransferFamilyDef, TransferSource, TransferSpec,
+    family_source_observation_domain, overlay_observation_span,
 };
 
 /// Family, member, and gap graph after identity and collision checks.
@@ -31,6 +32,8 @@ pub struct ValidatedDefinitions {
 #[derive(Clone, Debug)]
 pub struct ValidatedFamily {
     name: String,
+    provenance: SourceProvenance,
+    policy: GenerationPolicy,
     members: Vec<ValidatedMember>,
 }
 
@@ -38,6 +41,16 @@ impl ValidatedFamily {
     /// Family table name from the definitions document.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Shared source citation. Distinct from [`Self::policy`].
+    pub fn provenance(&self) -> &SourceProvenance {
+        &self.provenance
+    }
+
+    /// Fit budget, boundaries, and observation-guard classification.
+    pub fn policy(&self) -> &GenerationPolicy {
+        &self.policy
     }
 
     /// Every member, in declaration order. Non-`emit` members are present.
@@ -55,6 +68,8 @@ pub struct ValidatedMember {
     reason: Option<String>,
     applicability: ApplicabilityDef,
     expanded_name: String,
+    provenance: SourceProvenance,
+    provenance_override: Option<SourceProvenanceOverride>,
 }
 
 impl ValidatedMember {
@@ -93,6 +108,16 @@ impl ValidatedMember {
     /// Reserved for codegen only when [`Self::status`] is [`MemberStatus::Emit`].
     pub fn expanded_name(&self) -> &str {
         &self.expanded_name
+    }
+
+    /// Resolved source citation after applying any member override.
+    pub fn provenance(&self) -> &SourceProvenance {
+        &self.provenance
+    }
+
+    /// Member-level citation override, when declared.
+    pub fn provenance_override(&self) -> Option<&SourceProvenanceOverride> {
+        self.provenance_override.as_ref()
     }
 }
 
@@ -174,10 +199,19 @@ fn inspect_families(
                 reason: member.reason.clone(),
                 applicability: member.applicability.clone(),
                 expanded_name: expanded_name(family_name, &member.selectors)?,
+                provenance: resolved_member_provenance(family_name, family, member)?,
+                provenance_override: member.provenance.clone(),
             });
         }
+        let provenance = family.provenance.clone().ok_or_else(|| {
+            format!(
+                "transfer family `{family_name}`: source-backed family requires provenance.identity"
+            )
+        })?;
         out.push(ValidatedFamily {
             name: family_name.clone(),
+            provenance,
+            policy: family.policy(),
             members,
         });
     }
@@ -293,13 +327,14 @@ mod tests {
     use super::*;
     use crate::r#gen::{
         GenerateOptions, MemberStatus, ObservationGuardBehaviorDef, ObservationGuardDef,
-        PhysicalPoint, SelectorValue, TransferSource, TransferSpec,
+        PhysicalPoint, SelectorValue, SourceProvenance, TransferSource, TransferSpec,
     };
     use std::vec;
 
     fn family_toml() -> &'static str {
         r#"
 [transfer_families.als]
+provenance = { identity = "test fixture" }
 input_unit = "count"
 output_unit = "unit"
 output_scale = 1000
@@ -431,6 +466,7 @@ reason = "counts only; no conversion"
         let defs = DefinitionsFile::from_toml_str(
             r#"
                 [transfer_families.front_end]
+provenance = { identity = "test fixture" }
                 input_unit = "count"
                 output_unit = "unit"
                 output_scale = 1
@@ -479,6 +515,7 @@ reason = "counts only; no conversion"
         let defs = DefinitionsFile::from_toml_str(
             r#"
                 [transfer_families.ntc]
+provenance = { identity = "test fixture" }
                 input_unit = "adc_code"
                 output_unit = "degree_celsius"
                 output_scale = 1000
@@ -698,6 +735,7 @@ reason = "counts only; no conversion"
             .with_observation_guard(ObservationGuardDef {
                 code: 65_535,
                 behavior: ObservationGuardBehaviorDef::Error,
+                provenance: None,
             }),
         )
         .unwrap();
@@ -716,5 +754,197 @@ reason = "counts only; no conversion"
         assert!(out.contains(".with_observation_guard(65535, ObservationGuardBehavior::Error)"));
         assert!(out.contains("POINTS_OBSERVATION_GUARD"));
         assert!(out.contains("code: 65535"));
+    }
+
+    #[test]
+    fn provenance_round_trips_through_toml_and_inspection() {
+        let toml = r#"
+[transfer_families.als]
+provenance = { identity = "synthetic ALS application note", revision = "1.0", locator = "Table 1", url = "https://example.invalid/als", note = "gain/IT matrix" }
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+max_knots = 8
+below = "error"
+above = "clamp"
+formula = "x"
+
+[[transfer_families.als.members]]
+selectors = { gain = "div4" }
+status = "emit"
+applicability = { observation = [1, 10] }
+
+[gaps.white_channel]
+status = "undefined"
+reason = "counts only; no conversion"
+provenance = { identity = "synthetic ALS application note", locator = "§9 white channel" }
+"#;
+        let defs = DefinitionsFile::from_toml_str(toml).unwrap();
+        let validated = defs.validate().unwrap();
+        let expected = SourceProvenance::new("synthetic ALS application note")
+            .with_revision("1.0")
+            .with_locator("Table 1")
+            .with_url("https://example.invalid/als")
+            .with_note("gain/IT matrix");
+        assert_eq!(validated.families()[0].provenance(), &expected);
+        assert_eq!(validated.families()[0].members()[0].provenance(), &expected);
+        let gap = &validated.gaps()["white_channel"];
+        assert_eq!(gap.reason, "counts only; no conversion");
+        assert_eq!(
+            gap.resolved_provenance().unwrap(),
+            Some(
+                SourceProvenance::new("synthetic ALS application note")
+                    .with_locator("§9 white channel")
+            )
+        );
+        assert_eq!(
+            gap.provenance().and_then(|overlay| overlay.locator.clone()),
+            Some("§9 white channel".into())
+        );
+    }
+
+    #[test]
+    fn policy_is_independently_inspectable_from_provenance() {
+        let toml = r#"
+[transfer_families.tight]
+provenance = { identity = "shared datasheet" }
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+max_knots = 8
+below = "error"
+above = "error"
+formula = "x"
+
+[[transfer_families.tight.members]]
+selectors = { gain = "div4" }
+status = "emit"
+applicability = { observation = [1, 10] }
+
+[transfer_families.loose]
+provenance = { identity = "shared datasheet" }
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 50
+max_knots = 64
+below = "clamp"
+above = "clamp"
+saturation = { code = 65535, behavior = "error" }
+formula = "x"
+
+[[transfer_families.loose.members]]
+selectors = { gain = "div4" }
+status = "emit"
+applicability = { observation = [1, 10] }
+"#;
+        let validated = DefinitionsFile::from_toml_str(toml)
+            .unwrap()
+            .validate()
+            .unwrap();
+        let tight = &validated.families()[1];
+        let loose = &validated.families()[0];
+        // BTreeMap iteration is name order: loose, tight
+        let (loose, tight) = if loose.name() == "loose" {
+            (loose, tight)
+        } else {
+            (tight, loose)
+        };
+        assert_eq!(tight.provenance(), loose.provenance());
+        assert_ne!(tight.policy(), loose.policy());
+        assert_eq!(tight.policy().max_knots, 8);
+        assert_eq!(loose.policy().max_knots, 64);
+        assert!(loose.policy().observation_guard.is_some());
+        assert!(tight.policy().observation_guard.is_none());
+    }
+
+    #[test]
+    fn transfer_spec_provenance_matches_standalone_toml() {
+        let citation = SourceProvenance::new("bench notes").with_locator("row 3");
+        let toml = r#"
+[transfers.linear]
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+max_knots = 8
+provenance = { identity = "bench notes", locator = "row 3" }
+points = [
+  { input = 0, output = 0.0 },
+  { input = 10, output = 10.0 },
+]
+"#;
+        let from_toml = DefinitionsFile::from_toml_str(toml).unwrap();
+        assert_eq!(
+            from_toml.transfers()["linear"].provenance(),
+            Some(&citation)
+        );
+
+        let mut programmatic = DefinitionsFile::default();
+        programmatic
+            .insert_transfer(
+                TransferSpec::new(
+                    "linear",
+                    "count",
+                    "unit",
+                    1,
+                    1,
+                    TransferSource::points(vec![
+                        PhysicalPoint::new(0, 0.0),
+                        PhysicalPoint::new(10, 10.0),
+                    ]),
+                )
+                .with_max_knots(8)
+                .with_provenance(citation.clone()),
+            )
+            .unwrap();
+        assert_eq!(
+            programmatic.transfers()["linear"].provenance(),
+            Some(&citation)
+        );
+
+        let toml_out =
+            crate::r#gen::generate(&from_toml, &GenerateOptions::transfers_only()).unwrap();
+        let spec_out =
+            crate::r#gen::generate(&programmatic, &GenerateOptions::transfers_only()).unwrap();
+        assert!(
+            toml_out.contains(r#"Source provenance: identity "bench notes"; locator "row 3"."#)
+        );
+        assert_eq!(toml_out, spec_out);
+    }
+
+    #[test]
+    fn gap_provenance_without_identity_fails_validation() {
+        let toml = r#"
+[transfer_families.als]
+provenance = { identity = "datasheet" }
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+formula = "x"
+
+[[transfer_families.als.members]]
+selectors = { gain = "div4" }
+status = "emit"
+applicability = { observation = [1, 10] }
+
+[gaps.white_channel]
+status = "undefined"
+reason = "counts only"
+provenance = { locator = "§9" }
+"#;
+        let error = DefinitionsFile::from_toml_str(toml)
+            .unwrap()
+            .validate()
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("gap `white_channel`")
+                && error.contains("source-backed citation requires provenance.identity"),
+            "{error}"
+        );
     }
 }

@@ -34,6 +34,20 @@ explicit `members` array. Selectors are string or integer maps and are never
 interpolated. `interpolate_selectors` is not a field; leftover copies are
 unknown-field errors.
 
+A source-backed family requires a structured `provenance` table with a
+non-blank `identity` (title or stable identifier). Optional `revision`,
+`locator`, `url`, and `note` fields locate the cited document. URLs are stored
+as opaque strings and are never fetched. Members inherit that citation unless
+they declare a `provenance` override; unset override fields inherit, set fields
+replace. Global `[gaps]` may declare their own citation; without a parent
+family they still require `identity` when `provenance` is present.
+
+Fit budget, knot cap, `below` / `above`, `saturation`, and member `status` are
+generation/consumer policy. They stay on the existing family and member fields
+and are inspectable as `GenerationPolicy`, not as part of the citation.
+Observation-guard classification is policy unless `saturation` carries a nested
+`provenance` override that cites a source supporting that classification.
+
 Mapped member fields are a capability matrix. A field unsupported by the
 selected source fails validation with a diagnostic that names the family,
 member, field, and source kind.
@@ -114,3 +128,4 @@ folded into `above` and the guarded code is not added to the fitting domain.
 - `kind = "veml7700"` or any device lifecycle API
 - Selector interpolation
 - A runtime family registry
+- Fetching provenance URLs or parsing vendor-specific source documents

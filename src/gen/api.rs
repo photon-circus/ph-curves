@@ -323,6 +323,7 @@ domain = [1, 10]
     fn malformed_description_only_member_fails_generate() {
         let toml = r#"
 [transfer_families.als]
+provenance = { identity = "test fixture" }
 input_unit = "count"
 output_unit = "unit"
 output_scale = 1000

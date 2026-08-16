@@ -5,7 +5,10 @@ extern crate std;
 
 use std::prelude::v1::*;
 
-use super::{BoundaryDef, ObservationGuardDef, PhysicalPoint, TransferDef, default_boundary};
+use super::{
+    BoundaryDef, GenerationPolicy, ObservationGuardDef, PhysicalPoint, SourceProvenance,
+    TransferDef, default_boundary,
+};
 
 fn default_max_knots() -> usize {
     256
@@ -105,6 +108,7 @@ pub struct TransferSpec {
     below: BoundaryDef,
     above: BoundaryDef,
     observation_guard: Option<ObservationGuardDef>,
+    provenance: Option<SourceProvenance>,
     source: TransferSource,
 }
 
@@ -128,6 +132,7 @@ impl TransferSpec {
             below: default_boundary(),
             above: default_boundary(),
             observation_guard: None,
+            provenance: None,
             source,
         }
     }
@@ -149,6 +154,12 @@ impl TransferSpec {
     /// Explicit observation-code guard (TOML `saturation`).
     pub fn with_observation_guard(mut self, guard: ObservationGuardDef) -> Self {
         self.observation_guard = Some(guard);
+        self
+    }
+
+    /// Caller-declared source citation. Independent of [`TransferSource`].
+    pub fn with_provenance(mut self, provenance: SourceProvenance) -> Self {
+        self.provenance = Some(provenance);
         self
     }
 
@@ -193,8 +204,24 @@ impl TransferSpec {
     }
 
     /// Explicit observation-code guard, when set.
-    pub fn observation_guard(&self) -> Option<ObservationGuardDef> {
-        self.observation_guard
+    pub fn observation_guard(&self) -> Option<&ObservationGuardDef> {
+        self.observation_guard.as_ref()
+    }
+
+    /// Caller-declared source citation, when set.
+    pub fn provenance(&self) -> Option<&SourceProvenance> {
+        self.provenance.as_ref()
+    }
+
+    /// Fit budget, boundaries, and observation-guard classification.
+    pub fn policy(&self) -> GenerationPolicy {
+        GenerationPolicy::new(
+            self.max_interpolation_error,
+            self.max_knots,
+            self.below,
+            self.above,
+            self.observation_guard.clone(),
+        )
     }
 
     /// Generation source.
@@ -212,6 +239,7 @@ impl TransferSpec {
             below: self.below,
             above: self.above,
             observation_guard: self.observation_guard,
+            provenance: self.provenance,
             points: None,
             formula: None,
             model: None,

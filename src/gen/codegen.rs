@@ -151,19 +151,27 @@ fn emit_transfer(
          static {const_name}_OUTPUTS: [i32; {knot_count}] = {outputs};\n",
         outputs = format_i32_array(&data.outputs),
     ));
-    let guard_docs = match def.observation_guard {
-        Some(guard) => format!(
-            "/// Observation guard: code {} with {} behavior.\n\
-             /// Classification of this code as saturation is declared consumer/device policy, not inferred from the integer value.\n",
-            guard.code,
-            match guard.behavior {
+    let guard_docs = match def.observation_guard.as_ref() {
+        Some(guard) => {
+            let behavior = match guard.behavior {
                 super::transfer::ObservationGuardBehaviorDef::Error => "Error",
                 super::transfer::ObservationGuardBehaviorDef::Clamp => "Clamp",
-            }
-        ),
+            };
+            let classification = match &data.guard_provenance {
+                Some(citation) => format!(
+                    "/// Classification of this code as saturation is cited from {} and applied as declared policy, not inferred from the integer value.\n",
+                    citation.rustdoc_clause()
+                ),
+                None => "/// Classification of this code as saturation is declared consumer/device policy, not inferred from the integer value.\n".into(),
+            };
+            format!(
+                "/// Observation guard: code {} with {behavior} behavior.\n{classification}",
+                guard.code
+            )
+        }
         None => "/// Observation guard: none.\n".into(),
     };
-    let construction = match def.observation_guard {
+    let construction = match def.observation_guard.as_ref() {
         Some(guard) => format!(
             "PiecewiseLinearTransfer::new(&{const_name}_INPUTS, &{const_name}_OUTPUTS, {direction})\n\
                  .with_boundaries({below}, {above})\n\
@@ -180,12 +188,22 @@ fn emit_transfer(
             above = def.above.rust_name(),
         ),
     };
+    let provenance_docs = match &data.provenance {
+        Some(citation) => format!("/// Source provenance: {}.\n", citation.rustdoc_clause()),
+        None => "/// Source provenance: none declared.\n".into(),
+    };
+    let policy_docs = format!(
+        "/// Generation policy: {}.\n",
+        def.policy().rustdoc_clause()
+    );
     // Debug-format TOML-derived text so newlines or comment terminators in
     // names, provenance, or units cannot break out of `///` doc comments.
     out.push_str(&format!(
         "/// {name:?} sparse physical transfer function.\n\
          ///\n\
-         /// Source: {provenance:?}.\n\
+         {provenance_docs}\
+         /// Representation: {representation:?}.\n\
+         {policy_docs}\
          /// Domain: {domain_min}..={domain_max} {input_unit:?}; output: {output_unit:?} x {output_scale}.\n\
          /// Knots: {knot_count} ({payload} bytes array payload).\n\
          /// Exhaustive numerical error: requested <= {requested}, achieved {achieved:.6} output quanta\n\
@@ -195,7 +213,7 @@ fn emit_transfer(
          #[rustfmt::skip]\n\
          pub const {const_name}: PiecewiseLinearTransfer<{knot_count}> =\n\
              {construction}",
-        provenance = data.provenance,
+        representation = data.representation,
         input_unit = def.input_unit,
         output_unit = def.output_unit,
         output_scale = def.output_scale,
@@ -250,7 +268,7 @@ fn emit_transfer(
         worst = data.worst_case_input,
         inverse_error = achieved_max_inverse_code_error,
     ));
-    let guard_metadata = match def.observation_guard {
+    let guard_metadata = match def.observation_guard.as_ref() {
         Some(guard) => format!(
             "Some(ObservationGuardMetadata {{\n\
          \x20   code: {},\n\
@@ -261,11 +279,23 @@ fn emit_transfer(
         ),
         None => "None".into(),
     };
+    let guard_companion_docs = match &data.guard_provenance {
+        Some(citation) => format!(
+            "/// Optional observation-code guard for [`{const_name}`].\n\
+             ///\n\
+             /// Classification of a code as saturation is cited from {} and applied as declared policy,\n\
+             /// not inferred from the integer value. The runtime getter and this constant agree.\n",
+            citation.rustdoc_clause()
+        ),
+        None => format!(
+            "/// Optional observation-code guard for [`{const_name}`].\n\
+             ///\n\
+             /// Classification of a code as saturation is declared consumer/device policy,\n\
+             /// not inferred from the integer value. The runtime getter and this constant agree.\n"
+        ),
+    };
     out.push_str(&format!(
-        "/// Optional observation-code guard for [`{const_name}`].\n\
-         ///\n\
-         /// Classification of a code as saturation is declared consumer/device policy,\n\
-         /// not inferred from the integer value. The runtime getter and this constant agree.\n\
+        "{guard_companion_docs}\
          pub const {const_name}_OBSERVATION_GUARD: Option<ObservationGuardMetadata> = {guard_metadata};\n\n"
     ));
 }
@@ -637,6 +667,7 @@ mod tests {
                 below: BoundaryDef::Error,
                 above: BoundaryDef::Error,
                 observation_guard: None,
+                provenance: None,
                 points: Some(vec![
                     PhysicalPoint {
                         input: 0,
@@ -682,6 +713,7 @@ mod tests {
                     below: BoundaryDef::Error,
                     above: BoundaryDef::Error,
                     observation_guard: None,
+                    provenance: None,
                     points: Some(vec![
                         PhysicalPoint {
                             input: 0,
@@ -727,6 +759,7 @@ mod tests {
                 below: BoundaryDef::Error,
                 above: BoundaryDef::Error,
                 observation_guard: None,
+                provenance: None,
                 formula: Some("x\n* 0.5".into()),
                 points: None,
                 model: None,
@@ -745,7 +778,8 @@ mod tests {
         )
         .unwrap();
         assert!(out.contains(r#"/// "line\nbreak" sparse physical transfer function."#));
-        assert!(out.contains(r#"Source: "formula y = x\n* 0.5"."#));
+        assert!(out.contains(r#"Representation: "formula y = x\n* 0.5"."#));
+        assert!(out.contains("Source provenance: none declared."));
         assert!(out.contains(r#""adc\ncode""#));
         assert!(out.contains(r#""volt\nunit""#));
         assert!(!out.contains("/// \"line\nbreak"));
@@ -805,6 +839,7 @@ mod tests {
                     below: BoundaryDef::Error,
                     above: BoundaryDef::Error,
                     observation_guard: None,
+                    provenance: None,
                     points: Some(vec![
                         PhysicalPoint {
                             input: 0,
@@ -839,6 +874,7 @@ mod tests {
     fn family_header() -> String {
         r#"
 [transfer_families.als]
+provenance = { identity = "test fixture" }
 input_unit = "count"
 output_unit = "unit"
 output_scale = 1000
@@ -926,6 +962,7 @@ formula = "x"
     fn scaled_polynomial_family_emits_sparse_integer_transfers_without_floats() {
         let toml = r#"
 [transfer_families.als]
+provenance = { identity = "test fixture" }
 input_unit = "count"
 output_unit = "unit"
 output_scale = 1
@@ -1117,5 +1154,91 @@ formula = "x"
         )
         .unwrap_err();
         assert!(error.contains("duplicate Rust identifier"));
+    }
+
+    #[test]
+    fn generated_rustdoc_labels_provenance_representation_and_policy() {
+        let toml = r#"
+[transfer_families.als]
+provenance = { identity = "synthetic ALS application note", revision = "1.0", locator = "Table 1" }
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+max_knots = 8
+below = "error"
+above = "clamp"
+formula = "x"
+
+[[transfer_families.als.members]]
+selectors = { gain = "div4" }
+status = "emit"
+applicability = { observation = [1, 10] }
+"#;
+        let out = generate(&toml::from_str::<DefinitionsFile>(toml).unwrap(), "u8", 256).unwrap();
+        assert!(out.contains(
+            r#"Source provenance: identity "synthetic ALS application note"; revision "1.0"; locator "Table 1"."#
+        ));
+        assert!(out.contains(r#"Representation: "formula y = x"."#));
+        assert!(out.contains(
+            "Generation policy: requested interpolation error <= 1; max_knots = 8; below = error; above = clamp."
+        ));
+        assert!(!out.contains("/// Source: "));
+    }
+
+    #[test]
+    fn observation_guard_rustdoc_is_policy_unless_cited() {
+        let policy_only = r#"
+[transfer_families.als]
+provenance = { identity = "datasheet" }
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+max_knots = 8
+saturation = { code = 65535, behavior = "clamp" }
+formula = "x"
+
+[[transfer_families.als.members]]
+selectors = { variant = "clamp" }
+status = "emit"
+applicability = { observation = [1, 10] }
+"#;
+        let cited = r#"
+[transfer_families.als]
+provenance = { identity = "datasheet" }
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+max_knots = 8
+saturation = { code = 65535, behavior = "clamp", provenance = { locator = "§5.2 overflow" } }
+formula = "x"
+
+[[transfer_families.als.members]]
+selectors = { variant = "clamp" }
+status = "emit"
+applicability = { observation = [1, 10] }
+"#;
+        let policy_out = generate(
+            &toml::from_str::<DefinitionsFile>(policy_only).unwrap(),
+            "u8",
+            256,
+        )
+        .unwrap();
+        assert!(policy_out.contains(
+            "Classification of this code as saturation is declared consumer/device policy, not inferred from the integer value."
+        ));
+        assert!(!policy_out.contains("cited from"));
+
+        let cited_out = generate(
+            &toml::from_str::<DefinitionsFile>(cited).unwrap(),
+            "u8",
+            256,
+        )
+        .unwrap();
+        assert!(cited_out.contains(
+            r#"Classification of this code as saturation is cited from identity "datasheet"; locator "§5.2 overflow" and applied as declared policy"#
+        ));
     }
 }

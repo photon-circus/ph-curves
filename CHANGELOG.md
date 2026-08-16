@@ -15,6 +15,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   vulnerability into a public issue. The bug form asks which surface is
   involved — runtime, `gen-lib`, or `gen-cli` — because the `no_std` runtime
   and the host generator fail in unrelated ways.
+- Host-only structured source provenance, separate from generation policy.
+  A `provenance` table records identity plus optional revision, locator, URL,
+  and note. Source-backed families require `provenance.identity`; members
+  inherit the family citation unless they declare an override. Gaps may carry
+  their own citation. `TransferSpec::with_provenance` supplies the same type
+  as TOML. Host inspection exposes `SourceProvenance` and `GenerationPolicy`
+  as distinct values; generated rustdoc labels source provenance,
+  representation (the selected formula/points/model), and policy separately.
+  Observation-guard classification remains consumer/device policy unless the
+  `saturation` table cites a source, in which case rustdoc names that citation
+  and still applies the classification as declared policy. URLs are stored and
+  never fetched. Runtime `TransferMetadata` and observation-guard companions
+  do not retain citation strings.
 - Host-only `[transfer_families]` and `[gaps]` tables. A family shares one
   formula, points, or model source across explicit selector members; only
   `status = "emit"` members become independent `PiecewiseLinearTransfer`

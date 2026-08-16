@@ -151,10 +151,11 @@ Mapped `emit`, `unnecessary`, and `forbidden` members require exactly the
 source-specific mapping. `unsupported` is the explicit no-mapping state and
 forbids applicability and input transforms instead of requiring fabricated
 source coordinates.
-That is the publish shape. `[transfer_families]` has not shipped in 0.2.1, so
-this is not a 0.2.x document break. Standalone transfer TOML (`scale` / `1e6`,
-`domain`) is unchanged. The first release that publishes families must include
-this matrix; do not ship accepted-but-inert member fields.
+A source-backed family also requires structured `provenance.identity`. That is
+part of the intended first-publish shape. `[transfer_families]` has not shipped
+in 0.2.1, so this is not a 0.2.x document break. Standalone transfer TOML
+(`scale` / `1e6`, `domain`) is unchanged. The first release that publishes
+families must include this matrix; do not ship accepted-but-inert member fields.
 
 No runtime API is involved. The version that ships a TOML tightening is a
 release decision, not part of the behaviour change. A broader whole-document

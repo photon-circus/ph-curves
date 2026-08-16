@@ -325,6 +325,9 @@ impl DefinitionsFile {
             if gap.reason.trim().is_empty() {
                 return Err(format!("gap `{name}`: reason must not be blank"));
             }
+            if let Err(error) = gap.resolved_provenance() {
+                return Err(format!("gap `{name}`: {error}"));
+            }
             if self.curves.contains_key(name) {
                 return Err(format!("gap `{name}` collides with a [curves] entry"));
             }
@@ -810,6 +813,7 @@ saturation = { code = 65535, behavior = "error" }
     fn family_guard_nested_in_a_point_fails_closed() {
         let toml = r#"
 [transfer_families.guarded]
+provenance = { identity = "test fixture" }
 input_unit = "count"
 output_unit = "unit"
 output_scale = 1
@@ -839,6 +843,7 @@ applicability = { observation = [1, 10] }
     fn family_guard_nested_in_legacy_ntc_model_fails_closed() {
         let toml = r#"
 [transfer_families.ntc]
+provenance = { identity = "test fixture" }
 input_unit = "adc_code"
 output_unit = "degree_celsius"
 output_scale = 1000
@@ -875,6 +880,7 @@ applicability = { physical = [-40.0, 125.0] }
     fn family_point_unknown_fields_fail_closed_with_source_path() {
         let toml = r#"
 [transfer_families.als]
+provenance = { identity = "test fixture" }
 input_unit = "count"
 output_unit = "lux"
 output_scale = 1000
@@ -904,6 +910,7 @@ applicability = { observation = [1, 10] }
     fn family_ntc_unknown_fields_fail_closed_with_source_path() {
         let toml = r#"
 [transfer_families.ntc]
+provenance = { identity = "test fixture" }
 input_unit = "adc_code"
 output_unit = "degree_celsius"
 output_scale = 1000
@@ -975,6 +982,7 @@ scale = 42
     fn family_selector_may_be_named_saturation() {
         let toml = r#"
 [transfer_families.valid]
+provenance = { identity = "test fixture" }
 input_unit = "count"
 output_unit = "unit"
 output_scale = 1
