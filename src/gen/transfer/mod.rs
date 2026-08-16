@@ -10,6 +10,7 @@ mod adaptive;
 pub(crate) mod family;
 mod model;
 mod points;
+mod provenance;
 mod source;
 
 use crate::MonotonicDirection;
@@ -22,7 +23,14 @@ pub use family::{
     GapStatus, InputTransform, MemberStatus, SelectorIdentities, SelectorUniverse, SelectorValue,
     TransferFamilyDef,
 };
-pub use source::{EvaluatedTruth, TransferSource, TransferSpec};
+pub use provenance::{
+    GenerationPolicy, ObservationGuardPolicy, SourceProvenance, SourceProvenanceField,
+    SourceProvenanceOverride,
+};
+pub use source::{
+    EvaluatedTruth, SourceProvenanceDisposition, TransferSource, TransferSourceOverlay,
+    TransferSpec,
+};
 
 const ABSOLUTE_MAX_KNOTS: usize = 4096;
 
@@ -41,6 +49,13 @@ impl BoundaryDef {
         match self {
             Self::Error => "BoundaryBehavior::Error",
             Self::Clamp => "BoundaryBehavior::Clamp",
+        }
+    }
+
+    pub(crate) fn toml_name(self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Clamp => "clamp",
         }
     }
 }
@@ -68,8 +83,10 @@ impl ObservationGuardBehaviorDef {
 ///
 /// Host IR and runtime use observation-guard terminology. Classification of
 /// the code as saturation is consumer/device policy, not inferred from the
-/// integer value.
-#[derive(Copy, Clone, Debug, Deserialize, Eq, PartialEq)]
+/// integer value, unless [`Self::provenance`] cites a source that supports
+/// that classification. Even then the classification is applied as declared
+/// policy.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ObservationGuardDef {
     /// Observation code classified by this guard. Must be strictly above the
@@ -77,6 +94,10 @@ pub struct ObservationGuardDef {
     pub code: u16,
     /// Policy applied when `code` is observed.
     pub behavior: ObservationGuardBehaviorDef,
+    /// Optional citation supporting this classification. Resolved against the
+    /// transfer or family provenance when present.
+    #[serde(default)]
+    pub provenance: Option<SourceProvenanceOverride>,
 }
 
 pub(crate) fn default_boundary() -> BoundaryDef {
@@ -85,7 +106,7 @@ pub(crate) fn default_boundary() -> BoundaryDef {
 
 pub(crate) fn validate_observation_guard(
     label: &str,
-    guard: Option<ObservationGuardDef>,
+    guard: Option<&ObservationGuardDef>,
     domain_max: u16,
 ) -> Result<(), String> {
     let Some(guard) = guard else {
@@ -98,6 +119,23 @@ pub(crate) fn validate_observation_guard(
         ));
     }
     Ok(())
+}
+
+pub(crate) fn resolve_guard_provenance(
+    label: &str,
+    guard: Option<&ObservationGuardDef>,
+    parent: Option<&SourceProvenance>,
+) -> Result<Option<SourceProvenance>, String> {
+    let Some(guard) = guard else {
+        return Ok(None);
+    };
+    let Some(overlay) = &guard.provenance else {
+        return Ok(None);
+    };
+    overlay
+        .resolve(parent)
+        .map(Some)
+        .map_err(|error| format!("{label}: {error}"))
 }
 
 fn default_max_knots() -> usize {
@@ -127,6 +165,9 @@ impl PhysicalPoint {
 /// Standalone TOML definitions using `saturation` must declare
 /// `[transfers] requires = ["observation_guard_v1"]` so older generators fail
 /// closed instead of ignoring the guard.
+/// Standalone TOML definitions using `provenance` likewise require
+/// `source_provenance_v1` in that array so released 0.2.1 readers cannot
+/// silently discard the citation.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TransferDef {
@@ -150,6 +191,13 @@ pub struct TransferDef {
     /// Explicit observation-code guard (TOML `saturation`).
     #[serde(default, rename = "saturation")]
     pub observation_guard: Option<ObservationGuardDef>,
+    /// Caller-declared source citation, when supplied.
+    #[serde(default)]
+    pub provenance: Option<SourceProvenance>,
+    /// Guard citation resolved against declared transfer/family provenance
+    /// before member or generation-source citation overlays are applied.
+    #[serde(skip)]
+    pub(crate) resolved_guard_provenance: Option<SourceProvenance>,
     /// Sparse physical control points, when that is the declared source.
     pub points: Option<Vec<PhysicalPoint>>,
     /// Formula over `x`, when that is the declared source.
@@ -178,8 +226,24 @@ impl TransferDef {
     }
 
     /// Explicit observation-code guard, when TOML `saturation` is set.
-    pub fn observation_guard(&self) -> Option<ObservationGuardDef> {
-        self.observation_guard
+    pub fn observation_guard(&self) -> Option<&ObservationGuardDef> {
+        self.observation_guard.as_ref()
+    }
+
+    /// Caller-declared source citation, when supplied.
+    pub fn provenance(&self) -> Option<&SourceProvenance> {
+        self.provenance.as_ref()
+    }
+
+    /// Fit budget, boundaries, and observation-guard classification.
+    pub fn policy(&self) -> GenerationPolicy {
+        GenerationPolicy::new(
+            self.max_interpolation_error,
+            self.max_knots,
+            self.below,
+            self.above,
+            self.observation_guard.as_ref(),
+        )
     }
 
     /// Which of formula, points, or model is set. `None` if missing or mixed.
@@ -205,7 +269,9 @@ pub struct TransferData {
     pub achieved_max_error: u32,
     pub achieved_max_error_exact: f64,
     pub worst_case_input: u16,
-    pub provenance: String,
+    pub representation: String,
+    pub provenance: Option<SourceProvenance>,
+    pub guard_provenance: Option<SourceProvenance>,
 }
 
 pub fn build(name: &str, def: &TransferDef) -> Result<TransferData, String> {
@@ -226,6 +292,12 @@ pub(crate) fn build_with_source(
         ));
     }
 
+    if let Some(provenance) = &def.provenance {
+        provenance
+            .validate()
+            .map_err(|error| format!("transfer `{name}`: {error}"))?;
+    }
+
     if let Some(overlay) = overlay {
         return build_from_overlay(name, def, overlay);
     }
@@ -238,7 +310,7 @@ pub(crate) fn build_with_source(
         ));
     }
 
-    let (domain_min, truth, provenance) = if let Some(control_points) = &def.points {
+    let (domain_min, truth, representation) = if let Some(control_points) = &def.points {
         if def.domain.is_some() || def.output_range.is_some() {
             return Err(format!(
                 "transfer `{name}`: points define their domain; domain and output_range are forbidden"
@@ -322,7 +394,7 @@ pub(crate) fn build_with_source(
         )
     };
 
-    finish_from_scaled_truth(name, def, domain_min, &truth, provenance)
+    finish_from_scaled_truth(name, def, domain_min, &truth, representation)
 }
 
 fn build_from_overlay(
@@ -332,8 +404,8 @@ fn build_from_overlay(
 ) -> Result<TransferData, String> {
     match overlay {
         TransferSource::EvaluatedTruth(truth) => {
-            let (domain_min, scaled, provenance) = evaluated_truth_to_scaled(name, def, truth)?;
-            finish_from_scaled_truth(name, def, domain_min, &scaled, provenance)
+            let (domain_min, scaled, representation) = evaluated_truth_to_scaled(name, def, truth)?;
+            finish_from_scaled_truth(name, def, domain_min, &scaled, representation)
         }
         TransferSource::Points(control_points) => {
             let (minimum, physical) = points::evaluate(name, control_points)?;
@@ -463,7 +535,7 @@ fn finish_from_scaled_truth(
     def: &TransferDef,
     domain_min: u16,
     truth: &[f64],
-    provenance: String,
+    representation: String,
 ) -> Result<TransferData, String> {
     let direction = validate_monotonic(name, truth)?;
     let result = adaptive::fit(
@@ -475,11 +547,16 @@ fn finish_from_scaled_truth(
     )?;
 
     let domain_max = *result.inputs.last().expect("fitter requires two knots");
-    validate_observation_guard(
-        &format!("transfer `{name}`"),
-        def.observation_guard,
-        domain_max,
-    )?;
+    let label = format!("transfer `{name}`");
+    validate_observation_guard(&label, def.observation_guard.as_ref(), domain_max)?;
+    let guard_provenance = match &def.resolved_guard_provenance {
+        Some(provenance) => Some(provenance.clone()),
+        None => resolve_guard_provenance(
+            &label,
+            def.observation_guard.as_ref(),
+            def.provenance.as_ref(),
+        )?,
+    };
 
     Ok(TransferData {
         inputs: result.inputs,
@@ -488,7 +565,9 @@ fn finish_from_scaled_truth(
         achieved_max_error: result.achieved_max_error,
         achieved_max_error_exact: result.achieved_max_error_exact,
         worst_case_input: result.worst_case_input,
-        provenance,
+        representation,
+        provenance: def.provenance.clone(),
+        guard_provenance,
     })
 }
 
@@ -555,7 +634,19 @@ fn build_prefitted(
         ));
     }
 
-    validate_observation_guard(&format!("transfer `{name}`"), def.observation_guard, last)?;
+    validate_observation_guard(
+        &format!("transfer `{name}`"),
+        def.observation_guard.as_ref(),
+        last,
+    )?;
+    let guard_provenance = match &def.resolved_guard_provenance {
+        Some(provenance) => Some(provenance.clone()),
+        None => resolve_guard_provenance(
+            &format!("transfer `{name}`"),
+            def.observation_guard.as_ref(),
+            def.provenance.as_ref(),
+        )?,
+    };
 
     Ok(TransferData {
         inputs: inputs.to_vec(),
@@ -564,10 +655,12 @@ fn build_prefitted(
         achieved_max_error: worst_error.ceil() as u32,
         achieved_max_error_exact: worst_error,
         worst_case_input: domain_min + worst_offset as u16,
-        provenance: format!(
+        representation: format!(
             "prefitted knots ({} knots) verified against evaluated truth",
             inputs.len()
         ),
+        provenance: def.provenance.clone(),
+        guard_provenance,
     })
 }
 
@@ -764,6 +857,8 @@ mod tests {
             below: BoundaryDef::Error,
             above: BoundaryDef::Error,
             observation_guard: None,
+            provenance: None,
+            resolved_guard_provenance: None,
             points: None,
             formula: None,
             model: None,
@@ -940,7 +1035,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(*data.inputs.last().unwrap(), u16::MAX);
-        assert!(!data.provenance.contains("saturation"));
+        assert!(!data.representation.contains("saturation"));
     }
 
     #[test]
@@ -949,6 +1044,7 @@ mod tests {
         def.observation_guard = Some(ObservationGuardDef {
             code: 10,
             behavior: ObservationGuardBehaviorDef::Error,
+            provenance: None,
         });
         let error = build("guarded", &def).unwrap_err();
         assert!(error.contains("strictly above domain_max"), "{error}");
@@ -961,6 +1057,7 @@ mod tests {
         def.observation_guard = Some(ObservationGuardDef {
             code: 65_535,
             behavior: ObservationGuardBehaviorDef::Error,
+            provenance: None,
         });
         let data = build("guarded", &def).unwrap();
         assert_eq!(*data.inputs.last().unwrap(), 10);
@@ -973,6 +1070,7 @@ mod tests {
         def.observation_guard = Some(ObservationGuardDef {
             code: 65_535,
             behavior: ObservationGuardBehaviorDef::Clamp,
+            provenance: None,
         });
         let error = build("full", &def).unwrap_err();
         assert!(error.contains("strictly above domain_max"), "{error}");

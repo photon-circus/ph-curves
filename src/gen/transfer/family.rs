@@ -13,7 +13,8 @@ use serde::de::{self, Deserializer, Visitor};
 
 use super::model::ModelDef;
 use super::{
-    BoundaryDef, ObservationGuardDef, PhysicalPoint, TransferDef, default_boundary,
+    BoundaryDef, GenerationPolicy, ObservationGuardDef, PhysicalPoint, SourceProvenance,
+    SourceProvenanceOverride, TransferDef, default_boundary, resolve_guard_provenance,
     validate_observation_guard,
 };
 
@@ -78,6 +79,9 @@ pub struct TransferFamilyDef {
     /// Explicit observation-code guard copied onto emitted members (TOML `saturation`).
     #[serde(default, rename = "saturation")]
     pub(crate) observation_guard: Option<ObservationGuardDef>,
+    /// Shared source citation. Required for a source-backed family.
+    #[serde(default)]
+    pub provenance: Option<SourceProvenance>,
     pub(crate) points: Option<Vec<PhysicalPoint>>,
     pub(crate) formula: Option<String>,
     pub(crate) model: Option<ModelDef>,
@@ -116,8 +120,24 @@ impl TransferFamilyDef {
     }
 
     /// Explicit observation-code guard copied onto emitted members (TOML `saturation`).
-    pub fn observation_guard(&self) -> Option<ObservationGuardDef> {
-        self.observation_guard
+    pub fn observation_guard(&self) -> Option<&ObservationGuardDef> {
+        self.observation_guard.as_ref()
+    }
+
+    /// Shared source citation, when declared. Validation requires this on a family.
+    pub fn provenance(&self) -> Option<&SourceProvenance> {
+        self.provenance.as_ref()
+    }
+
+    /// Fit budget, boundaries, and observation-guard classification.
+    pub fn policy(&self) -> GenerationPolicy {
+        GenerationPolicy::new(
+            self.max_interpolation_error,
+            self.max_knots,
+            self.below,
+            self.above,
+            self.observation_guard.as_ref(),
+        )
     }
 
     /// Shared formula text, when the family source is a formula.
@@ -191,6 +211,9 @@ pub struct FamilyMemberDef {
     /// and must leave every coordinate unset.
     #[serde(default)]
     pub applicability: ApplicabilityDef,
+    /// Optional citation override. Unset fields inherit the family citation.
+    #[serde(default)]
+    pub provenance: Option<SourceProvenanceOverride>,
 }
 
 /// Where this member's mapping is source-backed.
@@ -584,7 +607,9 @@ pub enum FamilyCompleteness {
 ///
 /// Distinct from document-level [`GapDef`]: this record carries the same typed
 /// selector map as a member and occupies that expected identity. A non-blank
-/// `reason` is required. Global `[gaps]` do not satisfy family completeness.
+/// `reason` is required. Its optional citation override resolves against the
+/// mandatory family citation. Global `[gaps]` do not satisfy family
+/// completeness.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FamilyGapDef {
@@ -594,6 +619,9 @@ pub struct FamilyGapDef {
     pub status: GapStatus,
     /// Non-blank explanation of why this expected identity is not a member.
     pub reason: String,
+    /// Optional citation override. Unset fields inherit the family citation.
+    #[serde(default)]
+    pub provenance: Option<SourceProvenanceOverride>,
 }
 
 /// A channel or procedure the sources do not define as a transfer.
@@ -604,6 +632,9 @@ pub struct GapDef {
     pub status: GapStatus,
     /// Non-blank explanation of why the mapping is undefined.
     pub reason: String,
+    /// Optional source citation for this gap.
+    #[serde(default)]
+    pub provenance: Option<SourceProvenanceOverride>,
 }
 
 /// Only `undefined` is valid: a gap must not be filled with a plausible model.
@@ -612,6 +643,21 @@ pub struct GapDef {
 pub enum GapStatus {
     /// The sources do not define this mapping; do not invent one.
     Undefined,
+}
+
+impl GapDef {
+    /// Declared citation override, when present.
+    pub fn provenance(&self) -> Option<&SourceProvenanceOverride> {
+        self.provenance.as_ref()
+    }
+
+    /// Resolved citation. `None` when no override was declared.
+    pub fn resolved_provenance(&self) -> Result<Option<SourceProvenance>, String> {
+        match &self.provenance {
+            Some(overlay) => overlay.resolve(None).map(Some),
+            None => Ok(None),
+        }
+    }
 }
 
 /// Expand families into standalone transfer defs.
@@ -650,6 +696,15 @@ pub(crate) fn expand_families(
 }
 
 fn validate_family(family_name: &str, family: &TransferFamilyDef) -> Result<(), String> {
+    let provenance = family.provenance.as_ref().ok_or_else(|| {
+        format!(
+            "transfer family `{family_name}`: source-backed family requires provenance.identity"
+        )
+    })?;
+    provenance
+        .validate()
+        .map_err(|error| format!("transfer family `{family_name}`: {error}"))?;
+
     if !(2..=FAMILY_MAX_KNOTS_HARD).contains(&family.max_knots) {
         return Err(format!(
             "transfer family `{family_name}`: max_knots must be in 2..={FAMILY_MAX_KNOTS_HARD}"
@@ -724,7 +779,7 @@ fn validate_family(family_name: &str, family: &TransferFamilyDef) -> Result<(), 
     let mut seen_gap_identities: BTreeMap<&BTreeMap<String, SelectorValue>, usize> =
         BTreeMap::new();
     for (index, gap) in family.gaps.iter().enumerate() {
-        validate_family_gap(family_name, index, gap)?;
+        validate_family_gap(family_name, family, index, gap)?;
         if let Some(&previous) = seen_gap_identities.get(&gap.selectors) {
             return Err(format!(
                 "transfer family `{family_name}`: family-scoped gaps {previous} and {index} \
@@ -890,7 +945,12 @@ fn validate_expected_selectors(
     Ok(identities.to_vec())
 }
 
-fn validate_family_gap(family_name: &str, index: usize, gap: &FamilyGapDef) -> Result<(), String> {
+fn validate_family_gap(
+    family_name: &str,
+    family: &TransferFamilyDef,
+    index: usize,
+    gap: &FamilyGapDef,
+) -> Result<(), String> {
     let label = gap_label(family_name, index);
     if gap.selectors.is_empty() {
         return Err(format!("{label}: selectors must not be empty"));
@@ -908,6 +968,7 @@ fn validate_family_gap(family_name: &str, index: usize, gap: &FamilyGapDef) -> R
     if gap.reason.trim().is_empty() {
         return Err(format!("{label}: reason must not be blank"));
     }
+    resolved_family_gap_provenance(family_name, family, index, gap)?;
     Ok(())
 }
 
@@ -1059,6 +1120,18 @@ fn validate_member(
         }
     }
     validate_status_reason(&label, member)?;
+    if let Some(overlay) = &member.provenance {
+        family
+            .provenance
+            .as_ref()
+            .ok_or_else(|| {
+                format!(
+                    "transfer family `{family_name}`: source-backed family requires provenance.identity"
+                )
+            })?
+            .merge(overlay)
+            .map_err(|error| format!("{label}: {error}"))?;
+    }
 
     if member.status == MemberStatus::Unsupported {
         if member.input_transform.is_some() {
@@ -1106,7 +1179,12 @@ fn validate_member(
                 ));
             }
             let domain = observation_window(&label, member.applicability.observation)?;
-            validate_observation_guard(&label, family.observation_guard, domain[1])?;
+            validate_observation_guard(&label, family.observation_guard.as_ref(), domain[1])?;
+            resolve_guard_provenance(
+                &label,
+                family.observation_guard.as_ref(),
+                family.provenance.as_ref(),
+            )?;
         }
         "points" => {
             if member.input_transform.is_some() {
@@ -1134,8 +1212,13 @@ fn validate_member(
             .map_err(|error| format!("{label}: {error}"))?;
             validate_observation_guard(
                 &label,
-                family.observation_guard,
+                family.observation_guard.as_ref(),
                 clipped.last().expect("clip requires two points").input,
+            )?;
+            resolve_guard_provenance(
+                &label,
+                family.observation_guard.as_ref(),
+                family.provenance.as_ref(),
             )?;
         }
         "scaled_polynomial" => {
@@ -1175,7 +1258,12 @@ fn validate_member(
                 model_input,
             )
             .map_err(|error| format!("{label}: {error}"))?;
-            validate_observation_guard(&label, family.observation_guard, domain[1])?;
+            validate_observation_guard(&label, family.observation_guard.as_ref(), domain[1])?;
+            resolve_guard_provenance(
+                &label,
+                family.observation_guard.as_ref(),
+                family.provenance.as_ref(),
+            )?;
         }
         "ntc_beta_divider" => {
             if member.input_transform.is_some() {
@@ -1208,7 +1296,12 @@ fn validate_member(
                         .map_err(|_| format!("{label}: derived model domain exceeds u16"))?,
                 )
                 .ok_or_else(|| format!("{label}: derived model domain exceeds u16"))?;
-            validate_observation_guard(&label, family.observation_guard, domain_max)?;
+            validate_observation_guard(&label, family.observation_guard.as_ref(), domain_max)?;
+            resolve_guard_provenance(
+                &label,
+                family.observation_guard.as_ref(),
+                family.provenance.as_ref(),
+            )?;
         }
         _ => {
             return Err(format!(
@@ -1261,6 +1354,11 @@ fn member_transfer(
     family: &TransferFamilyDef,
     member: &FamilyMemberDef,
 ) -> Result<TransferDef, String> {
+    let resolved_guard_provenance = resolve_guard_provenance(
+        &format!("transfer family `{family_name}`"),
+        family.observation_guard.as_ref(),
+        family.provenance.as_ref(),
+    )?;
     let (model, domain, output_range, points) = match source_kind(family) {
         "scaled_polynomial" => {
             let transform = member
@@ -1310,13 +1408,61 @@ fn member_transfer(
         max_knots: family.max_knots,
         below: family.below,
         above: family.above,
-        observation_guard: family.observation_guard,
+        observation_guard: family.observation_guard.clone(),
+        provenance: Some(resolved_member_provenance(family_name, family, member)?),
+        resolved_guard_provenance,
         points,
         formula: family.formula.clone(),
         model,
         domain,
         output_range,
     })
+}
+
+pub(crate) fn resolved_member_provenance(
+    family_name: &str,
+    family: &TransferFamilyDef,
+    member: &FamilyMemberDef,
+) -> Result<SourceProvenance, String> {
+    let base = family.provenance.as_ref().ok_or_else(|| {
+        format!(
+            "transfer family `{family_name}`: source-backed family requires provenance.identity"
+        )
+    })?;
+    match &member.provenance {
+        Some(overlay) => base
+            .merge(overlay)
+            .map_err(|error| format!("transfer family `{family_name}`: {error}")),
+        None => {
+            base.validate()
+                .map_err(|error| format!("transfer family `{family_name}`: {error}"))?;
+            Ok(base.clone())
+        }
+    }
+}
+
+pub(crate) fn resolved_family_gap_provenance(
+    family_name: &str,
+    family: &TransferFamilyDef,
+    index: usize,
+    gap: &FamilyGapDef,
+) -> Result<SourceProvenance, String> {
+    let label = gap_label(family_name, index);
+    let base = family.provenance.as_ref().ok_or_else(|| {
+        format!(
+            "transfer family `{family_name}`: source-backed family requires provenance.identity"
+        )
+    })?;
+    match &gap.provenance {
+        Some(overlay) => base
+            .merge(overlay)
+            .map_err(|error| format!("{label}: {error}")),
+        None => {
+            base.validate()
+                .map_err(|error| format!("{label}: {error}"))?;
+            Ok(base.clone())
+        }
+    }
 }
 
 pub(crate) fn expanded_name(
@@ -1404,6 +1550,7 @@ mod tests {
             status,
             reason: reason.map(str::to_string),
             applicability: observation([1, 10]),
+            provenance: None,
         }
     }
 
@@ -1420,6 +1567,7 @@ mod tests {
             status: MemberStatus::Emit,
             reason: None,
             applicability: model_input([100.0, 22_000.0]),
+            provenance: None,
         }
     }
 
@@ -1433,6 +1581,7 @@ mod tests {
             below: BoundaryDef::Error,
             above: BoundaryDef::Error,
             observation_guard: None,
+            provenance: Some(SourceProvenance::new("test fixture")),
             points: None,
             formula: Some("x".into()),
             model: None,
@@ -1456,6 +1605,7 @@ mod tests {
             below: BoundaryDef::Error,
             above: BoundaryDef::Error,
             observation_guard: None,
+            provenance: Some(SourceProvenance::new("test fixture")),
             points: None,
             formula: None,
             model: Some(ModelDef::ScaledPolynomial {
@@ -1514,6 +1664,7 @@ mod tests {
         let error = parse_family(
             r#"
 [transfer_families.als]
+provenance = { identity = "test fixture" }
 input_unit = "count"
 output_unit = "unit"
 output_scale = 1
@@ -1767,6 +1918,7 @@ applicability = { observation = [1, 10] }
         let error = parse_family(
             r#"
 [transfer_families.als]
+provenance = { identity = "test fixture" }
 input_unit = "count"
 output_unit = "unit"
 output_scale = 1
@@ -1785,6 +1937,7 @@ members = []
         let error = parse_family(
             r#"
 [transfer_families.als]
+provenance = { identity = "test fixture" }
 input_unit = "count"
 output_unit = "unit"
 output_scale = 1
@@ -1807,6 +1960,7 @@ correction = "required"
         let error = parse_family(
             r#"
 [transfer_families.als]
+provenance = { identity = "test fixture" }
 input_unit = "count"
 output_unit = "unit"
 output_scale = 1
@@ -1842,6 +1996,7 @@ channel = "als"
         let error = parse_family(
             r#"
 [transfer_families.als]
+provenance = { identity = "test fixture" }
 input_unit = "count"
 output_unit = "unit"
 output_scale = 1
@@ -1866,6 +2021,7 @@ applicability = { observation = [1, 10] }
         let error_form = parse_family(
             r#"
 [transfer_families.als]
+provenance = { identity = "test fixture" }
 input_unit = "count"
 output_unit = "unit"
 output_scale = 1
@@ -1885,15 +2041,16 @@ members = []
         family.observation_guard = Some(ObservationGuardDef {
             code: 65_535,
             behavior: ObservationGuardBehaviorDef::Error,
+            provenance: None,
         });
         let mut families = BTreeMap::new();
         families.insert("als".into(), family);
         let expanded = expand_families(&families).unwrap();
         let def = &expanded["als_gain_div4_integration_time_ms_100"];
         assert_eq!(def.domain, Some([1, 10]));
-        assert_eq!(def.observation_guard.unwrap().code, 65_535);
+        assert_eq!(def.observation_guard.as_ref().unwrap().code, 65_535);
         assert_eq!(
-            def.observation_guard.unwrap().behavior,
+            def.observation_guard.as_ref().unwrap().behavior,
             ObservationGuardBehaviorDef::Error
         );
     }
@@ -1903,6 +2060,7 @@ members = []
         let defs = parse_family(
             r#"
 [transfer_families.als]
+provenance = { identity = "test fixture" }
 input_unit = "count"
 output_unit = "unit"
 output_scale = 1
@@ -1927,6 +2085,7 @@ applicability = { observation = [1, 10] }
         let error = parse_family(
             r#"
 [transfer_families.als]
+provenance = { identity = "test fixture" }
 input_unit = "count"
 output_unit = "unit"
 output_scale = 1
@@ -1948,6 +2107,7 @@ members = []
         let error = parse_family(
             r#"
 [transfer_families.als]
+provenance = { identity = "test fixture" }
 input_unit = "count"
 output_unit = "unit"
 output_scale = 1
@@ -1970,12 +2130,13 @@ members = []
         family.observation_guard = Some(ObservationGuardDef {
             code: 65_535,
             behavior: ObservationGuardBehaviorDef::Error,
+            provenance: None,
         });
         let mut families = BTreeMap::new();
         families.insert("als".into(), family);
         let expanded = expand_families(&families).unwrap();
         let (name, def) = expanded.iter().next().unwrap();
-        assert_eq!(def.observation_guard.unwrap().code, 65_535);
+        assert_eq!(def.observation_guard.as_ref().unwrap().code, 65_535);
         assert_eq!(def.above, BoundaryDef::Clamp);
         let domain = def.domain.unwrap();
         assert!(domain[1] < 65_535, "fitted domain {domain:?}");
@@ -2037,6 +2198,7 @@ members = []
         let error = parse_family(
             r#"
 [transfer_families.als]
+provenance = { identity = "test fixture" }
 input_unit = "count"
 output_unit = "unit"
 output_scale = 1
@@ -2079,6 +2241,7 @@ applicability = { model_input = [63.0, 100.0] }
         let error = parse_family(
             r#"
 [transfer_families.als]
+provenance = { identity = "test fixture" }
 input_unit = "count"
 output_unit = "unit"
 output_scale = 1
@@ -2155,6 +2318,7 @@ applicability = { model_input = [63.0, 100.0] }
     fn points_observation_clips_the_shared_table() {
         let toml = r#"
 [transfer_families.front_end]
+provenance = { identity = "test fixture" }
 input_unit = "count"
 output_unit = "unit"
 output_scale = 1
@@ -2197,6 +2361,7 @@ applicability = { observation = [1, 5] }
         let error = parse_family(
             r#"
 [transfer_families.front_end]
+provenance = { identity = "test fixture" }
 input_unit = "count"
 output_unit = "unit"
 output_scale = 1
@@ -2232,6 +2397,7 @@ applicability = { observation = [1, 10] }
             status: MemberStatus::Emit,
             reason: None,
             applicability: model_input([63.0, 100.0]),
+            provenance: None,
         };
         let error = expand_families(&BTreeMap::from([(
             "als".into(),
@@ -2257,6 +2423,7 @@ applicability = { observation = [1, 10] }
     fn ntc_physical_applicability_sets_output_range() {
         let toml = r#"
 [transfer_families.ntc]
+provenance = { identity = "test fixture" }
 input_unit = "adc_code"
 output_unit = "degree_celsius"
 output_scale = 1000
@@ -2293,6 +2460,7 @@ applicability = { physical = [0.0, 40.0] }
         let error = parse_family(
             r#"
 [transfer_families.ntc]
+provenance = { identity = "test fixture" }
 input_unit = "adc_code"
 output_unit = "degree_celsius"
 output_scale = 1000
@@ -2357,6 +2525,7 @@ applicability = { physical = [-20.0, 80.0] }
     fn unsupported_member_omits_source_mapping_and_remains_inspectable() {
         let toml = r#"
 [transfer_families.als]
+provenance = { identity = "test fixture" }
 input_unit = "count"
 output_unit = "unit"
 output_scale = 1
@@ -2401,6 +2570,7 @@ reason = "the source does not define this selector combination"
             status: MemberStatus::Unsupported,
             reason: Some("the shared model has no mapping for this gain".into()),
             applicability: ApplicabilityDef::default(),
+            provenance: None,
         };
         let expanded = expand_families(&BTreeMap::from([(
             "als".into(),
@@ -2437,6 +2607,7 @@ reason = "the source does not define this selector combination"
             status: MemberStatus::Unsupported,
             reason: Some("the shared model has no mapping for this gain".into()),
             applicability: ApplicabilityDef::default(),
+            provenance: None,
         };
         let error = expand_families(&BTreeMap::from([(
             "als".into(),
@@ -2486,6 +2657,7 @@ reason = "the source does not define this selector combination"
         let error = parse_family(
             r#"
 [transfer_families.als]
+provenance = { identity = "test fixture" }
 input_unit = "count"
 output_unit = "unit"
 output_scale = 1
@@ -2631,6 +2803,7 @@ applicability = { observation = [1, 10] }
             selectors: two_axis("low", 8),
             status: GapStatus::Undefined,
             reason: "not characterized at this combination".into(),
+            provenance: None,
         };
         let family = cartesian_family(
             vec![
@@ -2649,6 +2822,7 @@ applicability = { observation = [1, 10] }
     fn global_named_gap_does_not_satisfy_family_completeness() {
         let toml = r#"
 [transfer_families.front_end]
+provenance = { identity = "test fixture" }
 input_unit = "count"
 output_unit = "unit"
 output_scale = 1
@@ -2688,6 +2862,7 @@ reason = "named globally; not a family-scoped identity"
     fn expected_selectors_do_not_invent_cartesian_cells() {
         let toml = r#"
 [transfer_families.front_end]
+provenance = { identity = "test fixture" }
 input_unit = "count"
 output_unit = "unit"
 output_scale = 1
@@ -2740,6 +2915,7 @@ applicability = { observation = [1, 10] }
                     status: MemberStatus::Unsupported,
                     reason: Some("not supported by the shared source".into()),
                     applicability: ApplicabilityDef::default(),
+                    provenance: None,
                 }
             };
             members.push(member);
@@ -2807,6 +2983,7 @@ applicability = { observation = [1, 10] }
             selectors: two_axis("low", 1),
             status: GapStatus::Undefined,
             reason: "conflicts with the emitted member".into(),
+            provenance: None,
         };
         let family = cartesian_family(
             vec![
@@ -2830,6 +3007,7 @@ applicability = { observation = [1, 10] }
             selectors: two_axis("low", 8),
             status: GapStatus::Undefined,
             reason: "   ".into(),
+            provenance: None,
         };
         let family = cartesian_family(
             vec![
@@ -2871,6 +3049,7 @@ applicability = { observation = [1, 10] }
         let error = parse_family(
             r#"
 [transfer_families.als]
+provenance = { identity = "test fixture" }
 input_unit = "count"
 output_unit = "unit"
 output_scale = 1
@@ -2898,6 +3077,7 @@ channel = "als"
     fn description_only_member_rationale_is_required_and_exposed() {
         let toml = r#"
 [transfer_families.als]
+provenance = { identity = "test fixture" }
 input_unit = "count"
 output_unit = "unit"
 output_scale = 1
@@ -2924,5 +3104,146 @@ applicability = { observation = [1, 10] }
             Some("exceeds the absolute maximum rating")
         );
         assert_eq!(family.completeness(), FamilyCompleteness::Complete);
+    }
+
+    #[test]
+    fn source_backed_family_requires_provenance_identity() {
+        let defs = parse_family(
+            r#"
+[transfer_families.als]
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+formula = "x"
+
+[[transfer_families.als.members]]
+selectors = { gain = "div4" }
+status = "emit"
+applicability = { observation = [1, 10] }
+"#,
+        )
+        .unwrap();
+        let error = defs.validate().unwrap_err().to_string();
+        assert!(
+            error.contains("source-backed family requires provenance.identity"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn blank_family_provenance_identity_is_rejected() {
+        let defs = parse_family(
+            r#"
+[transfer_families.als]
+provenance = { identity = "  " }
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+formula = "x"
+
+[[transfer_families.als.members]]
+selectors = { gain = "div4" }
+status = "emit"
+applicability = { observation = [1, 10] }
+"#,
+        )
+        .unwrap();
+        let error = defs.validate().unwrap_err().to_string();
+        assert!(
+            error.contains("provenance.identity must not be blank"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn unknown_provenance_field_is_rejected() {
+        let error = parse_family(
+            r#"
+[transfer_families.als]
+provenance = { identity = "datasheet", fetched = true }
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+formula = "x"
+
+[[transfer_families.als.members]]
+selectors = { gain = "div4" }
+status = "emit"
+applicability = { observation = [1, 10] }
+"#,
+        )
+        .unwrap_err();
+        assert!(error.contains("unknown field `fetched`"), "{error}");
+    }
+
+    #[test]
+    fn member_inherits_family_provenance_unless_overridden() {
+        let defs = parse_family(
+            r#"
+[transfer_families.als]
+provenance = { identity = "synthetic ALS application note", revision = "1.0", locator = "Table 1" }
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+formula = "x"
+selector_axes = { gain = ["div4", "x1"] }
+
+[[transfer_families.als.members]]
+selectors = { gain = "div4" }
+status = "emit"
+applicability = { observation = [1, 10] }
+
+[[transfer_families.als.members]]
+selectors = { gain = "x1" }
+status = "forbidden"
+reason = "datasheet marks this combination invalid"
+applicability = { observation = [1, 10] }
+provenance = { locator = "§4.2 forbidden matrix" }
+"#,
+        )
+        .unwrap();
+        let validated = defs.validate().unwrap();
+        let family = &validated.families()[0];
+        let expected = SourceProvenance::new("synthetic ALS application note")
+            .with_revision("1.0")
+            .with_locator("Table 1");
+        assert_eq!(family.provenance(), &expected);
+        assert_eq!(family.members()[0].provenance(), &expected);
+        assert!(family.members()[0].provenance_override().is_none());
+        assert_eq!(
+            family.members()[1].provenance(),
+            &SourceProvenance::new("synthetic ALS application note")
+                .with_revision("1.0")
+                .with_locator("§4.2 forbidden matrix")
+        );
+        assert_eq!(
+            family.members()[1]
+                .provenance_override()
+                .and_then(|overlay| overlay.locator.as_deref()),
+            Some("§4.2 forbidden matrix")
+        );
+        let expanded = defs.resolved_transfers().unwrap();
+        assert_eq!(
+            expanded["als_gain_div4"].provenance.as_ref(),
+            Some(&expected)
+        );
+    }
+
+    #[test]
+    fn expanded_member_carries_resolved_citation_not_representation() {
+        let mut families = BTreeMap::new();
+        families.insert("als".into(), formula_family(vec![emit_member("div4", 100)]));
+        let expanded = expand_families(&families).unwrap();
+        let def = &expanded["als_gain_div4_integration_time_ms_100"];
+        assert_eq!(
+            def.provenance
+                .as_ref()
+                .map(|citation| citation.identity.as_str()),
+            Some("test fixture")
+        );
     }
 }

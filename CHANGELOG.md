@@ -15,6 +15,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   vulnerability into a public issue. The bug form asks which surface is
   involved — runtime, `gen-lib`, or `gen-cli` — because the `no_std` runtime
   and the host generator fail in unrelated ways.
+- Host-only structured source provenance, separate from generation policy.
+  A `provenance` table records identity plus optional revision, locator, URL,
+  and note. Source-backed families require `provenance.identity`; members
+  inherit the family citation unless they declare an override. Overrides can
+  explicitly clear optional fields, and replacing `identity` resets every
+  unspecified optional field so citations from two documents cannot be
+  combined accidentally. Family-scoped gaps inherit the family citation and
+  may override it with the same set/clear rules; validated gap IR exposes the
+  effective citation and declared override. Document-level gaps may carry
+  their own independent citation.
+  `TransferSpec::with_provenance` and source overlays supply the same type as
+  TOML. Each overlay explicitly inherits, replaces, or clears the target
+  citation; emitted family-member overlays cannot clear it. Inheritance means
+  the target's declared, resolved pre-overlay citation, so it restores that
+  citation when replacing an earlier overlay. Standalone TOML
+  provenance requires `[transfers] requires = ["source_provenance_v1"]`, whose
+  shape makes 0.2.1 readers reject instead of silently discarding the citation.
+  Provenance nested inside a model or point value is rejected as misplaced.
+  Host inspection exposes `SourceProvenance` and a citation-free
+  `GenerationPolicy` as distinct values; generated rustdoc labels source provenance,
+  representation (the selected formula/points/model), and policy separately.
+  Observation-guard classification remains consumer/device policy unless the
+  `saturation` table cites a source, in which case rustdoc names that citation
+  and still applies the classification as declared policy. A family guard's
+  citation always resolves against family provenance, even when a member has
+  its own citation. A standalone guard citation resolves against the declared
+  transfer citation before an overlay, so replacing or clearing source
+  provenance does not rewrite or remove the guard citation. URLs are stored
+  and never fetched. Runtime
+  `TransferMetadata` and observation-guard companions do not retain citation strings.
 - Host-only `[transfer_families]` and `[gaps]` tables. A family shares one
   formula, points, or model source across explicit selector members; only
   `status = "emit"` members become independent `PiecewiseLinearTransfer`
@@ -49,7 +79,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `unnecessary` / `unsupported` / `forbidden`), and gap reasons without
   generating Rust.
   `ValidatedFamily` exposes the declared selector universe, every member,
-  family-scoped gaps, typed selector identities, and completeness status.
+  family-scoped gaps with resolved/declared provenance, typed selector
+  identities, and completeness status.
   `TransferSpec` / `TransferSource` construct or overlay evaluated physical
   truth and prefitted knots so a device crate can own source interpretation
   while reusing ph-curves fitting, metadata, and `PiecewiseLinearTransfer`
@@ -92,16 +123,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Accepted-but-inert `scale` / `applicability.model_input` on formula, points,
   and NTC members are rejected. `interpolate_selectors` is removed (discreteness
   is an invariant). Member statuses are `emit`, `unnecessary`, `unsupported`,
-  and   `forbidden`; non-`emit` statuses require a non-blank `reason`.
+  and `forbidden`; non-`emit` statuses require a non-blank `reason`.
   `unsupported` represents a selector combination without a source mapping,
-  while the other three statuses require the source-specific mapping. Every
-  family declares a selector universe (`selector_axes` or
+  while the other three statuses require the source-specific mapping. Families
+  declare a selector universe (`selector_axes` or
   `expected_selectors`) and proves completeness with members and
   family-scoped gaps. Families may share a document with unrelated
   `[curves]`; dense LUT fallback remains curve-only. This is the publish
-  shape of `[transfer_families]`, which has not shipped in 0.2.1. Standalone
-  transfer TOML is unchanged. A whole-document `schema_version` field remains
-  a separate decision.
+  shape of `[transfer_families]`, which has not shipped in 0.2.1. Legacy
+  standalone transfers that do not use the new provenance or guard fields
+  remain unchanged. A whole-document `schema_version` field remains a
+  separate decision.
 
 - **Breaking (pre-1.0):** `TransferError` gained `RejectedObservation { input }`
   so a deliberately rejected observation code is not an `AboveDomain`.
@@ -129,11 +161,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `[transfer_families]` and `[gaps]` are now known top-level definition
   tables. Nested unknown fields on those types, on family point and NTC model
   sources, and on family members and applicability are rejected. Standalone
-  curve definitions and legacy standalone point/NTC source values retain
-  their permissive compatibility behavior.
+  curve definitions and unreserved fields in legacy standalone point/NTC
+  source values retain their permissive compatibility behavior.
 
 ### Fixed
 
+- Generated rustdoc now escapes Markdown/HTML syntax in every user-derived
+  documentation string (names, representation, units, and citations), so text
+  such as `[missing]` cannot become a broken intra-doc link under `-D warnings`.
 - Family source fields now fail closed: unknown keys in family point entries
   or NTC model tables are rejected with the family and source path instead of
   being accepted and discarded.
@@ -155,7 +190,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Standalone transfer definitions now reject unknown direct fields. A typo such
   as `saturaton`, or the unsupported runtime-oriented name
   `observation_guard`, therefore fails TOML parsing instead of producing an
-  unguarded table. Nested legacy NTC model parameters remain permissive.
+  unguarded table. Other, unreserved nested legacy NTC model parameters remain
+  permissive.
 
 ## [0.2.1] - 2026-08-10
 

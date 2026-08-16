@@ -36,6 +36,31 @@ explicit `members` array. Selectors are string or integer maps and are never
 interpolated. `interpolate_selectors` is not a field; leftover copies are
 unknown-field errors.
 
+A source-backed family requires a structured `provenance` table with a
+non-blank `identity` (title or stable identifier). Optional `revision`,
+`locator`, `url`, and `note` fields locate the cited document. URLs are stored
+as opaque strings and are never fetched. Members inherit that citation unless
+they declare a `provenance` override. Set fields replace; optional fields named
+by `clear = ["revision", "locator", "url", "note"]` are removed. Unset fields
+inherit while `identity` is unchanged. Replacing `identity` starts a new
+citation, so unspecified optional fields are cleared instead of being combined
+with fields from the old document. Family-scoped gaps inherit and may override
+the family citation under the same rules; `ValidatedFamilyGap` exposes the
+effective citation and declared override. Global `[gaps]` may declare their
+own citation; without a parent family they still require `identity` when
+`provenance` is present.
+
+Fit budget, knot cap, `below` / `above`, and `saturation` are
+generation/consumer policy inspectable as `GenerationPolicy`, not as part of
+the citation. Member `status` is a separate emission decision exposed through
+`ValidatedMember::status`.
+Observation-guard classification is policy unless `saturation` carries a nested
+`provenance` override that cites a source supporting that classification. A
+family-level guard citation resolves against family provenance before any
+member override is applied. `GenerationPolicy` projects only the guard code and
+behavior; inspect the resolved citation separately through
+`ValidatedFamily::observation_guard_provenance`.
+
 Every family declares its expected selector universe with exactly one of:
 
 - `selector_axes` — named axes whose Cartesian product is expected (`BTreeMap`
@@ -57,7 +82,9 @@ map used as both a member and a gap. Integer `1` and string `"1"` remain
 distinct identities.
 
 Family-scoped gaps are `[[transfer_families.<name>.gaps]]` records with the
-same typed selector map, `status = "undefined"`, and a non-blank `reason`.
+same typed selector map, `status = "undefined"`, a non-blank `reason`, and an
+optional family-relative `provenance` override. A selector key named
+`provenance` inside `selectors` remains an ordinary identity key.
 Document-level `[gaps.<name>]` remain globally named `{ status, reason }`
 records. They do not occupy family selector identities and do not satisfy
 completeness.
@@ -96,8 +123,9 @@ document-level gaps do not.
 
 Unknown fields on family, shared point entry, shared NTC model, member,
 applicability, input-transform, family-scoped gap, and document-level gap
-tables are rejected. Standalone point and legacy NTC source values retain
-their compatibility behavior.
+tables are rejected. Unreserved fields in standalone point and legacy NTC
+source values retain their compatibility behavior; reserved guard and
+provenance spellings fail closed.
 
 Evaluated-truth and prefitted overlays are observation-space generation
 inputs. They do not re-apply `input_transform` to samples. The member's
@@ -162,3 +190,4 @@ folded into `above` and the guarded code is not added to the fitting domain.
 - `kind = "veml7700"` or any device lifecycle API
 - Selector interpolation
 - A runtime family registry
+- Fetching provenance URLs or parsing vendor-specific source documents
