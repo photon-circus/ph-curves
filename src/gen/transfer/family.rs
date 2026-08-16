@@ -238,7 +238,7 @@ fn validate_family(family_name: &str, family: &TransferFamilyDef) -> Result<(), 
     }
 
     let mut seen_identities: BTreeMap<&BTreeMap<String, SelectorValue>, usize> = BTreeMap::new();
-    let mut seen_names: BTreeMap<String, String> = BTreeMap::new();
+    let mut seen_emitted_names: BTreeMap<String, String> = BTreeMap::new();
     for (index, member) in family.members.iter().enumerate() {
         validate_member(family_name, index, member)?;
         if let Some(&previous) = seen_identities.get(&member.selectors) {
@@ -249,15 +249,17 @@ fn validate_family(family_name: &str, family: &TransferFamilyDef) -> Result<(), 
         }
         seen_identities.insert(&member.selectors, index);
 
-        let member_name = expanded_name(family_name, &member.selectors)?;
-        if let Some(previous) =
-            seen_names.insert(member_name.clone(), format_selectors(&member.selectors))
-        {
-            return Err(format!(
-                "transfer family `{family_name}`: selector maps {previous} and {} \
-                 both expand to `{member_name}`",
-                format_selectors(&member.selectors)
-            ));
+        if member.status == MemberStatus::Emit {
+            let member_name = expanded_name(family_name, &member.selectors)?;
+            if let Some(previous) =
+                seen_emitted_names.insert(member_name.clone(), format_selectors(&member.selectors))
+            {
+                return Err(format!(
+                    "transfer family `{family_name}`: selector maps {previous} and {} \
+                     both expand to `{member_name}`",
+                    format_selectors(&member.selectors)
+                ));
+            }
         }
     }
     Ok(())
@@ -514,6 +516,38 @@ mod tests {
         assert!(error.contains("both expand to `als_a_1`"));
         assert!(error.contains("a=\"1\""));
         assert!(error.contains("a=1"));
+    }
+
+    #[test]
+    fn description_only_members_may_share_an_expanded_name() {
+        let emitted = emit_member("div4", 100, 268_800);
+        let mut string_one = member("x1", 100, 4_200, MemberStatus::None);
+        string_one.selectors = BTreeMap::from([("a".into(), SelectorValue::String("1".into()))]);
+        let mut int_one = member("x2", 100, 2_100, MemberStatus::DoNotUse);
+        int_one.selectors = BTreeMap::from([("a".into(), SelectorValue::Integer(1))]);
+        let mut families = BTreeMap::new();
+        families.insert(
+            "als".into(),
+            formula_family(vec![emitted, string_one, int_one]),
+        );
+
+        let expanded = expand_families(&families).unwrap();
+        assert_eq!(expanded.len(), 1);
+        assert!(expanded.contains_key("als_gain_div4_integration_time_ms_100"));
+    }
+
+    #[test]
+    fn description_only_member_may_share_an_emitted_name() {
+        let mut string_one = emit_member("div4", 100, 268_800);
+        string_one.selectors = BTreeMap::from([("a".into(), SelectorValue::String("1".into()))]);
+        let mut int_one = member("x1", 100, 4_200, MemberStatus::None);
+        int_one.selectors = BTreeMap::from([("a".into(), SelectorValue::Integer(1))]);
+        let mut families = BTreeMap::new();
+        families.insert("als".into(), formula_family(vec![string_one, int_one]));
+
+        let expanded = expand_families(&families).unwrap();
+        assert_eq!(expanded.len(), 1);
+        assert!(expanded.contains_key("als_a_1"));
     }
 
     #[test]
