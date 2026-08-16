@@ -152,7 +152,8 @@ pub struct InputTransform {
 pub struct FamilyMemberDef {
     /// Discrete selector map. Keys and typed values form the member identity.
     pub selectors: BTreeMap<String, SelectorValue>,
-    /// Exact input transform. Required for `scaled_polynomial`; forbidden otherwise.
+    /// Exact input transform. Required for mapped `scaled_polynomial` members;
+    /// forbidden for other sources and for `unsupported` members.
     #[serde(default)]
     pub input_transform: Option<InputTransform>,
     /// Whether this member is generated or retained as description only.
@@ -161,20 +162,27 @@ pub struct FamilyMemberDef {
     #[serde(default)]
     pub reason: Option<String>,
     /// Source-backed window in the coordinate space the shared source uses.
+    ///
+    /// Required for `emit`, `unnecessary`, and `forbidden` members. An
+    /// `unsupported` member has no source mapping, so it may omit this field
+    /// and must leave every coordinate unset.
+    #[serde(default)]
     pub applicability: ApplicabilityDef,
 }
 
 /// Where this member's mapping is source-backed.
 ///
-/// Exactly one of `observation`, `model_input`, or `physical` must be set, and
-/// it must match the family's shared source:
+/// For `emit`, `unnecessary`, and `forbidden` members, exactly one of
+/// `observation`, `model_input`, or `physical` must be set and it must match
+/// the family's shared source. An `unsupported` member must leave all three
+/// unset because it has no source mapping:
 ///
 /// - formula requires `observation` (member observation domain)
 /// - points requires `observation` (inclusive clip of the shared point set)
 /// - `scaled_polynomial` requires `model_input` (converted to codes through
 ///   `input_transform`)
 /// - `ntc_beta_divider` requires `physical` (member output range)
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApplicabilityDef {
     /// Inclusive observation-code window `[min, max]`.
@@ -194,11 +202,15 @@ pub struct ApplicabilityDef {
 pub enum MemberStatus {
     /// Generate a sparse `PiecewiseLinearTransfer` for this member.
     Emit,
-    /// Listed combination is known but not generated. Requires [`FamilyMemberDef::reason`].
+    /// Listed combination has a source mapping but need not be generated.
+    /// Requires [`FamilyMemberDef::reason`].
     Unnecessary,
-    /// Listed combination has no source mapping. Requires [`FamilyMemberDef::reason`].
+    /// Listed combination has no source mapping. Requires
+    /// [`FamilyMemberDef::reason`] and forbids source applicability and input
+    /// transforms.
     Unsupported,
-    /// Listed combination must not be used. Requires [`FamilyMemberDef::reason`].
+    /// Listed combination has a source mapping but must not be used. Requires
+    /// [`FamilyMemberDef::reason`].
     Forbidden,
 }
 
@@ -400,6 +412,12 @@ fn reject_unsupported_field(label: &str, field: &str, kind: &str) -> String {
     format!("{label}: `{field}` is not supported for {kind} sources")
 }
 
+fn reject_unsupported_member_field(label: &str, field: &str) -> String {
+    format!(
+        "{label}: `{field}` is forbidden for status = \"unsupported\" because unsupported members have no source mapping"
+    )
+}
+
 fn validate_status_reason(label: &str, member: &FamilyMemberDef) -> Result<(), String> {
     match member.status {
         MemberStatus::Emit => {
@@ -451,13 +469,29 @@ fn validate_member(
     }
     validate_status_reason(&label, member)?;
 
-    let occupied = member.applicability.observation.is_some() as u8
-        + member.applicability.model_input.is_some() as u8
-        + member.applicability.physical.is_some() as u8;
-    if occupied != 1 {
-        return Err(format!(
-            "{label}: applicability must set exactly one of observation, model_input, or physical"
-        ));
+    if member.status == MemberStatus::Unsupported {
+        if member.input_transform.is_some() {
+            return Err(reject_unsupported_member_field(&label, "input_transform"));
+        }
+        if member.applicability.observation.is_some() {
+            return Err(reject_unsupported_member_field(
+                &label,
+                "applicability.observation",
+            ));
+        }
+        if member.applicability.model_input.is_some() {
+            return Err(reject_unsupported_member_field(
+                &label,
+                "applicability.model_input",
+            ));
+        }
+        if member.applicability.physical.is_some() {
+            return Err(reject_unsupported_member_field(
+                &label,
+                "applicability.physical",
+            ));
+        }
+        return Ok(());
     }
 
     let kind = source_kind(family);
@@ -514,19 +548,6 @@ fn validate_member(
             )?;
         }
         "scaled_polynomial" => {
-            let transform = member.input_transform.ok_or_else(|| {
-                format!("{label}: input_transform is required for scaled_polynomial sources")
-            })?;
-            if transform.numerator == 0 {
-                return Err(format!(
-                    "{label}: input_transform.numerator must be positive"
-                ));
-            }
-            if transform.denominator == 0 {
-                return Err(format!(
-                    "{label}: input_transform.denominator must be nonzero"
-                ));
-            }
             if member.applicability.observation.is_some() {
                 return Err(reject_unsupported_field(
                     &label,
@@ -541,7 +562,22 @@ fn validate_member(
                     kind,
                 ));
             }
-            let model_input = member.applicability.model_input.expect("occupied checked");
+            let transform = member.input_transform.ok_or_else(|| {
+                format!("{label}: input_transform is required for scaled_polynomial sources")
+            })?;
+            if transform.numerator == 0 {
+                return Err(format!(
+                    "{label}: input_transform.numerator must be positive"
+                ));
+            }
+            if transform.denominator == 0 {
+                return Err(format!(
+                    "{label}: input_transform.denominator must be nonzero"
+                ));
+            }
+            let model_input = member.applicability.model_input.ok_or_else(|| {
+                format!("{label}: applicability.model_input is required for this source")
+            })?;
             let domain = super::model::observation_domain(
                 transform.numerator,
                 transform.denominator,
@@ -1680,6 +1716,127 @@ applicability = { physical = [-20.0, 80.0] }
             error.contains("status = \"unsupported\" requires a non-blank reason"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn unsupported_member_omits_source_mapping_and_remains_inspectable() {
+        let toml = r#"
+[transfer_families.als]
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+formula = "x"
+
+[[transfer_families.als.members]]
+selectors = { gain = "div4" }
+status = "emit"
+applicability = { observation = [1, 10] }
+
+[[transfer_families.als.members]]
+selectors = { gain = "x1" }
+status = "unsupported"
+reason = "the source does not define this selector combination"
+"#;
+        let defs = parse_family(toml).unwrap();
+        let validated = defs.validate().unwrap();
+        let family = &validated.families()[0];
+        let unsupported = family
+            .members()
+            .iter()
+            .find(|member| member.status() == MemberStatus::Unsupported)
+            .unwrap();
+
+        assert_eq!(unsupported.input_transform(), None);
+        assert_eq!(unsupported.applicability().observation, None);
+        assert_eq!(unsupported.applicability().model_input, None);
+        assert_eq!(unsupported.applicability().physical, None);
+        assert_eq!(validated.emitted_transfer_names().count(), 1);
+    }
+
+    #[test]
+    fn unsupported_scaled_polynomial_member_needs_no_transform_or_applicability() {
+        let unsupported = FamilyMemberDef {
+            selectors: BTreeMap::from([("gain".into(), SelectorValue::String("x1".into()))]),
+            input_transform: None,
+            status: MemberStatus::Unsupported,
+            reason: Some("the shared model has no mapping for this gain".into()),
+            applicability: ApplicabilityDef::default(),
+        };
+        let expanded = expand_families(&BTreeMap::from([(
+            "als".into(),
+            scaled_poly_family(
+                vec![0.0, 1.0],
+                vec![scaled_emit("div4", 100, 33_600), unsupported],
+            ),
+        )]))
+        .unwrap();
+
+        assert_eq!(expanded.len(), 1);
+        assert!(expanded.contains_key("als_gain_div4_integration_time_ms_100"));
+    }
+
+    #[test]
+    fn unsupported_member_rejects_invented_source_mapping() {
+        let mapped = described("x1", 100, MemberStatus::Unsupported);
+        let error = expand_families(&BTreeMap::from([(
+            "als".into(),
+            formula_family(vec![emit_member("div4", 100), mapped]),
+        )]))
+        .unwrap_err();
+        assert!(
+            error.contains("`applicability.observation` is forbidden for status = \"unsupported\""),
+            "{error}"
+        );
+
+        let mut transformed = FamilyMemberDef {
+            selectors: BTreeMap::from([("gain".into(), SelectorValue::String("x1".into()))]),
+            input_transform: Some(millionths(33_600)),
+            status: MemberStatus::Unsupported,
+            reason: Some("the shared model has no mapping for this gain".into()),
+            applicability: ApplicabilityDef::default(),
+        };
+        let error = expand_families(&BTreeMap::from([(
+            "als".into(),
+            scaled_poly_family(
+                vec![0.0, 1.0],
+                vec![scaled_emit("div4", 100, 33_600), transformed.clone()],
+            ),
+        )]))
+        .unwrap_err();
+        assert!(
+            error.contains("`input_transform` is forbidden for status = \"unsupported\""),
+            "{error}"
+        );
+
+        transformed.input_transform = None;
+        transformed.applicability = model_input([100.0, 22_000.0]);
+        let error = expand_families(&BTreeMap::from([(
+            "als".into(),
+            scaled_poly_family(
+                vec![0.0, 1.0],
+                vec![scaled_emit("div4", 100, 33_600), transformed],
+            ),
+        )]))
+        .unwrap_err();
+        assert!(
+            error.contains("`applicability.model_input` is forbidden for status = \"unsupported\""),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn source_specific_field_error_precedes_missing_or_cardinality_errors() {
+        let mut bad = emit_member("div4", 100);
+        bad.applicability.physical = Some([1.0, 10.0]);
+        let error = expand_families(&BTreeMap::from([("als".into(), formula_family(vec![bad]))]))
+            .unwrap_err();
+
+        assert!(
+            error.contains("`applicability.physical` is not supported for formula sources"),
+            "{error}"
+        );
+        assert!(!error.contains("exactly one"), "{error}");
     }
 
     #[test]

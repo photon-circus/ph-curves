@@ -321,9 +321,11 @@ points do not need to start at zero or end at full scale.
 
 Discrete selector combinations that share one source belong in a transfer
 family. Selectors are never interpolated. Only `status = "emit"` members are
-generated; `unnecessary`, `unsupported`, and `forbidden` members stay on the
-description and require a non-blank `reason`. `[gaps]` records channels the
-sources leave undefined:
+generated. `unnecessary` and `forbidden` members stay on the description,
+require a non-blank `reason`, and retain a validated source mapping.
+`unsupported` members also require a reason but set no applicability coordinate
+or `input_transform` because no source mapping exists. `[gaps]` records
+channels the sources leave undefined:
 
 ```toml
 [transfer_families.als]
@@ -349,6 +351,10 @@ default is 64 with a hard cap of 256. Every accepted member field is
 source-aware: formula and points members declare `applicability.observation`,
 NTC members declare `applicability.physical`, and `kind = "scaled_polynomial"`
 requires an exact `input_transform` plus `applicability.model_input`. The
+matrix applies to mapped (`emit`, `unnecessary`, and `forbidden`) members;
+`unsupported` members carry selector identity and a reason only. Unknown
+fields in family point entries and NTC model tables fail closed, while the
+legacy standalone source formats retain their compatibility behavior. The
 generator applies that transform as `u = count * numerator / denominator` with
 an exact integer product, and converts inclusive model-input bounds to
 observation codes:
@@ -376,9 +382,11 @@ Inspect parsed families and gaps through
 returns a `ValidatedDefinitions` graph that includes description-only members
 and gap reasons. A host tool that owns device evaluation can overlay
 `TransferSource::evaluated_truth` or prefitted knots on an emitted member and
-still receive ordinary generated tables. Transfer-only generation uses
-`GenerateOptions::transfers_only()`; curve LUT `value_type` / `lut_size` are
-not required.
+still receive ordinary generated tables. A family-member overlay must span
+the member's resolved observation domain; a standalone overlay replaces its
+declared source and may define a different domain. Transfer-only generation
+uses `GenerateOptions::transfers_only()`; curve LUT `value_type` / `lut_size`
+are not required.
 
 If a model needs conditionals, multiple independent inputs, dynamic
 calibration, temperature/load compensation, or domain-specific state, compute

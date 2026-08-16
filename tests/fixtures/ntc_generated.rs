@@ -42,4 +42,3 @@ pub const NTC_10K_BETA_3950_METADATA: TransferMetadata = TransferMetadata {
 /// Classification of a code as saturation is declared consumer/device policy,
 /// not inferred from the integer value. The runtime getter and this constant agree.
 pub const NTC_10K_BETA_3950_OBSERVATION_GUARD: Option<ObservationGuardMetadata> = None;
-

@@ -329,16 +329,6 @@ fn build_from_overlay(
     def: &TransferDef,
     overlay: &TransferSource,
 ) -> Result<TransferData, String> {
-    if let Some(expected) = expected_overlay_domain(name, def)? {
-        let span = overlay_observation_span(name, overlay)?;
-        if span != expected {
-            return Err(format!(
-                "transfer `{name}`: overlay observation domain [{}, {}] must equal \
-                 member applicability domain [{}, {}]",
-                span[0], span[1], expected[0], expected[1]
-            ));
-        }
-    }
     match overlay {
         TransferSource::EvaluatedTruth(truth) => {
             let (domain_min, scaled, provenance) = evaluated_truth_to_scaled(name, def, truth)?;
@@ -363,7 +353,10 @@ fn build_from_overlay(
     }
 }
 
-fn overlay_observation_span(name: &str, overlay: &TransferSource) -> Result<[u16; 2], String> {
+pub(crate) fn overlay_observation_span(
+    name: &str,
+    overlay: &TransferSource,
+) -> Result<[u16; 2], String> {
     match overlay {
         TransferSource::EvaluatedTruth(truth) | TransferSource::PrefittedKnots { truth, .. } => {
             evaluated_truth_span(name, truth)
@@ -400,12 +393,17 @@ fn evaluated_truth_span(name: &str, truth: &EvaluatedTruth) -> Result<[u16; 2], 
     Ok([truth.domain_min(), domain_max])
 }
 
-/// Observation window the overlay must match when the transfer already has a
-/// source-backed domain (family expansion). Pure `TransferSpec` overlays have
-/// no TOML source, so they define their own domain.
-fn expected_overlay_domain(name: &str, def: &TransferDef) -> Result<Option<[u16; 2]>, String> {
+/// Resolve the observation domain of an expanded family member's shared source.
+///
+/// The caller is responsible for establishing that `def` originated from a
+/// family. Standalone definitions may intentionally be replaced by overlays
+/// with a different domain.
+pub(crate) fn family_source_observation_domain(
+    name: &str,
+    def: &TransferDef,
+) -> Result<[u16; 2], String> {
     if let Some(domain) = def.domain {
-        return Ok(Some(domain));
+        return Ok(domain);
     }
     if let Some(points) = &def.points {
         if points.len() < 2 {
@@ -413,10 +411,10 @@ fn expected_overlay_domain(name: &str, def: &TransferDef) -> Result<Option<[u16;
                 "transfer `{name}`: points must contain at least two entries"
             ));
         }
-        return Ok(Some([
+        return Ok([
             points[0].input,
             points.last().expect("length checked").input,
-        ]));
+        ]);
     }
     if let (Some(model), Some(output_range)) = (&def.model, def.output_range) {
         let (minimum, physical, _) = model::evaluate(name, model, output_range)?;
@@ -427,9 +425,11 @@ fn expected_overlay_domain(name: &str, def: &TransferDef) -> Result<Option<[u16;
                     .map_err(|_| format!("transfer `{name}`: derived model domain exceeds u16"))?,
             )
             .ok_or_else(|| format!("transfer `{name}`: derived model domain exceeds u16"))?;
-        return Ok(Some([minimum, domain_max]));
+        return Ok([minimum, domain_max]);
     }
-    Ok(None)
+    Err(format!(
+        "transfer `{name}`: expanded family member has no resolvable observation domain"
+    ))
 }
 
 fn evaluated_truth_to_scaled(

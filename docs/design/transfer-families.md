@@ -34,11 +34,11 @@ explicit `members` array. Selectors are string or integer maps and are never
 interpolated. `interpolate_selectors` is not a field; leftover copies are
 unknown-field errors.
 
-Member fields are a capability matrix. A field unsupported by the selected
-source fails validation with a diagnostic that names the family, member, field,
-and source kind.
+Mapped member fields are a capability matrix. A field unsupported by the
+selected source fails validation with a diagnostic that names the family,
+member, field, and source kind.
 
-| Shared source | `input_transform` | `applicability` (exactly one key) | Effect |
+| Shared source (mapped statuses) | `input_transform` | `applicability` (exactly one key) | Effect |
 | --- | --- | --- | --- |
 | formula | reject | `observation = [u16, u16]` | Member observation domain |
 | points | reject | `observation = [u16, u16]` | Inclusive clip of the shared point set; fewer than two remaining points fails |
@@ -57,25 +57,33 @@ as evaluation: smallest code with `u >= min`, largest with `u <= max`.
 
 `status` is `emit`, `unnecessary`, `unsupported`, or `forbidden`. `emit`
 forbids `reason`. Every other status requires a non-blank `reason`.
+`unnecessary` and `forbidden` describe known mappings, so their transform and
+applicability are validated just like an emitted member. `unsupported` means
+the selector combination has no source mapping and therefore forbids both
+`input_transform` and `applicability`.
 
 Gaps require `status = "undefined"` and a non-blank `reason`. They are not
 generated as transfers.
 
-Unknown fields on family, member, applicability, input-transform, and gap
-tables are rejected.
+Unknown fields on family, shared point entry, shared NTC model, member,
+applicability, input-transform, and gap tables are rejected. Standalone point
+and legacy NTC source values retain their compatibility behavior.
 
 Evaluated-truth and prefitted overlays are observation-space generation
 inputs. They do not re-apply `input_transform` to samples. The member's
 resolved observation domain (from applicability) is a constraint: the overlay
-span must equal that domain. Programmatic `TransferSpec` overlays have no
-TOML source and define their own domain.
+span must equal that domain. Standalone TOML overlays replace the declared
+source and may define a different domain. Programmatic `TransferSpec` overlays
+also define their own domain.
 
 ## Validation order
 
 1. Deserialize with top-level and nested `deny_unknown_fields` on the family
    types.
-2. Validate **every** member (selectors, source/member capability matrix,
-   identity, status/reason) before filtering non-`emit` statuses.
+2. Validate **every** member (selectors, identity, status/reason, and the
+   source/member capability matrix for mapped statuses) before filtering
+   non-`emit` statuses. An `unsupported` member is instead checked to ensure
+   no source mapping was invented.
 3. Expand only `status = "emit"` members into ordinary `TransferDef` values.
    Scaled-polynomial members receive the member's `input_transform` and an
    observation `domain` converted from `applicability.model_input`. Formula

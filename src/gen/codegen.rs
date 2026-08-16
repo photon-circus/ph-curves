@@ -71,6 +71,12 @@ pub fn generate(
         emit_transfer(&mut out, name, const_name, def, &data);
     }
 
+    // Emitters leave a blank line after each item so adjacent definitions stay
+    // readable. Normalize the complete file separately so generated fixtures
+    // end with the conventional single newline, never a blank line at EOF.
+    out.truncate(out.trim_end_matches('\n').len());
+    out.push('\n');
+
     Ok(out)
 }
 
@@ -751,7 +757,9 @@ mod tests {
             toml::from_str(include_str!("../../assets/transfers.toml")).unwrap();
         let output = generate(&definition, "u8", 256).unwrap();
         let expected = include_str!("../../tests/fixtures/ntc_generated.rs").replace("\r\n", "\n");
-        assert_eq!(output.trim_end(), expected.trim_end());
+        assert_eq!(output, expected);
+        assert!(output.ends_with('\n'));
+        assert!(!output.ends_with("\n\n"));
         assert!(!output.contains("f32"));
         assert!(!output.contains("f64"));
     }
@@ -775,7 +783,9 @@ mod tests {
         let output = generate(&definition, "u8", 256).unwrap();
         let expected = include_str!("../../tests/fixtures/observation_guards_generated.rs")
             .replace("\r\n", "\n");
-        assert_eq!(output.trim_end(), expected.trim_end());
+        assert_eq!(output, expected);
+        assert!(output.ends_with('\n'));
+        assert!(!output.ends_with("\n\n"));
         assert!(!output.contains("f32"));
         assert!(!output.contains("f64"));
     }

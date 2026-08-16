@@ -30,7 +30,13 @@ plugin ABI: README and `docs/design/gen-build-api.md` keep that as a non-goal.
    `u = count * numerator / denominator` (standalone TOML still uses `scale` /
    `1e6`) and evaluates `[c0, c1, ...]` with Horner; firmware still sees integer
    knots. Overlays on family members must span the member's resolved observation
-   domain.
+   domain. Standalone overlays replace their declared source and may define a
+   different observation domain.
+
+This slice stores resolved family-member observation domains internally so
+overlay validation is source-independent. Exposing that derived fact on the
+complete public family IR remains part of
+[#41](https://github.com/photon-circus/ph-curves/issues/41).
 
 ## Public surface
 

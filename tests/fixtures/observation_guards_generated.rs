@@ -93,4 +93,3 @@ pub const GUARDED_FAMILY_VARIANT_CLAMP_OBSERVATION_GUARD: Option<ObservationGuar
     code: 65535,
     behavior: ObservationGuardBehavior::Clamp,
 });
-
