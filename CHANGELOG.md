@@ -41,9 +41,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   off-by-one from pre-rounding `scale / 1e6`. `u16::MAX` is legal unless the
   caller excludes it. Empty or non-finite coefficients, zero scale, invalid
   domain, non-monotonic truth, non-finite output, and scaled `i32` overflow
-  fail closed. Unknown scaled-polynomial model fields are rejected without
-  tightening the existing standalone NTC parser. Generated firmware remains
-  integer knots.
+  fail closed. Unknown scaled-polynomial model fields are rejected; the legacy
+  NTC model continues to ignore unknown model parameters for compatibility.
+  Generated firmware remains integer knots.
 - Explicit observation-code guard on piecewise-linear transfers, independent
   of the fitted domain and of ordinary `below` / `above` policy. Forward
   conversion classifies a declared code first: `Error` returns
@@ -54,7 +54,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   terminology. The guarded code must be strictly above `domain_max` and is
   not added to the fitting domain. Metadata is an adjacent
   `Option<ObservationGuardMetadata>` constant so `TransferMetadata` struct
-  literals stay additive.
+  literals stay additive. Standalone TOML guards require
+  `[transfers] requires = ["observation_guard_v1"]`; its array shape makes
+  older transfer-map decoders fail instead of silently dropping `saturation`.
+  Unused capabilities and guard keys misplaced inside model/point values are
+  rejected. A legacy transfer named `requires` must be renamed before opting
+  into the capability.
 
 ### Changed
 
@@ -63,6 +68,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Exhaustive downstream matches need a new arm. `PiecewiseLinearTransfer`
   stores an optional guard and is larger by that field; unguarded construction
   keeps the previous convert/invert behavior.
+- **Breaking (pre-1.0 generated namespace):** every generated transfer now
+  emits and reserves `<NAME>_OBSERVATION_GUARD`, including a `None` constant
+  for unguarded transfers. A document containing both `foo` and
+  `foo_observation_guard` must rename one transfer. The uniform `Option`
+  companion keeps symbol presence stable when guard policy changes; this and
+  the runtime API break require the next pre-1.0 minor release.
 - `scripts/local-ci.ps1` sets `CARGO_INCREMENTAL=0`. Incremental compilation
   made the gate flaky on Windows: rustc could fail to finalize
   `target/debug/incremental` ("Access is denied", os error 5) and `cargo test`
@@ -77,8 +88,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   does.
 - `[transfer_families]` and `[gaps]` are now known top-level definition
   tables. Nested unknown fields on those types, and on family members and
-  applicability, are rejected. Standalone curve and transfer definitions
-  still ignore nested unknown fields.
+  applicability, are rejected. Standalone curve definitions still ignore
+  nested unknown fields.
 
 ### Fixed
 
@@ -91,6 +102,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   previously parsed as empty `curves`/`transfers` maps and looked like a
   compatible `build.rs` run while omitting every expected symbol. Parse now
   returns `Error::Toml` and names the unrecognized field.
+- Standalone transfer definitions now reject unknown direct fields. A typo such
+  as `saturaton`, or the unsupported runtime-oriented name
+  `observation_guard`, therefore fails TOML parsing instead of producing an
+  unguarded table. Nested legacy NTC model parameters remain permissive.
 
 ## [0.2.1] - 2026-08-10
 

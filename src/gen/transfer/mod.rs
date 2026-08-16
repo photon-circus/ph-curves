@@ -123,7 +123,11 @@ impl PhysicalPoint {
 ///
 /// Built-in model parameters stay crate-private; use [`Self::has_model`] and
 /// [`Self::declared_source`] to inspect the source kind.
+/// Standalone TOML definitions using `saturation` must declare
+/// `[transfers] requires = ["observation_guard_v1"]` so older generators fail
+/// closed instead of ignoring the guard.
 #[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TransferDef {
     /// Observation-domain unit label.
     pub input_unit: String,

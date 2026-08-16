@@ -279,6 +279,47 @@ mod tests {
     }
 
     #[test]
+    fn misspelled_standalone_saturation_returns_toml_error() {
+        let toml = r#"
+[transfers]
+requires = ["observation_guard_v1"]
+
+[transfers.sensor]
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+saturaton = { code = 65535, behavior = "error" }
+formula = "x"
+domain = [1, 10]
+"#;
+        let error = generate_from_str(toml, &GenerateOptions::transfers_only()).unwrap_err();
+        assert!(matches!(error, Error::Toml(_)));
+        assert!(error.to_string().contains("unknown field `saturaton`"));
+    }
+
+    #[test]
+    fn standalone_guard_without_capability_returns_toml_error() {
+        let toml = r#"
+[transfers.sensor]
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+saturation = { code = 65535, behavior = "error" }
+formula = "x"
+domain = [1, 10]
+"#;
+        let error = generate_from_str(toml, &GenerateOptions::transfers_only()).unwrap_err();
+        assert!(matches!(error, Error::Toml(_)));
+        assert!(
+            error
+                .to_string()
+                .contains("requires = [\"observation_guard_v1\"]")
+        );
+    }
+
+    #[test]
     fn malformed_description_only_member_fails_generate() {
         let toml = r#"
 [transfer_families.als]

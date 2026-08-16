@@ -139,11 +139,66 @@ cost of making schema evolution explicit.
 
 `[transfer_families]` and `[gaps]` are now known top-level tables. Nested
 unknown fields on family, member, applicability, and gap types are rejected.
-Standalone `[curves]` / `[transfers]` definitions still ignore nested unknown
-fields.
+Standalone curves still ignore unknown direct fields. Standalone transfers
+reject unknown direct fields, while legacy NTC model parameters remain
+permissive for compatibility.
 
 No runtime API is involved. The version that ships a TOML tightening is a
 release decision, not part of the behaviour change.
+
+## Host TOML: fail-closed standalone observation guards
+
+A standalone transfer using `saturation` must opt into the localized
+capability in the already-known transfer section:
+
+```toml
+[transfers]
+requires = ["observation_guard_v1"]
+
+[transfers.sensor]
+saturation = { code = 65535, behavior = "error" }
+# remaining required transfer fields...
+```
+
+The location and shape are intentional. Released 0.2.x generators model
+`[transfers]` as `BTreeMap<String, TransferDef>` and ignore unknown fields
+inside each transfer. They therefore reject the `requires` array as an invalid
+transfer value before they can silently discard `saturation`. A new unknown
+top-level key would not provide that guarantee because older releases ignored
+unknown top-level keys too. Unknown capability names and malformed capability
+values fail closed. The capability must correspond to at least one direct
+`saturation` guard, and reserved guard keys found inside a model or point value
+are rejected as misplaced. This catches TOML table-scope mistakes without
+tightening unrelated legacy NTC extensions.
+
+A table named `[transfers.requires]` remains a legal legacy transfer name when
+the document has no observation guard; only the array form is the marker.
+Because TOML cannot represent both forms at once, that transfer must be renamed
+before any standalone guard is added. The parser diagnoses this combination
+explicitly.
+
+The current parser also rejects unknown fields directly on standalone transfer
+definitions, so a misspelled guard cannot disappear. Nested standalone curve
+fields and legacy NTC model parameters retain their previous permissive parsing
+for compatibility. Programmatic `TransferSpec` construction does not need a
+wire-format capability marker.
+
+This is a deliberate TOML compatibility tightening and must ship with the same
+next pre-1.0 minor release as the observation-guard runtime API. A broader
+whole-document version policy remains a separate schema decision.
+
+## Generated namespace: observation-guard companions
+
+Every generated transfer emits and reserves
+`<NAME>_OBSERVATION_GUARD: Option<ObservationGuardMetadata>`, including `None`
+for an unguarded transfer. Uniform presence means adding or removing a guard
+does not also add or remove a Rust symbol, and it satisfies the metadata
+contract without changing `TransferMetadata` struct literals.
+
+The cost is a new generated-name collision: a previously valid pair such as
+`foo` and `foo_observation_guard` is now rejected. Rename one transfer before
+regenerating. This is an intentional pre-1.0 generated-namespace break and is
+part of the next minor-release decision, not a patch-release change.
 
 ## Host `GenerateOptions` on transfer-only documents
 

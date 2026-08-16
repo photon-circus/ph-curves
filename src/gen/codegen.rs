@@ -776,36 +776,19 @@ mod tests {
     }
 
     #[test]
-    fn observation_guard_is_emitted_as_runtime_builder_and_metadata() {
-        let toml = r#"
-[transfers.als]
-input_unit = "count"
-output_unit = "lux"
-output_scale = 1
-max_interpolation_error = 1
-max_knots = 8
-below = "error"
-above = "clamp"
-saturation = { code = 65535, behavior = "error" }
-formula = "x"
-domain = [1, 10]
-"#;
-        let definition: DefinitionsFile = toml::from_str(toml).unwrap();
+    fn observation_guard_examples_match_golden_output() {
+        let definition: DefinitionsFile =
+            toml::from_str(include_str!("../../assets/observation-guards.toml")).unwrap();
         let output = generate(&definition, "u8", 256).unwrap();
-        assert!(output.contains("ObservationGuardBehavior"));
-        assert!(output.contains("ObservationGuardMetadata"));
-        assert!(output.contains(".with_observation_guard(65535, ObservationGuardBehavior::Error)"));
-        assert!(output.contains("ALS_OBSERVATION_GUARD"));
-        assert!(output.contains("code: 65535"));
-        assert!(output.contains("consumer/device policy"));
-        assert!(
-            output.contains(".with_boundaries(BoundaryBehavior::Error, BoundaryBehavior::Clamp)")
-        );
+        let expected = include_str!("../../tests/fixtures/observation_guards_generated.rs")
+            .replace("\r\n", "\n");
+        assert_eq!(output.trim_end(), expected.trim_end());
         assert!(!output.contains("f32"));
+        assert!(!output.contains("f64"));
     }
 
     #[test]
-    fn generate_rejects_observation_guard_companion_collisions() {
+    fn unguarded_transfers_also_reserve_observation_guard_companion_names() {
         let mut transfers = BTreeMap::new();
         for name in ["ntc", "ntc_observation_guard"] {
             transfers.insert(

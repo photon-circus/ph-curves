@@ -75,7 +75,7 @@ Set `monotonic = false` to skip inverse-LUT generation (default is `true`).
 Curve and transfer names are normalized to uppercase Rust identifiers. Names
 with no ASCII letters or digits, names that normalize to the same identifier,
 and names that collide with generated companions (`_FWD`, `_INV`, `_INPUTS`,
-`_OUTPUTS`, `_METADATA`) are rejected.
+`_OUTPUTS`, `_METADATA`, `_OBSERVATION_GUARD`) are rejected.
 
 ### 2. Generate Rust source
 
@@ -184,6 +184,40 @@ distinction matters.
 `below` and `above` independently select `"error"` (the default) or `"clamp"`.
 Transfer functions never extrapolate.
 
+One exact observation code may have a separate guard. It is checked before
+ordinary boundary behavior, must be strictly above the generated domain, and
+is never inferred from the integer value:
+
+```toml
+[transfers]
+requires = ["observation_guard_v1"]
+
+[transfers.ambient_light]
+input_unit = "count"
+output_unit = "lux"
+output_scale = 1
+max_interpolation_error = 1
+above = "clamp"
+saturation = { code = 65535, behavior = "error" }
+formula = "x"
+domain = [1, 60000]
+```
+
+`behavior = "error"` returns `TransferError::RejectedObservation`;
+`behavior = "clamp"` returns the output at `domain_max` regardless of
+`above`. Every other out-of-domain code still follows `below` / `above`, and
+inverse conversion is unchanged. Classification as saturation is explicit
+consumer/device policy, not a generic rule for `u16::MAX`.
+
+The `[transfers] requires` line is mandatory whenever a standalone transfer
+uses `saturation`. Its array shape makes an older generator reject the whole
+document instead of silently ignoring the guard. An unused capability or a
+guard misplaced inside a model/point value is also rejected. A legacy transfer
+named `requires` must be renamed before this capability can be declared.
+Generated output exposes
+`<NAME>_OBSERVATION_GUARD: Option<ObservationGuardMetadata>`; it agrees with
+`<NAME>.observation_guard()` and is `None` for an unguarded transfer.
+
 ### What transfer functions enable
 
 The transfer API is a good fit when all of the following are true:
@@ -192,7 +226,8 @@ The transfer API is a good fit when all of the following are true:
 - The relationship is static and monotonic, either increasing or decreasing.
 - A formula, empirical calibration points, or a supported host model can
   describe the ideal relationship.
-- Endpoint errors or clamps are sufficient outside the generated domain.
+- Endpoint errors or clamps, plus at most one explicit above-domain guard, are
+  sufficient outside the generated domain.
 - Numerical interpolation error can be bounded independently from real-world
   sensor accuracy.
 
@@ -216,7 +251,8 @@ The transfer layer does **not** currently provide:
 - Runtime/factory gain-and-offset calibration wrappers.
 - Automatic chaining or unit conversion between transfer functions.
 - Sensor fusion, state estimation, hysteretic application decisions, or
-  missing/invalid-sample policy.
+  general missing/invalid-sample policy beyond the single explicit
+  observation-code guard.
 - A plugin interface for arbitrary host model code. Dedicated crates inspect
   the validated transfer graph and supply evaluated truth or prefitted knots
   through the host `gen-lib` IR instead.
@@ -236,7 +272,8 @@ six design steps:
    if it is static.
 2. Choose an output unit and integer scale. For example,
    `output_unit = "kilopascal"` with `output_scale = 1000` emits milli-kPa.
-3. Define the valid input domain and explicit below/above behavior.
+3. Define the valid input domain and explicit below/above behavior; optionally
+   declare one exact above-domain observation guard.
 4. Select either a formula over `x` or increasing-input physical points.
 5. Set the numerical error target and a bounded knot budget.
 6. Generate the table, inspect its reported domain/knot/error metadata, and
@@ -319,8 +356,11 @@ kind = "scaled_polynomial"
 coefficients = [0.0, 1.0023, 8.1488e-5, -9.3924e-9, 6.0135e-13]
 ```
 
-Standalone polynomial definitions supply their own `scale` and `domain`.
-`u16::MAX` is included unless the domain or applicability window excludes it.
+Standalone polynomial definitions supply their own `scale` and `domain`. The
+generic polynomial evaluator includes `u16::MAX` whenever that declared domain
+includes it; there is no implicit saturation rule. A guard may target that code
+only when the fitted `domain_max` is lower. A family-level `saturation` table is
+copied to every emitted member and validated against each member's domain.
 Generated output is still independent `PiecewiseLinearTransfer` constants.
 Inspect parsed families and gaps through
 `DefinitionsFile::transfer_families` and `gaps`. `DefinitionsFile::validate`

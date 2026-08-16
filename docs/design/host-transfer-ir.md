@@ -52,6 +52,9 @@ observation-code guard (TOML `saturation`) is copied through family expansion
 and emitted as `with_observation_guard` plus an adjacent
 `Option<ObservationGuardMetadata>` constant. Classification as saturation is
 declared consumer/device policy, not inferred from the integer value.
+Standalone TOML guards require the localized
+`[transfers] requires = ["observation_guard_v1"]` capability; its wire shape
+makes older generators reject rather than silently omit the guard.
 
 ## Options
 
