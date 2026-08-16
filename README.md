@@ -97,6 +97,11 @@ ph-curves-gen --input assets/curves.toml --output src/curves.rs \
     --value-type u16 --lut-size 65536
 ```
 
+A full-domain `u16` LUT requires a target whose pointer width is at least 32
+bits: a 16-bit `usize` cannot represent an array length of 65,536. On
+16-bit-pointer targets, use `u8` curves, a smaller generic `CurveLut`, or a
+sparse `PiecewiseLinearTransfer` instead.
+
 ### 3. Use in firmware
 
 ```rust
@@ -606,9 +611,11 @@ if let Some(filtered_adc) = median.update(adc_code).ready() {
 ```
 
 Sample type `T` is `u16`, `i32`, or `u32`. `MovingAverage` caps `N` so the
-`i64` running sum cannot overflow; for `u32` that ceiling is
-`floor(i64::MAX / u32::MAX) = 2_147_483_648`, which is smaller than 32-bit
-`usize::MAX` and is not a practical window — storage is `[T; N]`.
+`i64` running sum cannot overflow. For `u32`, every window representable on a
+16-bit-pointer target is safe, while targets with pointer width at least 32
+use the accumulator ceiling
+`floor(i64::MAX / u32::MAX) = 2_147_483_648`. Neither cap is a practical
+window recommendation — storage is `[T; N]`.
 
 Available primitives:
 
@@ -710,8 +717,8 @@ formula = "pow((t + 0.16) / 1.16, 3.0)"
 | `MonotonicCurveLut<I,V,N,M>` | Forward + required inverse LUT                |
 | `CurveLut256`          | Type alias: `CurveLut<u8, u8, 256>`                |
 | `MonotonicCurveLut256` | Type alias: `MonotonicCurveLut<u8, u8, 256>`        |
-| `CurveLut65536`        | Type alias: `CurveLut<u16, u16, 65536>`             |
-| `MonotonicCurveLut65536` | Type alias: `MonotonicCurveLut<u16, u16, 65536>`  |
+| `CurveLut65536`        | Type alias: `CurveLut<u16, u16, 65536>` (pointer width >= 32) |
+| `MonotonicCurveLut65536` | Type alias: `MonotonicCurveLut<u16, u16, 65536>` (pointer width >= 32) |
 | `PiecewiseLinearTransfer<N>` | Sparse integer ADC↔measurement transfer (forward + inverse) |
 | `ObservationGuard`         | Explicit observation-code policy, independent of `below`/`above` |
 | `ObservationGuardMetadata` | Adjacent optional guard facts (not a `TransferMetadata` field) |
@@ -798,6 +805,11 @@ feature-conditional `#![no_std]` and builds the default feature set against a
 build only proves *no-std*, because bare-metal `rust-std` ships `alloc`.
 **`feature-compat`** runs the 0.1.x `cargo run --features gen` invocation so
 the compatibility alias cannot rot.
+The core-only matrix includes `msp430-none-elf`: it proves the runtime remains
+buildable without allocation on a representative 16-bit-pointer target. The
+65,536-entry convenience aliases are intentionally absent there because that
+array length cannot be represented by `usize`; the generic curve, transfer,
+affine, and temporal APIs remain available.
 
 To run the same gate locally before pushing:
 

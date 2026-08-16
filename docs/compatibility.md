@@ -306,3 +306,19 @@ stem stays the derived family-plus-selector expansion. `EmissionManifest` and
 report companion-symbol fields are host-only. None of these types enter the
 default-feature runtime path. Generated family-member rustdoc grows two comment
 lines (family name and selector map); standalone transfers are unchanged.
+
+## 16-bit-pointer targets
+
+The 0.3.0 runtime is checked against `msp430-none-elf` with a core-only
+sysroot. The generic curve, transfer, affine, and temporal APIs compile there.
+The `CurveLut65536` and `MonotonicCurveLut65536` convenience aliases are
+conditionally absent when `target_pointer_width = "16"`, because the required
+array length 65,536 cannot be represented by that target's `usize`. Smaller
+generic LUTs remain available.
+
+This conditional surface is not a regression: earlier releases failed to
+compile on 16-bit-pointer targets at those two aliases. On such targets every
+window representable by `usize` fits the `i64` moving-average accumulator for
+`u32`, so `TemporalSample` caps the window at `usize::MAX`. Targets with
+32-bit or wider pointers retain the accumulator-derived cap
+`floor(i64::MAX / u32::MAX) = 2_147_483_648`.
