@@ -119,6 +119,10 @@ pub struct FamilyMemberReport {
     pub table_name: Option<String>,
     /// Generated Rust constant name for an emitted member; absent otherwise.
     pub symbol: Option<String>,
+    /// Companion `{symbol}_METADATA` name for an emitted member; absent otherwise.
+    pub metadata_symbol: Option<String>,
+    /// Companion `{symbol}_OBSERVATION_GUARD` name for an emitted member; absent otherwise.
+    pub observation_guard_symbol: Option<String>,
 }
 
 /// One family-scoped selector gap in a generation audit.
@@ -168,6 +172,10 @@ pub struct TransferReport {
     pub table_name: String,
     /// Emitted Rust constant name (`to_const_name` of [`Self::table_name`]).
     pub symbol: String,
+    /// Companion metadata constant name (`{symbol}_METADATA`).
+    pub metadata_symbol: String,
+    /// Companion observation-guard constant name (`{symbol}_OBSERVATION_GUARD`).
+    pub observation_guard_symbol: String,
     /// Inclusive observation-domain minimum (first knot input).
     pub domain_min: u16,
     /// Inclusive observation-domain maximum (last knot input).
@@ -295,6 +303,9 @@ pub(crate) fn assemble_report(
                 provenance_override: member.provenance.clone(),
                 table_name: emitted.map(|transfer| transfer.table_name.clone()),
                 symbol: emitted.map(|transfer| transfer.symbol.clone()),
+                metadata_symbol: emitted.map(|transfer| transfer.metadata_symbol.clone()),
+                observation_guard_symbol: emitted
+                    .map(|transfer| transfer.observation_guard_symbol.clone()),
             });
         }
 

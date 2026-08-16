@@ -18,7 +18,8 @@ plugin ABI: README and `docs/design/gen-build-api.md` keep that as a non-goal.
 
 ## Layers
 
-1. **Parsed** — `DefinitionsFile` from TOML or `insert_transfer`.
+1. **Parsed** — `DefinitionsFile` from TOML, `insert_transfer`, or
+   `insert_family`.
 2. **Validated** — `DefinitionsFile::validate` runs family/gap/identity and
    selector-universe completeness checks without fitting or emitting Rust.
    Every member, including `unnecessary`, `unsupported`, and `forbidden`, is
@@ -39,15 +40,22 @@ plugin ABI: README and `docs/design/gen-build-api.md` keep that as a non-goal.
    `u = count * numerator / denominator` (standalone TOML still uses `scale` /
    `1e6`) and evaluates `[c0, c1, ...]` with Horner; firmware still sees integer
    knots. Overlays on family members must span the member's resolved observation
-   domain. Standalone overlays replace their declared source and may define a
+   domain, which is also exposed on `ValidatedMember::observation_domain`.
+   Standalone overlays replace their declared source and may define a
    different observation domain.
 
-This slice stores resolved family-member observation domains internally so
-overlay validation is source-independent. Exposing that derived fact, the
-shared source, units, fitting policy, and a programmatic family builder
-remains part of [#41](https://github.com/photon-circus/ph-curves/issues/41).
-Selector universe, family-scoped gaps, typed identities, and completeness are
-already on `ValidatedFamily` ([#40](https://github.com/photon-circus/ph-curves/issues/40)).
+`ValidatedFamily` carries the shared source kind, formula or points
+inspection, units, output scale, aggregate budgets, citation-free policy, and
+selector universe. `FamilySpec` / `FamilySource` construct the same
+`TransferFamilyDef` graph programmatically; TOML and the builder converge on
+one validation and generation pipeline. Optional member `emitted_name` is an
+explicit table-name stem; the default remains the deterministic
+family-plus-selector expansion. `ValidatedDefinitions::emission_manifest`
+lists every emit member exactly once as family + typed selectors → symbol +
+companion names. Generated rustdoc for family members includes the family
+name and the exact selector map. Selector universe, family-scoped gaps, typed
+identities, and completeness remain on `ValidatedFamily`
+([#40](https://github.com/photon-circus/ph-curves/issues/40)).
 
 ## Public surface
 
@@ -55,11 +63,13 @@ Host tools inspect through nameable types: `ValidatedDefinitions`,
 `ValidatedFamily`, `ValidatedMember`, `ValidatedFamilyGap`,
 `SelectorUniverse`, its lazy `SelectorIdentities` iterator,
 `FamilyCompleteness`, `DeclaredSource`, `SourceProvenance`,
-`GenerationPolicy`, `ObservationGuardPolicy`,
+`GenerationPolicy`, `ObservationGuardPolicy`, `EmissionManifest`,
 `TransferFamilyDef` accessors, `DefinitionsFile::curves` / `transfers` /
 `transfer_families` / `gaps`. `ValidatedFamily::gaps` is the family-scoped
 selector list; `ValidatedDefinitions::gaps` is the document-level named map.
-Built-in `ModelDef` remains crate-private.
+Built-in `ModelDef` remains crate-private. Programmatic NTC families use
+`FamilySource::ntc_beta_divider` and `DividerTopology` without exposing that
+catalog type.
 
 `SelectorUniverse::identity_count` is the explicit-list length or checked
 Cartesian axis-length product. Family validation rejects a Cartesian product
@@ -82,6 +92,12 @@ Extension:
 
 - `TransferSpec` + `TransferSource` construct a standalone transfer without TOML.
   `TransferSpec::with_provenance` attaches the same citation type as TOML.
+- `FamilySpec` + `FamilySource` construct a family without TOML, including
+  members, family-scoped gaps, selector universe, shared source, and
+  fitting/boundary/guard policy. `FamilySpec` requires provenance because a
+  source-backed family must name its document. `insert_family` on
+  `DefinitionsFile` or `ValidatedDefinitions` (the latter re-validates) uses
+  the same pipeline as parsed TOML.
 - `ValidatedDefinitions::set_source` overlays truth or knots on a standalone
   transfer or an **emitted** family member. Description-only members reject
   overlays so source facts and generation input stay distinct. Construct the

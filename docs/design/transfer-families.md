@@ -177,9 +177,13 @@ also define their own domain.
    merged transfer set.
 
 Canonical identity is the selector map itself: keys, value types, and values.
-Value-only concatenation is not an identity. Generated names include selector
-keys (`als_gain_div4_integration_time_ms_100`). If two distinct maps would
-emit the same name, generation fails and prints both maps.
+Value-only concatenation is not an identity. Generated names default to
+including selector keys (`als_gain_div4_integration_time_ms_100`). An optional
+member `emitted_name` overrides that stem without changing selector identity,
+so a display-token rename does not force a symbol rename. Explicit and derived
+stems share one emit-member collision set; if two distinct maps would emit the
+same name, generation fails and prints both maps. Description-only members may
+declare a stem but do not occupy that set and are not generated.
 
 Validated host IR exposes the checked count through
 `SelectorUniverse::identity_count`. `SelectorUniverse::identities` is lazy:
@@ -190,7 +194,8 @@ full product.
 ## Emission
 
 Generated firmware remains independent `PiecewiseLinearTransfer` constants.
-There is no runtime family type. A family-level `saturation = { code, behavior }`
+There is no runtime family type. Generated rustdoc for a family member names
+the family and the exact typed selector map. A family-level `saturation = { code, behavior }`
 table is copied onto emitted members as an observation-code guard; it is not
 folded into `above` and the guarded code is not added to the fitting domain.
 

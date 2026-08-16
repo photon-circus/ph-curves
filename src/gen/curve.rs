@@ -25,8 +25,8 @@ use super::{builtin, formula, points, transfer};
 
 /// Parsed TOML definitions for normalized curves and physical transfers.
 ///
-/// Construct via [`Self::from_toml_str`], [`Self::insert_transfer`], or
-/// [`super::generate_from_str`]. Inspect maps through [`Self::curves`],
+/// Construct via [`Self::from_toml_str`], [`Self::insert_transfer`],
+/// [`Self::insert_family`], or [`super::generate_from_str`]. Inspect maps through [`Self::curves`],
 /// [`Self::transfers`], [`Self::transfer_families`], and [`Self::gaps`].
 /// Validate the description graph with [`Self::validate`] before overlaying
 /// host-evaluated truth.

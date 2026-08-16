@@ -23,7 +23,7 @@ use super::{
 /// transfer cap (4096): families must not become dense ADC tables.
 pub const FAMILY_MAX_KNOTS_HARD: usize = 256;
 
-fn default_family_max_knots() -> usize {
+pub(crate) fn default_family_max_knots() -> usize {
     64
 }
 
@@ -227,6 +227,20 @@ pub struct FamilyMemberDef {
     /// Optional citation override. Unset fields inherit the family citation.
     #[serde(default)]
     pub provenance: Option<SourceProvenanceOverride>,
+    /// Optional explicit table-name stem, independent of selector spelling.
+    ///
+    /// When omitted, the stem is derived from the family name and selector map.
+    /// Description-only members may declare a stem, but it is not generated.
+    #[serde(default)]
+    pub emitted_name: Option<String>,
+}
+
+impl FamilyMemberDef {
+    /// Override the derived table-name stem used when this member is emitted.
+    pub fn with_emitted_name(mut self, name: impl Into<String>) -> Self {
+        self.emitted_name = Some(name.into());
+        self
+    }
 }
 
 /// Where this member's mapping is source-backed.
@@ -711,7 +725,7 @@ pub(crate) fn expand_families(
             if member.status != MemberStatus::Emit {
                 continue;
             }
-            let member_name = expanded_name(family_name, &member.selectors)?;
+            let member_name = member_emitted_name(family_name, member)?;
             let def = member_transfer(family_name, family, member)?;
             let resolved = ResolvedTransfer {
                 def,
@@ -816,7 +830,7 @@ fn validate_family(family_name: &str, family: &TransferFamilyDef) -> Result<(), 
             &universe_index,
         )?;
         if member.status == MemberStatus::Emit {
-            let member_name = expanded_name(family_name, &member.selectors)?;
+            let member_name = member_emitted_name(family_name, member)?;
             if let Some(previous) =
                 seen_emitted_names.insert(member_name.clone(), format_selectors(&member.selectors))
             {
@@ -1162,6 +1176,11 @@ fn validate_member(
     if member.selectors.is_empty() {
         return Err(format!("{label}: selectors must not be empty"));
     }
+    if let Some(name) = &member.emitted_name
+        && name.trim().is_empty()
+    {
+        return Err(format!("{label}: emitted_name must not be blank"));
+    }
     for (key, value) in &member.selectors {
         if key.is_empty() {
             return Err(format!("{label}: selector keys must not be empty"));
@@ -1402,7 +1421,7 @@ fn clip_points(points: &[PhysicalPoint], window: [u16; 2]) -> Result<Vec<Physica
     Ok(clipped)
 }
 
-fn member_transfer(
+pub(crate) fn member_transfer(
     family_name: &str,
     family: &TransferFamilyDef,
     member: &FamilyMemberDef,
@@ -1532,6 +1551,34 @@ pub(crate) fn expanded_name(
     Ok(name)
 }
 
+/// Resolved table-name stem: explicit `emitted_name` or the derived expansion.
+pub(crate) fn member_emitted_name(
+    family_name: &str,
+    member: &FamilyMemberDef,
+) -> Result<String, String> {
+    match &member.emitted_name {
+        Some(name) if name.trim().is_empty() => Err(format!(
+            "transfer family `{family_name}`: emitted_name must not be blank"
+        )),
+        Some(name) => Ok(name.clone()),
+        None => expanded_name(family_name, &member.selectors),
+    }
+}
+
+/// Resolved observation-code span for a source-mapped member.
+pub(crate) fn member_observation_domain(
+    family_name: &str,
+    family: &TransferFamilyDef,
+    member: &FamilyMemberDef,
+) -> Result<Option<[u16; 2]>, String> {
+    if member.status == MemberStatus::Unsupported {
+        return Ok(None);
+    }
+    let stem = member_emitted_name(family_name, member)?;
+    let def = member_transfer(family_name, family, member)?;
+    super::family_source_observation_domain(&stem, &def).map(Some)
+}
+
 pub(crate) fn format_selectors(selectors: &BTreeMap<String, SelectorValue>) -> String {
     let parts: Vec<String> = selectors
         .iter()
@@ -1604,6 +1651,7 @@ mod tests {
             reason: reason.map(str::to_string),
             applicability: observation([1, 10]),
             provenance: None,
+            emitted_name: None,
         }
     }
 
@@ -1621,6 +1669,7 @@ mod tests {
             reason: None,
             applicability: model_input([100.0, 22_000.0]),
             provenance: None,
+            emitted_name: None,
         }
     }
 
@@ -2455,6 +2504,7 @@ applicability = { observation = [1, 10] }
             reason: None,
             applicability: model_input([63.0, 100.0]),
             provenance: None,
+            emitted_name: None,
         };
         let error = expand_families(&BTreeMap::from([(
             "als".into(),
@@ -2628,6 +2678,7 @@ reason = "the source does not define this selector combination"
             reason: Some("the shared model has no mapping for this gain".into()),
             applicability: ApplicabilityDef::default(),
             provenance: None,
+            emitted_name: None,
         };
         let expanded = expand_families(&BTreeMap::from([(
             "als".into(),
@@ -2665,6 +2716,7 @@ reason = "the source does not define this selector combination"
             reason: Some("the shared model has no mapping for this gain".into()),
             applicability: ApplicabilityDef::default(),
             provenance: None,
+            emitted_name: None,
         };
         let error = expand_families(&BTreeMap::from([(
             "als".into(),
@@ -2973,6 +3025,7 @@ applicability = { observation = [1, 10] }
                     reason: Some("not supported by the shared source".into()),
                     applicability: ApplicabilityDef::default(),
                     provenance: None,
+                    emitted_name: None,
                 }
             };
             members.push(member);
@@ -3302,5 +3355,57 @@ provenance = { locator = "§4.2 forbidden matrix" }
                 .map(|citation| citation.identity.as_str()),
             Some("test fixture")
         );
+    }
+
+    #[test]
+    fn explicit_emitted_name_is_the_expansion_key() {
+        let mut member = emit_member("div4", 100);
+        member.emitted_name = Some("als_x4".into());
+        let expanded = expand_families(&BTreeMap::from([(
+            "als".into(),
+            formula_family(vec![member]),
+        )]))
+        .unwrap();
+        assert!(expanded.contains_key("als_x4"));
+        assert!(!expanded.contains_key("als_gain_div4_integration_time_ms_100"));
+    }
+
+    #[test]
+    fn explicit_and_derived_stems_collide() {
+        let mut first = emit_member("div4", 100);
+        first.emitted_name = Some("shared_stem".into());
+        let mut second = emit_member("div8", 100);
+        second.emitted_name = Some("shared_stem".into());
+        let error = expand_families(&BTreeMap::from([(
+            "als".into(),
+            formula_family(vec![first, second]),
+        )]))
+        .unwrap_err();
+        assert!(error.contains("both expand to `shared_stem`"), "{error}");
+    }
+
+    #[test]
+    fn toml_emitted_name_is_independent_of_selector_spelling() {
+        let toml = r#"
+[transfer_families.als]
+provenance = { identity = "test fixture" }
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+formula = "x"
+selector_axes = { gain = ["x4"] }
+
+[[transfer_families.als.members]]
+selectors = { gain = "x4" }
+status = "emit"
+emitted_name = "als_gain_div4"
+applicability = { observation = [1, 10] }
+"#;
+        let defs = parse_family(toml).unwrap();
+        let validated = defs.validate().unwrap();
+        let member = &validated.families()[0].members()[0];
+        assert_eq!(member.expanded_name(), "als_gain_x4");
+        assert_eq!(member.emitted_name(), "als_gain_div4");
     }
 }

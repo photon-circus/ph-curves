@@ -15,7 +15,7 @@ use super::report::{
 use super::rustdoc::markdown_debug;
 use super::transfer::{
     FamilyMemberOrigin, ObservationGuardBehaviorDef, ObservationGuardDef, ResolvedTransfer,
-    TransferData, TransferDef,
+    SelectorValue, TransferData, TransferDef,
 };
 use crate::{ObservationGuardBehavior, ObservationGuardMetadata};
 
@@ -108,7 +108,14 @@ pub fn generate_with_report(
             &data,
             resolved.origin.as_ref(),
         ));
-        emit_transfer(&mut out, name, const_name, def, &data);
+        emit_transfer(
+            &mut out,
+            name,
+            const_name,
+            def,
+            &data,
+            resolved.origin.as_ref(),
+        );
     }
 
     let report = assemble_report(
@@ -148,6 +155,8 @@ fn transfer_report(
             .unwrap_or_default(),
         table_name: name.to_string(),
         symbol: const_name.to_string(),
+        metadata_symbol: format!("{const_name}_METADATA"),
+        observation_guard_symbol: format!("{const_name}_OBSERVATION_GUARD"),
         domain_min,
         domain_max,
         range_min,
@@ -241,6 +250,7 @@ fn emit_transfer(
     const_name: &str,
     def: &TransferDef,
     data: &TransferData,
+    origin: Option<&FamilyMemberOrigin>,
 ) {
     let knot_count = data.inputs.len();
     let direction = match data.direction {
@@ -309,10 +319,12 @@ fn emit_transfer(
         "/// Generation policy: {}.\n",
         def.policy().rustdoc_clause()
     );
+    let identity_docs = family_identity_docs(origin);
     // Markdown-safe Debug formatting prevents TOML-derived text from breaking
     // the comment or becoming links, emphasis, code, or raw HTML.
     out.push_str(&format!(
-        "/// {name_doc} sparse physical transfer function.\n\
+        "{identity_docs}\
+         /// {name_doc} sparse physical transfer function.\n\
          ///\n\
          {provenance_docs}\
          /// Representation: {representation_doc}.\n\
@@ -402,6 +414,27 @@ fn emit_transfer(
     ));
 }
 
+fn family_identity_docs(origin: Option<&FamilyMemberOrigin>) -> String {
+    let Some(origin) = origin else {
+        return String::new();
+    };
+    let family_doc = markdown_debug(&origin.family);
+    let selectors = origin
+        .selectors
+        .iter()
+        .map(|(key, value)| {
+            let key_doc = markdown_debug(key);
+            let value_doc = match value {
+                SelectorValue::String(text) => markdown_debug(text),
+                SelectorValue::Integer(int) => int.to_string(),
+            };
+            format!("{key_doc} = {value_doc}")
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("/// Family: {family_doc}.\n/// Selectors: {selectors}.\n")
+}
+
 pub(crate) fn emitted_const_names(
     curves: &[(&String, &CurveDef)],
     transfers: &[(&String, &TransferDef)],
@@ -467,7 +500,7 @@ fn reserve_identifiers<'a>(
     Ok(())
 }
 
-fn to_const_name(name: &str) -> Result<String, String> {
+pub(crate) fn to_const_name(name: &str) -> Result<String, String> {
     let mut out = String::new();
     let mut prev_underscore = false;
     let mut has_alphanumeric = false;
@@ -1299,6 +1332,8 @@ applicability = { observation = [1, 10] }
         assert!(out.contains(
             "Generation policy: requested interpolation error <= 1; max_knots = 8; below = error; above = clamp."
         ));
+        assert!(out.contains(r#"Family: "als"."#));
+        assert!(out.contains(r#"Selectors: "gain" = "div4"."#));
         assert!(!out.contains("/// Source: "));
     }
 

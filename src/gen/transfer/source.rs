@@ -3,8 +3,13 @@
 // Host-only: module-local std link (crate root stays `#![no_std]`).
 extern crate std;
 
+use std::collections::BTreeMap;
 use std::prelude::v1::*;
 
+use super::family::{
+    FamilyGapDef, FamilyMemberDef, SelectorValue, TransferFamilyDef, default_family_max_knots,
+};
+use super::model::{DividerTopology, MODEL_INPUT_SCALE_DENOMINATOR, ModelDef};
 use super::{
     BoundaryDef, GenerationPolicy, ObservationGuardDef, PhysicalPoint, SourceProvenance,
     TransferDef, default_boundary,
@@ -337,5 +342,333 @@ impl TransferSpec {
             output_range: None,
         };
         (self.name, def, self.source)
+    }
+}
+
+/// Shared family source constructed without TOML.
+///
+/// Built-in model parameters are supplied through these constructors. The
+/// crate-private model catalog type is not part of the public IR.
+#[derive(Clone, Debug)]
+pub enum FamilySource {
+    /// A formula over the observation-domain variable `x`.
+    Formula(String),
+    /// Sparse physical control points.
+    Points(Vec<PhysicalPoint>),
+    /// Shared scaled polynomial. Members supply `input_transform`.
+    ScaledPolynomial {
+        /// Coefficients `[c0, c1, ...]` for `y = c0 + c1*u + ...`.
+        coefficients: Vec<f64>,
+    },
+    /// Shared NTC Beta-divider model. Members supply `applicability.physical`.
+    NtcBetaDivider {
+        /// Nominal resistance at `nominal_temperature_celsius`.
+        nominal_resistance_ohms: f64,
+        /// Beta constant in kelvin.
+        beta_kelvin: f64,
+        /// Nominal temperature in celsius.
+        nominal_temperature_celsius: f64,
+        /// Fixed divider resistance.
+        fixed_resistance_ohms: f64,
+        /// Exclusive ADC full-scale code.
+        adc_max_code: u16,
+        /// Divider wiring.
+        topology: DividerTopology,
+    },
+}
+
+impl FamilySource {
+    /// Formula over the observation-domain variable `x`.
+    pub fn formula(text: impl Into<String>) -> Self {
+        Self::Formula(text.into())
+    }
+
+    /// Sparse physical control points.
+    pub fn points(points: Vec<PhysicalPoint>) -> Self {
+        Self::Points(points)
+    }
+
+    /// Shared scaled polynomial. Members supply `input_transform`.
+    pub fn scaled_polynomial(coefficients: Vec<f64>) -> Self {
+        Self::ScaledPolynomial { coefficients }
+    }
+
+    /// Shared NTC Beta-divider model.
+    pub fn ntc_beta_divider(
+        nominal_resistance_ohms: f64,
+        beta_kelvin: f64,
+        nominal_temperature_celsius: f64,
+        fixed_resistance_ohms: f64,
+        adc_max_code: u16,
+        topology: DividerTopology,
+    ) -> Self {
+        Self::NtcBetaDivider {
+            nominal_resistance_ohms,
+            beta_kelvin,
+            nominal_temperature_celsius,
+            fixed_resistance_ohms,
+            adc_max_code,
+            topology,
+        }
+    }
+}
+
+/// A transfer family constructed without TOML.
+///
+/// Policy defaults match parsed families: `max_knots = 64`, `below`/`above` =
+/// error. Provenance is required because a source-backed family must name its
+/// document. Exactly one of [`Self::with_selector_axes`] or
+/// [`Self::with_expected_selectors`] must be set before validation.
+#[derive(Clone, Debug)]
+pub struct FamilySpec {
+    name: String,
+    input_unit: String,
+    output_unit: String,
+    output_scale: u32,
+    max_interpolation_error: u32,
+    max_knots: usize,
+    max_total_knots: Option<usize>,
+    max_table_bytes: Option<usize>,
+    below: BoundaryDef,
+    above: BoundaryDef,
+    observation_guard: Option<ObservationGuardDef>,
+    provenance: SourceProvenance,
+    source: FamilySource,
+    selector_axes: Option<BTreeMap<String, Vec<SelectorValue>>>,
+    expected_selectors: Option<Vec<BTreeMap<String, SelectorValue>>>,
+    members: Vec<FamilyMemberDef>,
+    gaps: Vec<FamilyGapDef>,
+}
+
+impl FamilySpec {
+    /// Shared source, units, fit bound, and mandatory citation.
+    pub fn new(
+        name: impl Into<String>,
+        input_unit: impl Into<String>,
+        output_unit: impl Into<String>,
+        output_scale: u32,
+        max_interpolation_error: u32,
+        source: FamilySource,
+        provenance: SourceProvenance,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            input_unit: input_unit.into(),
+            output_unit: output_unit.into(),
+            output_scale,
+            max_interpolation_error,
+            max_knots: default_family_max_knots(),
+            max_total_knots: None,
+            max_table_bytes: None,
+            below: default_boundary(),
+            above: default_boundary(),
+            observation_guard: None,
+            provenance,
+            source,
+            selector_axes: None,
+            expected_selectors: None,
+            members: Vec::new(),
+            gaps: Vec::new(),
+        }
+    }
+
+    /// Per-member knot budget (default 64, hard cap 256).
+    pub fn with_max_knots(mut self, max_knots: usize) -> Self {
+        self.max_knots = max_knots;
+        self
+    }
+
+    /// Observation-domain below/above policies.
+    pub fn with_boundaries(mut self, below: BoundaryDef, above: BoundaryDef) -> Self {
+        self.below = below;
+        self.above = above;
+        self
+    }
+
+    /// Explicit observation-code guard (TOML `saturation`).
+    pub fn with_observation_guard(mut self, guard: ObservationGuardDef) -> Self {
+        self.observation_guard = Some(guard);
+        self
+    }
+
+    /// Optional aggregate knot budget across every emitted member.
+    pub fn with_max_total_knots(mut self, max_total_knots: usize) -> Self {
+        self.max_total_knots = Some(max_total_knots);
+        self
+    }
+
+    /// Optional aggregate `_INPUTS` + `_OUTPUTS` array-payload budget.
+    pub fn with_max_table_bytes(mut self, max_table_bytes: usize) -> Self {
+        self.max_table_bytes = Some(max_table_bytes);
+        self
+    }
+
+    /// Named selector axes whose Cartesian product is the expected universe.
+    pub fn with_selector_axes(mut self, axes: BTreeMap<String, Vec<SelectorValue>>) -> Self {
+        self.selector_axes = Some(axes);
+        self
+    }
+
+    /// Explicit expected selector maps for a non-Cartesian family.
+    pub fn with_expected_selectors(
+        mut self,
+        identities: Vec<BTreeMap<String, SelectorValue>>,
+    ) -> Self {
+        self.expected_selectors = Some(identities);
+        self
+    }
+
+    /// Explicit selector combinations. Never synthesized.
+    pub fn with_members(mut self, members: Vec<FamilyMemberDef>) -> Self {
+        self.members = members;
+        self
+    }
+
+    /// Family-scoped gaps occupying expected selector identities.
+    pub fn with_gaps(mut self, gaps: Vec<FamilyGapDef>) -> Self {
+        self.gaps = gaps;
+        self
+    }
+
+    /// Family table name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Observation-domain unit label.
+    pub fn input_unit(&self) -> &str {
+        &self.input_unit
+    }
+
+    /// Physical-domain unit label.
+    pub fn output_unit(&self) -> &str {
+        &self.output_unit
+    }
+
+    /// Integer quanta per physical unit.
+    pub fn output_scale(&self) -> u32 {
+        self.output_scale
+    }
+
+    /// Requested interpolation error bound in output quanta.
+    pub fn max_interpolation_error(&self) -> u32 {
+        self.max_interpolation_error
+    }
+
+    /// Per-member knot budget.
+    pub fn max_knots(&self) -> usize {
+        self.max_knots
+    }
+
+    /// Optional aggregate knot budget.
+    pub fn max_total_knots(&self) -> Option<usize> {
+        self.max_total_knots
+    }
+
+    /// Optional aggregate array-payload budget.
+    pub fn max_table_bytes(&self) -> Option<usize> {
+        self.max_table_bytes
+    }
+
+    /// Below-domain policy.
+    pub fn below(&self) -> BoundaryDef {
+        self.below
+    }
+
+    /// Above-domain policy.
+    pub fn above(&self) -> BoundaryDef {
+        self.above
+    }
+
+    /// Explicit observation-code guard, when set.
+    pub fn observation_guard(&self) -> Option<&ObservationGuardDef> {
+        self.observation_guard.as_ref()
+    }
+
+    /// Mandatory shared source citation.
+    pub fn provenance(&self) -> &SourceProvenance {
+        &self.provenance
+    }
+
+    /// Fit budget, boundaries, and observation-guard classification.
+    pub fn policy(&self) -> GenerationPolicy {
+        GenerationPolicy::new(
+            self.max_interpolation_error,
+            self.max_knots,
+            self.below,
+            self.above,
+            self.observation_guard.as_ref(),
+        )
+    }
+
+    /// Shared family source.
+    pub fn source(&self) -> &FamilySource {
+        &self.source
+    }
+
+    /// Declared members in construction order.
+    pub fn members(&self) -> &[FamilyMemberDef] {
+        &self.members
+    }
+
+    /// Family-scoped gaps in construction order.
+    pub fn gaps(&self) -> &[FamilyGapDef] {
+        &self.gaps
+    }
+
+    pub(crate) fn into_family(self) -> (String, TransferFamilyDef) {
+        let (formula, points, model) = match self.source {
+            FamilySource::Formula(text) => (Some(text), None, None),
+            FamilySource::Points(points) => (None, Some(points), None),
+            FamilySource::ScaledPolynomial { coefficients } => (
+                None,
+                None,
+                Some(ModelDef::ScaledPolynomial {
+                    coefficients,
+                    scale: None,
+                    denominator: MODEL_INPUT_SCALE_DENOMINATOR as u32,
+                }),
+            ),
+            FamilySource::NtcBetaDivider {
+                nominal_resistance_ohms,
+                beta_kelvin,
+                nominal_temperature_celsius,
+                fixed_resistance_ohms,
+                adc_max_code,
+                topology,
+            } => (
+                None,
+                None,
+                Some(ModelDef::NtcBetaDivider {
+                    nominal_resistance_ohms,
+                    beta_kelvin,
+                    nominal_temperature_celsius,
+                    fixed_resistance_ohms,
+                    adc_max_code,
+                    topology,
+                }),
+            ),
+        };
+        let family = TransferFamilyDef {
+            input_unit: self.input_unit,
+            output_unit: self.output_unit,
+            output_scale: self.output_scale,
+            max_interpolation_error: self.max_interpolation_error,
+            max_knots: self.max_knots,
+            max_total_knots: self.max_total_knots,
+            max_table_bytes: self.max_table_bytes,
+            below: self.below,
+            above: self.above,
+            observation_guard: self.observation_guard,
+            provenance: Some(self.provenance),
+            points,
+            formula,
+            model,
+            selector_axes: self.selector_axes,
+            expected_selectors: self.expected_selectors,
+            members: self.members,
+            gaps: self.gaps,
+        };
+        (self.name, family)
     }
 }

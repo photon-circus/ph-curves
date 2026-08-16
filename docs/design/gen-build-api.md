@@ -61,6 +61,7 @@ pub struct GenerationReport {
 impl DefinitionsFile {
     pub fn validate(&self) -> Result<ValidatedDefinitions, Error>;
     pub fn insert_transfer(&mut self, spec: TransferSpec) -> Result<(), Error>;
+    pub fn insert_family(&mut self, spec: FamilySpec) -> Result<(), Error>;
     pub fn curves(&self) -> &BTreeMap<String, CurveDef>;
     pub fn transfers(&self) -> &BTreeMap<String, TransferDef>;
     pub fn transfer_families(&self) -> &BTreeMap<String, TransferFamilyDef>;
@@ -72,6 +73,8 @@ impl ValidatedDefinitions {
         name: &str,
         overlay: TransferSourceOverlay,
     ) -> Result<(), Error>;
+    pub fn insert_family(&mut self, spec: FamilySpec) -> Result<(), Error>;
+    pub fn emission_manifest(&self) -> EmissionManifest;
     pub fn generate(&self, opts: &GenerateOptions) -> Result<String, Error>;
     pub fn generate_report(&self, opts: &GenerateOptions) -> Result<GenerationResult, Error>;
 }
@@ -89,7 +92,10 @@ provenance, and citation-free `GenerationPolicy`. `FamilyReport` preserves the
 family citation, guard citation, policy, compact `SelectorUniverse`,
 completeness result, total-budget declarations, every member, and scoped gaps.
 Member and gap report records expose their effective provenance separately
-from the declared override; only emitted members carry a table/symbol mapping.
+from the declared override; only emitted members carry a table/symbol mapping
+plus `_METADATA` and `_OBSERVATION_GUARD` companion names. `FamilySpec`
+constructs the same family graph as TOML. `emission_manifest` is the pre-fit
+identity map (family + typed selectors → stem/symbol/companions).
 Resource totals and aggregate budget enforcement continue to count emitted
 members only. Member and scoped-gap vectors retain declaration order.
 

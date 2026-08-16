@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Complete host family IR, programmatic family construction, and stable
+  emitted member identity. `ValidatedFamily` exposes units, output scale,
+  shared source kind (`formula` / `points` / model), formula or points
+  inspection, aggregate budgets, and the existing policy/provenance/universe
+  graph. `ValidatedMember` exposes the resolved observation-code domain, the
+  selector-derived stem, and an optional explicit `emitted_name`. `FamilySpec`
+  / `FamilySource` construct a family without TOML; `insert_family` feeds the
+  same validate/generate pipeline. An optional member `emitted_name` keeps the
+  generated stem stable when selector display spelling changes; explicit and
+  derived stems share one collision set. `ValidatedDefinitions::emission_manifest`
+  maps family plus typed selectors to the table stem, symbol, and `_METADATA`
+  / `_OBSERVATION_GUARD` companions before fitting. Generated rustdoc for
+  family members names the family and the exact selector map. Description-only
+  members and gaps stay inspectable and have no runtime symbol. No builder or
+  manifest type enters the default-feature runtime path.
 - Host-only generation reports and optional family aggregate resource
   budgets. `generate_report`, `generate_from_str_report`, and
   `generate_from_toml_report` return the generated source together with
@@ -141,6 +156,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Generated rustdoc for family members now includes the family name and typed
+  selector map. Host `TransferReport` / `FamilyMemberReport` also list
+  `_METADATA` and `_OBSERVATION_GUARD` companion symbol names. Standalone
+  transfer rustdoc is unchanged.
 - **Unreleased host schema:** transfer-family member fields are source-aware.
   Accepted-but-inert `scale` / `applicability.model_input` on formula, points,
   and NTC members are rejected. `interpolate_selectors` is removed (discreteness
