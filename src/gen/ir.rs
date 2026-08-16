@@ -250,7 +250,8 @@ impl ValidatedDefinitions {
 mod tests {
     use super::*;
     use crate::r#gen::{
-        GenerateOptions, MemberStatus, PhysicalPoint, SelectorValue, TransferSource, TransferSpec,
+        GenerateOptions, MemberStatus, ObservationGuardBehaviorDef, ObservationGuardDef,
+        PhysicalPoint, SelectorValue, TransferSource, TransferSpec,
     };
     use std::vec;
 
@@ -456,7 +457,11 @@ reason = "counts only; no conversion"
                     PhysicalPoint::new(200, 40.0),
                 ]),
             )
-            .with_max_knots(8),
+            .with_max_knots(8)
+            .with_observation_guard(ObservationGuardDef {
+                code: 65_535,
+                behavior: ObservationGuardBehaviorDef::Error,
+            }),
         )
         .unwrap();
 
@@ -471,5 +476,8 @@ reason = "counts only; no conversion"
         assert!(out.contains("pub const POINTS: PiecewiseLinearTransfer<2>"));
         assert!(out.contains("physical points (2 control points)"));
         assert!(out.contains("-10000") || out.contains("-10_000"));
+        assert!(out.contains(".with_observation_guard(65535, ObservationGuardBehavior::Error)"));
+        assert!(out.contains("POINTS_OBSERVATION_GUARD"));
+        assert!(out.contains("code: 65535"));
     }
 }

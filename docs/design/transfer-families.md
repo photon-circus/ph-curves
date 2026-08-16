@@ -68,10 +68,12 @@ emit the same name, generation fails and prints both maps.
 
 Generated firmware remains independent `PiecewiseLinearTransfer` constants.
 Family knot default is 64 with a hard cap of 256. There is no runtime family
-type.
+type. A family-level `saturation = { code, behavior }` table is copied onto
+emitted members as an observation-code guard; it is not folded into `above`
+and the guarded code is not added to the fitting domain.
 
 ## Keep-outs
 
-- Independent `saturation` / `extrapolation` fields (#28)
+- Independent `extrapolation` fields
 - VEML knot budget and vendor oracle (#29)
 - `kind = "veml7700"` or any device lifecycle API

@@ -11,7 +11,10 @@ use serde::Deserialize;
 use serde::de::{self, Deserializer, Visitor};
 
 use super::model::ModelDef;
-use super::{BoundaryDef, PhysicalPoint, TransferDef, default_boundary};
+use super::{
+    BoundaryDef, ObservationGuardDef, PhysicalPoint, TransferDef, default_boundary,
+    validate_observation_guard,
+};
 
 /// Hard cap on knots for a family member. Stricter than the standalone
 /// transfer cap (4096): families must not become dense ADC tables.
@@ -64,6 +67,9 @@ pub struct TransferFamilyDef {
     pub(crate) below: BoundaryDef,
     #[serde(default = "default_boundary")]
     pub(crate) above: BoundaryDef,
+    /// Explicit observation-code guard copied onto emitted members (TOML `saturation`).
+    #[serde(default, rename = "saturation")]
+    pub(crate) observation_guard: Option<ObservationGuardDef>,
     pub(crate) points: Option<Vec<PhysicalPoint>>,
     pub(crate) formula: Option<String>,
     pub(crate) model: Option<ModelDef>,
@@ -82,6 +88,11 @@ impl TransferFamilyDef {
     /// Observation-domain above policy copied onto emitted members.
     pub fn above(&self) -> super::BoundaryDef {
         self.above
+    }
+
+    /// Explicit observation-code guard copied onto emitted members (TOML `saturation`).
+    pub fn observation_guard(&self) -> Option<ObservationGuardDef> {
+        self.observation_guard
     }
 
     /// Shared formula text, when the family source is a formula.
@@ -397,8 +408,30 @@ fn validate_member(
         ));
     }
     if matches!(family.model, Some(ModelDef::ScaledPolynomial { .. })) {
-        super::model::observation_domain(member.scale, member.applicability.model_input)
-            .map_err(|error| format!("transfer family `{family_name}` member {index}: {error}"))?;
+        let domain =
+            super::model::observation_domain(member.scale, member.applicability.model_input)
+                .map_err(|error| {
+                    format!("transfer family `{family_name}` member {index}: {error}")
+                })?;
+        validate_observation_guard(
+            &format!("transfer family `{family_name}` member {index}"),
+            family.observation_guard,
+            domain[1],
+        )?;
+    } else if let Some(domain) = family.domain {
+        validate_observation_guard(
+            &format!("transfer family `{family_name}` member {index}"),
+            family.observation_guard,
+            domain[1],
+        )?;
+    } else if let Some(points) = &family.points
+        && let Some(last) = points.last()
+    {
+        validate_observation_guard(
+            &format!("transfer family `{family_name}` member {index}"),
+            family.observation_guard,
+            last.input,
+        )?;
     }
     Ok(())
 }
@@ -432,6 +465,7 @@ fn member_transfer(
         max_knots: family.max_knots,
         below: family.below,
         above: family.above,
+        observation_guard: family.observation_guard,
         points: family.points.clone(),
         formula: family.formula.clone(),
         model,
@@ -468,7 +502,7 @@ pub(crate) fn format_selectors(selectors: &BTreeMap<String, SelectorValue>) -> S
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::r#gen::DefinitionsFile;
+    use crate::r#gen::{DefinitionsFile, ObservationGuardBehaviorDef, ObservationGuardDef};
     use std::vec;
 
     fn emit_member(gain: &str, integration_time_ms: i64, scale: u32) -> FamilyMemberDef {
@@ -507,6 +541,7 @@ mod tests {
             interpolate_selectors: false,
             below: BoundaryDef::Error,
             above: BoundaryDef::Error,
+            observation_guard: None,
             points: None,
             formula: Some("x".into()),
             model: None,
@@ -529,6 +564,7 @@ mod tests {
             interpolate_selectors: false,
             below: BoundaryDef::Error,
             above: BoundaryDef::Error,
+            observation_guard: None,
             points: None,
             formula: None,
             model: Some(ModelDef::ScaledPolynomial {
@@ -892,8 +928,8 @@ applicability = { model_input = [1.0, 2.0] }
     }
 
     #[test]
-    fn saturation_field_is_rejected_until_a_later_schema() {
-        let error = parse_family(
+    fn saturation_table_is_copied_onto_emitted_members() {
+        let error_form = parse_family(
             r#"
 [transfer_families.als]
 input_unit = "count"
@@ -907,7 +943,115 @@ members = []
 "#,
         )
         .unwrap_err();
-        assert!(error.contains("unknown field `saturation`"), "{error}");
+        assert!(
+            error_form.contains("invalid type") || error_form.contains("saturation"),
+            "{error_form}"
+        );
+
+        let mut family = formula_family(vec![emit_member("div4", 100, 268_800)]);
+        family.observation_guard = Some(ObservationGuardDef {
+            code: 65_535,
+            behavior: ObservationGuardBehaviorDef::Error,
+        });
+        let mut families = BTreeMap::new();
+        families.insert("als".into(), family);
+        let expanded = expand_families(&families).unwrap();
+        let def = &expanded["als_gain_div4_integration_time_ms_100"];
+        assert_eq!(def.domain, Some([1, 10]));
+        assert_eq!(def.observation_guard.unwrap().code, 65_535);
+        assert_eq!(
+            def.observation_guard.unwrap().behavior,
+            ObservationGuardBehaviorDef::Error
+        );
+    }
+
+    #[test]
+    fn saturation_code_inside_domain_is_rejected() {
+        let defs = parse_family(
+            r#"
+[transfer_families.als]
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+formula = "x"
+domain = [1, 10]
+saturation = { code = 10, behavior = "error" }
+
+[[transfer_families.als.members]]
+selectors = { gain = "div4" }
+scale = 1
+status = "emit"
+applicability = { model_input = [1.0, 2.0] }
+"#,
+        )
+        .unwrap();
+        let error = defs.validate().unwrap_err().to_string();
+        assert!(error.contains("strictly above domain_max"), "{error}");
+    }
+
+    #[test]
+    fn saturation_unknown_behavior_is_rejected() {
+        let error = parse_family(
+            r#"
+[transfer_families.als]
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+formula = "x"
+domain = [1, 10]
+saturation = { code = 65535, behavior = "extrapolate" }
+members = []
+"#,
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("unknown variant") || error.contains("extrapolate"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn saturation_unknown_field_is_rejected() {
+        let error = parse_family(
+            r#"
+[transfer_families.als]
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+formula = "x"
+domain = [1, 10]
+saturation = { code = 65535, behavior = "error", extra = true }
+members = []
+"#,
+        )
+        .unwrap_err();
+        assert!(error.contains("unknown field `extra`"), "{error}");
+    }
+
+    #[test]
+    fn family_saturation_is_preserved_and_not_added_to_scaled_polynomial_domain() {
+        let mut member = emit_member("div4", 100, 33_600);
+        member.applicability.model_input = [63.0, 100.0];
+        let mut family = scaled_poly_family(vec![0.0, 1.0], vec![member]);
+        family.above = BoundaryDef::Clamp;
+        family.observation_guard = Some(ObservationGuardDef {
+            code: 65_535,
+            behavior: ObservationGuardBehaviorDef::Error,
+        });
+        let mut families = BTreeMap::new();
+        families.insert("als".into(), family);
+        let expanded = expand_families(&families).unwrap();
+        let (name, def) = expanded.iter().next().unwrap();
+        assert_eq!(def.observation_guard.unwrap().code, 65_535);
+        assert_eq!(def.above, BoundaryDef::Clamp);
+        let domain = def.domain.unwrap();
+        assert!(domain[1] < 65_535, "fitted domain {domain:?}");
+        let data = super::super::build(name, def).unwrap();
+        assert!(!data.inputs.contains(&65_535));
+        assert_eq!(*data.inputs.last().unwrap(), domain[1]);
     }
 
     #[test]

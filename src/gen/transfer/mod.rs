@@ -44,8 +44,59 @@ impl BoundaryDef {
     }
 }
 
+/// Policy for one explicitly declared observation code (TOML `saturation.behavior`).
+#[derive(Copy, Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ObservationGuardBehaviorDef {
+    /// Forward conversion returns [`crate::TransferError::RejectedObservation`].
+    Error,
+    /// Forward conversion returns the output at `domain_max`.
+    Clamp,
+}
+
+impl ObservationGuardBehaviorDef {
+    pub(crate) fn rust_name(self) -> &'static str {
+        match self {
+            Self::Error => "ObservationGuardBehavior::Error",
+            Self::Clamp => "ObservationGuardBehavior::Clamp",
+        }
+    }
+}
+
+/// Explicit observation-code guard declared as TOML `saturation`.
+///
+/// Host IR and runtime use observation-guard terminology. Classification of
+/// the code as saturation is consumer/device policy, not inferred from the
+/// integer value.
+#[derive(Copy, Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ObservationGuardDef {
+    /// Observation code classified by this guard. Must be strictly above the
+    /// fitted `domain_max`.
+    pub code: u16,
+    /// Policy applied when `code` is observed.
+    pub behavior: ObservationGuardBehaviorDef,
+}
+
 pub(crate) fn default_boundary() -> BoundaryDef {
     BoundaryDef::Error
+}
+
+pub(crate) fn validate_observation_guard(
+    label: &str,
+    guard: Option<ObservationGuardDef>,
+    domain_max: u16,
+) -> Result<(), String> {
+    let Some(guard) = guard else {
+        return Ok(());
+    };
+    if guard.code <= domain_max {
+        return Err(format!(
+            "{label}: observation guard code {} must be strictly above domain_max {domain_max}",
+            guard.code
+        ));
+    }
+    Ok(())
 }
 
 fn default_max_knots() -> usize {
@@ -72,7 +123,11 @@ impl PhysicalPoint {
 ///
 /// Built-in model parameters stay crate-private; use [`Self::has_model`] and
 /// [`Self::declared_source`] to inspect the source kind.
+/// Standalone TOML definitions using `saturation` must declare
+/// `[transfers] requires = ["observation_guard_v1"]` so older generators fail
+/// closed instead of ignoring the guard.
 #[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TransferDef {
     /// Observation-domain unit label.
     pub input_unit: String,
@@ -91,6 +146,9 @@ pub struct TransferDef {
     /// Above-domain policy.
     #[serde(default = "default_boundary")]
     pub above: BoundaryDef,
+    /// Explicit observation-code guard (TOML `saturation`).
+    #[serde(default, rename = "saturation")]
+    pub observation_guard: Option<ObservationGuardDef>,
     /// Sparse physical control points, when that is the declared source.
     pub points: Option<Vec<PhysicalPoint>>,
     /// Formula over `x`, when that is the declared source.
@@ -116,6 +174,11 @@ impl TransferDef {
     /// Whether the source is a built-in host model.
     pub fn has_model(&self) -> bool {
         self.model.is_some()
+    }
+
+    /// Explicit observation-code guard, when TOML `saturation` is set.
+    pub fn observation_guard(&self) -> Option<ObservationGuardDef> {
+        self.observation_guard
     }
 
     /// Which of formula, points, or model is set. `None` if missing or mixed.
@@ -330,6 +393,13 @@ fn finish_from_scaled_truth(
         def.max_knots,
     )?;
 
+    let domain_max = *result.inputs.last().expect("fitter requires two knots");
+    validate_observation_guard(
+        &format!("transfer `{name}`"),
+        def.observation_guard,
+        domain_max,
+    )?;
+
     Ok(TransferData {
         inputs: result.inputs,
         outputs: result.outputs,
@@ -403,6 +473,8 @@ fn build_prefitted(
             domain_min + worst_offset as u16
         ));
     }
+
+    validate_observation_guard(&format!("transfer `{name}`"), def.observation_guard, last)?;
 
     Ok(TransferData {
         inputs: inputs.to_vec(),
@@ -610,6 +682,7 @@ mod tests {
             max_knots: 256,
             below: BoundaryDef::Error,
             above: BoundaryDef::Error,
+            observation_guard: None,
             points: None,
             formula: None,
             model: None,
@@ -781,6 +854,41 @@ mod tests {
         .unwrap();
         assert_eq!(*data.inputs.last().unwrap(), u16::MAX);
         assert!(!data.provenance.contains("saturation"));
+    }
+
+    #[test]
+    fn observation_guard_must_be_strictly_above_fitted_domain() {
+        let mut def = scaled_poly(vec![0.0, 1.0], 1_000, [1, 10], 1);
+        def.observation_guard = Some(ObservationGuardDef {
+            code: 10,
+            behavior: ObservationGuardBehaviorDef::Error,
+        });
+        let error = build("guarded", &def).unwrap_err();
+        assert!(error.contains("strictly above domain_max"), "{error}");
+        assert!(error.contains("10"), "{error}");
+    }
+
+    #[test]
+    fn observation_guard_is_not_added_to_the_fitting_domain() {
+        let mut def = scaled_poly(vec![0.0, 1.0], 1_000, [1, 10], 1);
+        def.observation_guard = Some(ObservationGuardDef {
+            code: 65_535,
+            behavior: ObservationGuardBehaviorDef::Error,
+        });
+        let data = build("guarded", &def).unwrap();
+        assert_eq!(*data.inputs.last().unwrap(), 10);
+        assert!(!data.inputs.contains(&65_535));
+    }
+
+    #[test]
+    fn observation_guard_cannot_be_declared_when_domain_includes_u16_max() {
+        let mut def = scaled_poly(vec![0.0, 1.0], 1_000, [65534, 65535], 1);
+        def.observation_guard = Some(ObservationGuardDef {
+            code: 65_535,
+            behavior: ObservationGuardBehaviorDef::Clamp,
+        });
+        let error = build("full", &def).unwrap_err();
+        assert!(error.contains("strictly above domain_max"), "{error}");
     }
 
     #[test]

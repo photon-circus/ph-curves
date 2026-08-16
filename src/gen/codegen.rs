@@ -38,10 +38,18 @@ pub fn generate(
         out.push_str("use ph_curves::{CurveLut, MonotonicCurveLut};\n\n");
     }
     if !resolved.is_empty() {
-        out.push_str(
-            "use ph_curves::{BoundaryBehavior, MonotonicDirection, \
-             PiecewiseLinearTransfer, TransferMetadata};\n\n",
-        );
+        let any_guard = resolved.values().any(|def| def.observation_guard.is_some());
+        if any_guard {
+            out.push_str(
+                "use ph_curves::{BoundaryBehavior, MonotonicDirection, ObservationGuardBehavior, \
+                 ObservationGuardMetadata, PiecewiseLinearTransfer, TransferMetadata};\n\n",
+            );
+        } else {
+            out.push_str(
+                "use ph_curves::{BoundaryBehavior, MonotonicDirection, ObservationGuardMetadata, \
+                 PiecewiseLinearTransfer, TransferMetadata};\n\n",
+            );
+        }
     }
 
     if !curves_file.curves.is_empty() {
@@ -144,6 +152,35 @@ fn emit_transfer(
          static {const_name}_OUTPUTS: [i32; {knot_count}] = {outputs};\n",
         outputs = format_i32_array(&data.outputs),
     ));
+    let guard_docs = match def.observation_guard {
+        Some(guard) => format!(
+            "/// Observation guard: code {} with {} behavior.\n\
+             /// Classification of this code as saturation is declared consumer/device policy, not inferred from the integer value.\n",
+            guard.code,
+            match guard.behavior {
+                super::transfer::ObservationGuardBehaviorDef::Error => "Error",
+                super::transfer::ObservationGuardBehaviorDef::Clamp => "Clamp",
+            }
+        ),
+        None => "/// Observation guard: none.\n".into(),
+    };
+    let construction = match def.observation_guard {
+        Some(guard) => format!(
+            "PiecewiseLinearTransfer::new(&{const_name}_INPUTS, &{const_name}_OUTPUTS, {direction})\n\
+                 .with_boundaries({below}, {above})\n\
+                 .with_observation_guard({code}, {behavior});\n",
+            below = def.below.rust_name(),
+            above = def.above.rust_name(),
+            code = guard.code,
+            behavior = guard.behavior.rust_name(),
+        ),
+        None => format!(
+            "PiecewiseLinearTransfer::new(&{const_name}_INPUTS, &{const_name}_OUTPUTS, {direction})\n\
+                 .with_boundaries({below}, {above});\n",
+            below = def.below.rust_name(),
+            above = def.above.rust_name(),
+        ),
+    };
     // Debug-format TOML-derived text so newlines or comment terminators in
     // names, provenance, or units cannot break out of `///` doc comments.
     out.push_str(&format!(
@@ -155,10 +192,10 @@ fn emit_transfer(
          /// Exhaustive numerical error: requested <= {requested}, achieved {achieved:.6} output quanta\n\
          /// (conservative metadata bound {achieved_bound}) at input {worst}.\n\
          /// This is table/quantization error against the configured ideal source, not total sensor accuracy.\n\
+         {guard_docs}\
          #[rustfmt::skip]\n\
          pub const {const_name}: PiecewiseLinearTransfer<{knot_count}> =\n\
-             PiecewiseLinearTransfer::new(&{const_name}_INPUTS, &{const_name}_OUTPUTS, {direction})\n\
-                 .with_boundaries({below}, {above});\n",
+             {construction}",
         provenance = data.provenance,
         input_unit = def.input_unit,
         output_unit = def.output_unit,
@@ -168,8 +205,6 @@ fn emit_transfer(
         achieved = data.achieved_max_error_exact,
         achieved_bound = data.achieved_max_error,
         worst = data.worst_case_input,
-        below = def.below.rust_name(),
-        above = def.above.rust_name(),
     ));
     let (range_min, range_max) = {
         let first = data.outputs[0];
@@ -207,7 +242,7 @@ fn emit_transfer(
          \x20   achieved_max_error: {achieved},\n\
          \x20   worst_case_input: {worst},\n\
          \x20   achieved_max_inverse_code_error: {inverse_error},\n\
-         }};\n\n",
+         }};\n",
         input_unit = def.input_unit,
         output_unit = def.output_unit,
         output_scale = def.output_scale,
@@ -215,6 +250,24 @@ fn emit_transfer(
         achieved = data.achieved_max_error,
         worst = data.worst_case_input,
         inverse_error = achieved_max_inverse_code_error,
+    ));
+    let guard_metadata = match def.observation_guard {
+        Some(guard) => format!(
+            "Some(ObservationGuardMetadata {{\n\
+         \x20   code: {},\n\
+         \x20   behavior: {},\n\
+         }})",
+            guard.code,
+            guard.behavior.rust_name()
+        ),
+        None => "None".into(),
+    };
+    out.push_str(&format!(
+        "/// Optional observation-code guard for [`{const_name}`].\n\
+         ///\n\
+         /// Classification of a code as saturation is declared consumer/device policy,\n\
+         /// not inferred from the integer value. The runtime getter and this constant agree.\n\
+         pub const {const_name}_OBSERVATION_GUARD: Option<ObservationGuardMetadata> = {guard_metadata};\n\n"
     ));
 }
 
@@ -258,6 +311,7 @@ pub(crate) fn emitted_const_names(
                 format!("{const_name}_INPUTS"),
                 format!("{const_name}_OUTPUTS"),
                 format!("{const_name}_METADATA"),
+                format!("{const_name}_OBSERVATION_GUARD"),
             ],
             &mut emitted_sources,
         )?;
@@ -583,6 +637,7 @@ mod tests {
                 max_knots: 256,
                 below: BoundaryDef::Error,
                 above: BoundaryDef::Error,
+                observation_guard: None,
                 points: Some(vec![
                     PhysicalPoint {
                         input: 0,
@@ -627,6 +682,7 @@ mod tests {
                     max_knots: 256,
                     below: BoundaryDef::Error,
                     above: BoundaryDef::Error,
+                    observation_guard: None,
                     points: Some(vec![
                         PhysicalPoint {
                             input: 0,
@@ -671,6 +727,7 @@ mod tests {
                 max_knots: 256,
                 below: BoundaryDef::Error,
                 above: BoundaryDef::Error,
+                observation_guard: None,
                 formula: Some("x\n* 0.5".into()),
                 points: None,
                 model: None,
@@ -716,6 +773,64 @@ mod tests {
         assert!(output.contains("PiecewiseLinearTransfer"));
         assert!(!output.contains("f32"));
         assert!(!output.contains("f64"));
+    }
+
+    #[test]
+    fn observation_guard_examples_match_golden_output() {
+        let definition: DefinitionsFile =
+            toml::from_str(include_str!("../../assets/observation-guards.toml")).unwrap();
+        let output = generate(&definition, "u8", 256).unwrap();
+        let expected = include_str!("../../tests/fixtures/observation_guards_generated.rs")
+            .replace("\r\n", "\n");
+        assert_eq!(output.trim_end(), expected.trim_end());
+        assert!(!output.contains("f32"));
+        assert!(!output.contains("f64"));
+    }
+
+    #[test]
+    fn unguarded_transfers_also_reserve_observation_guard_companion_names() {
+        let mut transfers = BTreeMap::new();
+        for name in ["ntc", "ntc_observation_guard"] {
+            transfers.insert(
+                name.to_string(),
+                TransferDef {
+                    input_unit: "adc_code".into(),
+                    output_unit: "volt".into(),
+                    output_scale: 1000,
+                    max_interpolation_error: 1,
+                    max_knots: 256,
+                    below: BoundaryDef::Error,
+                    above: BoundaryDef::Error,
+                    observation_guard: None,
+                    points: Some(vec![
+                        PhysicalPoint {
+                            input: 0,
+                            output: 0.0,
+                        },
+                        PhysicalPoint {
+                            input: 10,
+                            output: 1.0,
+                        },
+                    ]),
+                    formula: None,
+                    model: None,
+                    domain: None,
+                    output_range: None,
+                },
+            );
+        }
+        let error = generate(
+            &DefinitionsFile {
+                curves: BTreeMap::new(),
+                transfers,
+                ..Default::default()
+            },
+            "u8",
+            256,
+        )
+        .unwrap_err();
+        assert!(error.contains("duplicate Rust identifier"));
+        assert!(error.contains("`NTC_OBSERVATION_GUARD`"));
     }
 
     fn family_header() -> String {

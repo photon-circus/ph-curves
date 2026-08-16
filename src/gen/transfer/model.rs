@@ -239,7 +239,8 @@ pub fn evaluate(
 ///
 /// Coefficients are `[c0, c1, c2, ...]` for `y = c0 + c1*u + c2*u^2 + ...`,
 /// evaluated with Horner from the high-degree end. `u16::MAX` is a legal
-/// domain endpoint; saturation policy is a later schema.
+/// domain endpoint. Observation-guard (saturation) policy is enforced by the
+/// generated transfer, not by this evaluator.
 pub fn evaluate_scaled_polynomial(
     name: &str,
     coefficients: &[f64],
