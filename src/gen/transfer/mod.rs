@@ -96,9 +96,9 @@ pub struct TransferDef {
     /// Formula over `x`, when that is the declared source.
     pub formula: Option<String>,
     pub(crate) model: Option<model::ModelDef>,
-    /// Inclusive observation domain, required for formula sources.
+    /// Inclusive observation domain, required for formula and scaled-polynomial sources.
     pub domain: Option<[u16; 2]>,
-    /// Physical output window, required for model sources.
+    /// Physical output window, required for output-range models (NTC Beta-divider).
     pub output_range: Option<[f64; 2]>,
 }
 
@@ -213,6 +213,28 @@ pub(crate) fn build_with_source(
             minimum,
             scale_truth(name, &physical, def.output_scale)?,
             format!("formula y = {expression}"),
+        )
+    } else if let Some(model::ModelDef::ScaledPolynomial {
+        coefficients,
+        scale,
+    }) = &def.model
+    {
+        if def.output_range.is_some() {
+            return Err(format!(
+                "transfer `{name}`: output_range is forbidden for scaled_polynomial; use domain"
+            ));
+        }
+        let scale =
+            scale.ok_or_else(|| format!("transfer `{name}`: scaled_polynomial requires scale"))?;
+        let domain = def.domain.ok_or_else(|| {
+            format!("transfer `{name}`: scaled_polynomial requires domain = [min, max]")
+        })?;
+        let (minimum, physical, description) =
+            model::evaluate_scaled_polynomial(name, coefficients, scale, domain)?;
+        (
+            minimum,
+            scale_truth(name, &physical, def.output_scale)?,
+            description,
         )
     } else {
         if def.domain.is_some() {
@@ -697,5 +719,139 @@ mod tests {
                 .unwrap_err()
                 .contains("greedy fitter did not meet maximum error")
         );
+    }
+
+    fn scaled_poly(
+        coefficients: Vec<f64>,
+        scale: u32,
+        domain: [u16; 2],
+        output_scale: u32,
+    ) -> TransferDef {
+        TransferDef {
+            output_scale,
+            max_interpolation_error: 1,
+            max_knots: 64,
+            model: Some(ModelDef::ScaledPolynomial {
+                coefficients,
+                scale: Some(scale),
+            }),
+            domain: Some(domain),
+            ..base_def()
+        }
+    }
+
+    #[test]
+    fn scaled_polynomial_exact_half_quantum_tie_quantizes_away_from_zero() {
+        let (minimum, physical, _) =
+            model::evaluate_scaled_polynomial("tie", &[0.0, 0.5], 33_600, [1875, 1876]).unwrap();
+        assert_eq!(minimum, 1875);
+        assert_eq!(physical[0], 31.5);
+        assert_eq!(physical[0].round() as i32, 32);
+
+        let data = build("tie", &scaled_poly(vec![0.0, 0.5], 33_600, [1875, 1876], 1)).unwrap();
+        assert_eq!(data.inputs[0], 1875);
+        assert_eq!(data.outputs[0], 32);
+    }
+
+    #[test]
+    fn scaled_polynomial_reproduces_the_vendor_worked_example() {
+        // Vishay AN84323 rev 06-Mar-2025 p.5: 5581 counts at ×1/4 100 ms.
+        // Exact u is 1500.1728 (vendor prints 1500 lx); both round to 1658 lx
+        // at output_scale = 1. Milli-lux / knot budget stays issue #29.
+        let data = build(
+            "als",
+            &scaled_poly(
+                vec![0.0, 1.0023, 8.1488e-5, -9.3924e-9, 6.0135e-13],
+                268_800,
+                [5581, 5582],
+                1,
+            ),
+        )
+        .unwrap();
+        assert_eq!(data.inputs[0], 5581);
+        assert_eq!(data.outputs[0], 1658);
+    }
+
+    #[test]
+    fn scaled_polynomial_standalone_may_include_u16_max() {
+        let data = build(
+            "full",
+            &scaled_poly(vec![0.0, 1.0], 1_000, [65534, 65535], 1),
+        )
+        .unwrap();
+        assert_eq!(*data.inputs.last().unwrap(), u16::MAX);
+        assert!(!data.provenance.contains("saturation"));
+    }
+
+    #[test]
+    fn scaled_polynomial_rejects_empty_coefficients() {
+        let error = build("empty", &scaled_poly(vec![], 33_600, [1, 2], 1)).unwrap_err();
+        assert!(error.contains("coefficients must not be empty"), "{error}");
+    }
+
+    #[test]
+    fn scaled_polynomial_rejects_non_finite_coefficients() {
+        let error = build("nan", &scaled_poly(vec![0.0, f64::NAN], 33_600, [1, 2], 1)).unwrap_err();
+        assert!(error.contains("coefficient 1 must be finite"), "{error}");
+    }
+
+    #[test]
+    fn scaled_polynomial_rejects_zero_scale() {
+        let error = build("zero", &scaled_poly(vec![0.0, 1.0], 0, [1, 2], 1)).unwrap_err();
+        assert!(error.contains("scale must be positive"), "{error}");
+    }
+
+    #[test]
+    fn scaled_polynomial_requires_scale_on_standalone_definitions() {
+        let mut def = scaled_poly(vec![0.0, 1.0], 1, [1, 2], 1);
+        if let Some(ModelDef::ScaledPolynomial { scale, .. }) = &mut def.model {
+            *scale = None;
+        }
+        let error = build("missing", &def).unwrap_err();
+        assert!(error.contains("requires scale"), "{error}");
+    }
+
+    #[test]
+    fn scaled_polynomial_rejects_invalid_domain() {
+        let error = build("flat", &scaled_poly(vec![0.0, 1.0], 33_600, [10, 10], 1)).unwrap_err();
+        assert!(
+            error.contains("domain must be strictly increasing"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn scaled_polynomial_rejects_non_monotonic_truth() {
+        // y = (u - 2)^2 is not monotonic across u = 0..=4.
+        let error = build(
+            "quad",
+            &scaled_poly(vec![4.0, -4.0, 1.0], 1_000_000, [0, 4], 1),
+        )
+        .unwrap_err();
+        assert!(error.contains("not monotonic"), "{error}");
+    }
+
+    #[test]
+    fn scaled_polynomial_rejects_non_finite_output() {
+        let error = build("inf", &scaled_poly(vec![0.0, 1e308], 1_000_000, [1, 2], 1)).unwrap_err();
+        assert!(error.contains("non-finite"), "{error}");
+    }
+
+    #[test]
+    fn scaled_polynomial_rejects_scaled_i32_overflow() {
+        let error = build(
+            "overflow",
+            &scaled_poly(vec![0.0, 1.0], 1_000_000, [65534, 65535], 100_000),
+        )
+        .unwrap_err();
+        assert!(error.contains("does not fit i32"), "{error}");
+    }
+
+    #[test]
+    fn scaled_polynomial_forbids_output_range() {
+        let mut def = scaled_poly(vec![0.0, 1.0], 33_600, [1, 2], 1);
+        def.output_range = Some([0.0, 1.0]);
+        let error = build("range", &def).unwrap_err();
+        assert!(error.contains("output_range is forbidden"), "{error}");
     }
 }

@@ -28,9 +28,15 @@ the dense LUT path.
 Each family has one shared source (`formula`, `points`, or `model`) and an
 explicit `members` array. Selectors are string or integer maps and are never
 interpolated (`interpolate_selectors = true` is an error). Per-member `scale`
-is required and nonzero; it is inspectable here and is not applied to truth
-until a later scaled-model issue. `status` is `emit`, `none`, or
-`do_not_use`. Applicability is a generic `model_input = [min, max]` window.
+is required and nonzero. For `kind = "scaled_polynomial"` it is applied to
+host truth as `u = count * scale / 1e6` (integer product first, so the
+`< 2^48` value is exact in `f64` before dividing) and inclusive
+`applicability.model_input` is converted to an observation-domain window with
+that same `u`. Formula and points sources leave scale inspectable only.
+Coefficients are `[c0, c1, c2, ...]` for `y = c0 + c1*u + c2*u^2 + ...`,
+evaluated with Horner from the high-degree end. Standalone polynomial
+definitions carry their own `scale` and `domain`. `u16::MAX` is legal unless
+the caller’s window excludes it. `status` is `emit`, `none`, or `do_not_use`.
 
 Gaps require `status = "undefined"` and a non-blank `reason`. They are not
 generated as transfers.
@@ -46,6 +52,8 @@ Illuminance-specific names such as `scale_micro_lux_per_count` and
 2. Validate **every** member (selectors, scale, applicability, identity)
    before filtering non-`emit` statuses.
 3. Expand only `status = "emit"` members into ordinary `TransferDef` values.
+   Scaled-polynomial members receive the member's `scale` and an observation
+   `domain` converted from `applicability.model_input`.
 4. Reject a gap name colliding with a curve, standalone transfer, family, or
    emitted member.
 5. Run the existing identifier / companion-symbol collision check on the
@@ -64,7 +72,6 @@ type.
 
 ## Keep-outs
 
-- `kind = "scaled_polynomial"` and applying member scale to host truth (#30)
 - Independent `saturation` / `extrapolation` fields (#28)
 - VEML knot budget and vendor oracle (#29)
 - `kind = "veml7700"` or any device lifecycle API

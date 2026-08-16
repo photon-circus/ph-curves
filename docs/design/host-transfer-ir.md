@@ -24,7 +24,9 @@ plugin ABI: README and `docs/design/gen-build-api.md` keep that as a non-goal.
    `do_not_use`, is inspectable. Expanded names are reserved only for `emit`.
 3. **Generation sources** — TOML formula/points/model, or a `TransferSource`
    overlay (`EvaluatedTruth`, `PrefittedKnots`, `Points`). Source facts stay on
-   the graph; fit policy stays on the transfer spec.
+   the graph; fit policy stays on the transfer spec. `kind = "scaled_polynomial"`
+   applies per-member (or standalone) scale as exact `u = count * scale / 1e6`
+   and evaluates `[c0, c1, ...]` with Horner; firmware still sees integer knots.
 
 ## Public surface
 
@@ -57,7 +59,6 @@ when the document contains `[curves]`. Fit policy (`max_interpolation_error`,
 ## Keep-outs
 
 - Plugin, callback, or WASM evaluator ABI
-- `kind = "scaled_polynomial"` and applying member scale to host truth (#30)
 - Independent `saturation` / `extrapolation` fields (#28)
 - VEML knot budget and vendor oracle (#29)
 - `kind = "veml7700"` or any device lifecycle API

@@ -309,9 +309,20 @@ reason = "counts only; no conversion"
 ```
 
 Families cannot share a document with `[curves]` (the dense LUT path).
-Per-member `scale` is required and inspectable; applying it to host truth is
-a later model. Generated output is still independent
-`PiecewiseLinearTransfer` constants. Inspect parsed families and gaps through
+Per-member `scale` is required. For `kind = "scaled_polynomial"` the generator
+applies it as `u = count * scale / 1e6` with an exact integer product, and
+converts inclusive `applicability.model_input` to observation codes:
+
+```toml
+[transfer_families.als.model]
+kind = "scaled_polynomial"
+coefficients = [0.0, 1.0023, 8.1488e-5, -9.3924e-9, 6.0135e-13]
+```
+
+Standalone polynomial definitions supply their own `scale` and `domain`.
+`u16::MAX` is included unless the domain or applicability window excludes it.
+Generated output is still independent `PiecewiseLinearTransfer` constants.
+Inspect parsed families and gaps through
 `DefinitionsFile::transfer_families` and `gaps`. `DefinitionsFile::validate`
 returns a `ValidatedDefinitions` graph that includes description-only members
 and gap reasons. A host tool that owns device evaluation can overlay
