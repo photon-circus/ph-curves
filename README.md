@@ -24,9 +24,10 @@ scheduling for embedded Rust.
 - **Physical transfer functions** — sparse adaptive knots convert integer ADC
   observations to signed, scaled measurements with explicit range behavior.
   Firmware uses only integer math; physical modeling and fitting are host-only.
-- **Runtime calibration** — `AffineCalibration` applies a caller-supplied
-  integer gain/offset/scale on top of any transfer, in both directions, without
-  regenerating tables or touching NVM.
+- **Runtime calibration** — `AffineTransform` applies a caller-supplied
+  integer gain/offset/scale to an already-converted `i32` measurement.
+  `AffineCalibration` wraps any transfer with the same primitive, in both
+  directions, without regenerating tables or touching NVM.
 - **Temporal stabilization** — fixed-memory integer moving-average, median,
   exponential smoothing, and stability detection for caller-supplied samples.
 - **Decision primitives** — `Hysteresis` and `Debounce` latch application
@@ -541,16 +542,26 @@ include!(concat!(env!("OUT_DIR"), "/curves.rs"));
 
 ### Runtime calibration
 
-Per-unit trim lives outside the generated table. `AffineCalibration` applies a
+Per-unit trim lives outside the generated table. `AffineTransform` applies a
 caller-supplied integer triple — read from EEPROM, flash, or a test fixture —
 as `y' = (y * gain + offset) / scale`, with the same nearest, ties-away
 rounding as the table itself. It never reads NVM, regenerates knots, or edits
-`TransferMetadata`.
+`TransferMetadata`. Use it on an already-converted `i32` measurement;
+`AffineCalibration` contains the same primitive and runs it after an inner
+transfer.
+
+```rust
+use ph_curves::AffineTransform;
+
+// +0.5 % gain, -120 milli-Celsius offset, from this unit's factory trim.
+let trim = AffineTransform::new(1_005, -120, 1_000)?;
+let corrected = trim.apply(milli_celsius)?;
+let original = trim.unapply(corrected)?;
+```
 
 ```rust
 use ph_curves::{AffineCalibration, InverseTransferFunction, TransferFunction};
 
-// +0.5 % gain, -120 milli-Celsius offset, from this unit's factory trim.
 let trimmed = AffineCalibration::new(NTC_10K_BETA_3950, 1_005, -120, 1_000)?;
 
 let milli_celsius = trimmed.convert(adc_code)?;   // calibrated reading
@@ -570,7 +581,8 @@ than exact. Anything `convert` produces is guaranteed invertible; a value
 within half an uncalibrated quantum of a range endpoint clamps to that endpoint
 instead of failing. `TransferMetadata::achieved_max_inverse_code_error`
 describes the *uncalibrated* table — wrapping it in a calibration can widen
-that bound.
+that bound. Those metadata fields describe the table, not the live affine
+coefficients.
 
 ## Temporal stabilization
 
@@ -700,6 +712,7 @@ formula = "pow((t + 0.16) / 1.16, 3.0)"
 | `ObservationGuardMetadata` | Adjacent optional guard facts (not a `TransferMetadata` field) |
 | `TransferMetadata`       | Units, scale, domain/range, flats, and error bounds |
 | `FlatResolution`         | Policy for non-unique (flat) inverse outputs      |
+| `AffineTransform`        | Invertible i32 gain/offset/scale on a measurement |
 | `AffineCalibration<T>`   | Gain/offset/scale wrapper over any transfer, invertible |
 | `MovingAverage<T,N>`     | Exact fixed-window integer mean                  |
 | `MedianFilter<T,N>`      | Small fixed-window outlier rejection             |

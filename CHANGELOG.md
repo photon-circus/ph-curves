@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `AffineTransform`, a standalone invertible `i32` affine map
+  `y' = (y * gain + offset) / scale`. It reuses the crate's nearest/ties-away
+  rounding and checked `i64` arithmetic, rejects `scale == 0` and `gain == 0`
+  at construction, and reports overflow through `AffineOverflow` rather than
+  transfer domain/range errors. Use it on an already-converted measurement;
+  `AffineCalibration` still wraps a transfer and now contains this primitive.
 - Device-neutral transfer-family acceptance fixtures and documentation. A
   mixed definitions document (`assets/family-acceptance.toml`) proves a
   synthetic multi-range ADC family: two selector axes, three emitted members
@@ -173,6 +179,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `AffineCalibration` contains an `AffineTransform` and delegates
+  gain/offset/scale arithmetic to it. Constructor, accessor, forward, inverse,
+  boundary, and error behavior are unchanged: `AffineCalibrationError` is
+  still the construction error, overflow still surfaces as
+  `TransferError::Overflow` / `InverseTransferError::Overflow`, and
+  compressed-endpoint invertibility still lives on the wrapper.
 - Generated rustdoc for family members now includes the family name and typed
   selector map. Host `TransferReport` / `FamilyMemberReport` also list
   `_METADATA` and `_OBSERVATION_GUARD` companion symbol names. Standalone
