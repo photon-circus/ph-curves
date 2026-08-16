@@ -424,14 +424,14 @@ fn validate_member(
             family.observation_guard,
             domain[1],
         )?;
-    } else if let Some(points) = &family.points {
-        if let Some(last) = points.last() {
-            validate_observation_guard(
-                &format!("transfer family `{family_name}` member {index}"),
-                family.observation_guard,
-                last.input,
-            )?;
-        }
+    } else if let Some(points) = &family.points
+        && let Some(last) = points.last()
+    {
+        validate_observation_guard(
+            &format!("transfer family `{family_name}` member {index}"),
+            family.observation_guard,
+            last.input,
+        )?;
     }
     Ok(())
 }

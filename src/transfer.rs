@@ -534,15 +534,15 @@ impl<const N: usize> TransferFunction for PiecewiseLinearTransfer<N> {
         let minimum = self.inputs[0];
         let maximum = self.inputs[N - 1];
 
-        if let Some(guard) = self.observation_guard {
-            if input == guard.code {
-                return match guard.behavior {
-                    ObservationGuardBehavior::Error => {
-                        Err(TransferError::RejectedObservation { input })
-                    }
-                    ObservationGuardBehavior::Clamp => Ok(self.outputs[N - 1]),
-                };
-            }
+        if let Some(guard) = self.observation_guard
+            && input == guard.code
+        {
+            return match guard.behavior {
+                ObservationGuardBehavior::Error => {
+                    Err(TransferError::RejectedObservation { input })
+                }
+                ObservationGuardBehavior::Clamp => Ok(self.outputs[N - 1]),
+            };
         }
 
         if input < minimum {
