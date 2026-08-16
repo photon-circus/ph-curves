@@ -1,6 +1,6 @@
 # AffineCalibration
 
-**Status:** Shipped in 0.2.0 — `AffineCalibration` gain/offset wrapper, plus the calibrated inverse added during integration. Design rationale only; the code and its rustdoc are authoritative.
+**Status:** Shipped in 0.2.0 — `AffineCalibration` gain/offset wrapper, plus the calibrated inverse added during integration. The wrapper now contains [`AffineTransform`](../../src/affine.rs) (issue #50) for the same arithmetic on an already-converted `i32`. Design rationale only; the code and its rustdoc are authoritative.
 
 ## Motivation
 
@@ -19,15 +19,15 @@ PR #1 lists “runtime/factory gain-and-offset calibration wrappers” as a limi
 
 Pipeline placement: observation → Transfer → **AffineCal** → optional TemporalFilter → app.
 
+An already-converted `i32` measurement skips the transfer and uses `AffineTransform` directly. `AffineCalibration<T>` contains that primitive and delegates gain/offset/scale arithmetic to it; constructor, accessor, convert, invert, and error types on the wrapper are unchanged.
+
 ## API sketch
 
 ```rust
 /// y' = (y * gain + offset) / scale   (i64 intermediates)
 pub struct AffineCalibration<T> {
     inner: T,
-    gain: i32,
-    offset: i32,
-    scale: i32, // nonzero; typically output_scale-related
+    transform: AffineTransform,
 }
 
 impl<T> AffineCalibration<T> {
@@ -57,7 +57,7 @@ where
     {
         let y = self.inner.convert(input)?;
         // i64: (y * gain + offset) / scale, nearest ties-away
-        Ok(apply_affine_i64(y, self.gain, self.offset, self.scale)?)
+        Ok(self.transform.apply(y)?)
     }
 }
 ```
