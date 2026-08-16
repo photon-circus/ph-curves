@@ -1,8 +1,9 @@
 //! Shared integer rounding used by transfer and stabilization paths.
 //!
-//! Transfer interpolation (forward and inverse), affine calibration, and the
-//! temporal filters all round the same way — nearest, ties away from zero —
-//! via [`div_nearest_ties_away`]. Curve LUT lookup does not use this helper;
+//! Transfer interpolation (forward and inverse), affine calibration, the
+//! standalone [`crate::AffineTransform`], and the temporal filters all round
+//! the same way — nearest, ties away from zero — via
+//! [`div_nearest_ties_away`]. Curve LUT lookup does not use this helper;
 //! it has its own quantization path.
 
 /// Divide with nearest rounding, ties away from zero.

@@ -51,7 +51,8 @@
 //! - **Physical transfer functions** — [`TransferFunction`] /
 //!   [`InverseTransferFunction`] and the sparse, integer-only
 //!   [`PiecewiseLinearTransfer`] for ADC ↔ measurement conversion, plus
-//!   [`AffineCalibration`] for caller-supplied gain/offset.
+//!   [`AffineCalibration`] for caller-supplied gain/offset after a transfer
+//!   and [`AffineTransform`] for the same arithmetic on an existing `i32`.
 //! - **Temporal stabilization** — [`MovingAverage`], [`MedianFilter`],
 //!   [`ExponentialSmoother`], [`StabilityDetector`], [`Hysteresis`], and
 //!   [`Debounce`] over caller-supplied integer samples.
@@ -87,11 +88,13 @@
 //! The transfer layer is intentionally limited to one static `u16` input and
 //! one monotonic `i32` output, with runtime inverse on the same knots.
 //! [`AffineCalibration`] applies a caller-supplied integer gain/offset/scale
-//! after the table without regenerating knots or touching NVM. The crate does
-//! not provide nonmonotonic maps, multidimensional compensation, calibration
-//! discovery, sensor fusion, or device policy. Those concerns belong in
-//! application or domain-specific crates that compose with this crate's
-//! generic primitives.
+//! after the table without regenerating knots or touching NVM. The same
+//! arithmetic is available as [`AffineTransform`] on an already-converted
+//! `i32` measurement; those coefficients are caller runtime state, not
+//! generated-table metadata. The crate does not provide nonmonotonic maps,
+//! multidimensional compensation, calibration discovery, sensor fusion, or
+//! device policy. Those concerns belong in application or domain-specific
+//! crates that compose with this crate's generic primitives.
 //!
 //! ```ignore
 //! use ph_curves::{InverseTransferFunction, TransferFunction};
@@ -176,6 +179,7 @@
     clippy::let_underscore_future
 )]
 
+mod affine;
 mod curve;
 mod math;
 mod round;
@@ -183,6 +187,7 @@ mod stabilize;
 mod tickless;
 mod transfer;
 
+pub use affine::{AffineOverflow, AffineTransform, AffineTransformError};
 pub use curve::{
     Curve, CurveLut, CurveLut256, CurveLut65536, MonotonicCurve, MonotonicCurveLut,
     MonotonicCurveLut256, MonotonicCurveLut65536,

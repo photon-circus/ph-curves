@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `AffineTransform`, a standalone invertible `i32` affine map
+  `y' = (y * gain + offset) / scale`. It reuses the crate's nearest/ties-away
+  rounding and checked `i64` arithmetic, rejects `scale == 0` and `gain == 0`
+  at construction, and reports overflow through `AffineOverflow` rather than
+  transfer domain/range errors. Use it on an already-converted measurement;
+  `AffineCalibration` still wraps a transfer and now contains this primitive.
 - Issue forms for bug reports and feature requests, and a pull request
   template. Blank issues are disabled so the chooser always renders, which is
   what puts the private disclosure route in front of someone about to paste a
@@ -18,6 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `AffineCalibration` contains an `AffineTransform` and delegates
+  gain/offset/scale arithmetic to it. Constructor, accessor, forward, inverse,
+  boundary, and error behavior are unchanged: `AffineCalibrationError` is
+  still the construction error, overflow still surfaces as
+  `TransferError::Overflow` / `InverseTransferError::Overflow`, and
+  compressed-endpoint invertibility still lives on the wrapper.
 - `scripts/local-ci.ps1` sets `CARGO_INCREMENTAL=0`. Incremental compilation
   made the gate flaky on Windows: rustc could fail to finalize
   `target/debug/incremental` ("Access is denied", os error 5) and `cargo test`
