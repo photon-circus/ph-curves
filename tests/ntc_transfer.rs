@@ -24,6 +24,8 @@ fn generated_ntc_metadata_and_boundaries() {
         NTC_10K_BETA_3950_METADATA.direction,
         ph_curves::MonotonicDirection::Decreasing
     );
+    assert_eq!(NTC_10K_BETA_3950.observation_guard(), None);
+    assert_eq!(NTC_10K_BETA_3950_OBSERVATION_GUARD, None);
     assert_eq!(
         NTC_10K_BETA_3950.convert(141),
         Err(TransferError::BelowDomain {

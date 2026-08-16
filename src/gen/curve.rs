@@ -13,6 +13,7 @@ use std::{format, vec};
 use std::collections::BTreeMap;
 
 use serde::Deserialize;
+use serde::de::{self, Deserializer};
 
 use super::{builtin, formula, points, transfer};
 
@@ -24,22 +25,310 @@ use super::{builtin, formula, points, transfer};
 
 /// Parsed TOML definitions for normalized curves and physical transfers.
 ///
-/// Construct via [`Self::from_toml_str`] or [`super::generate_from_str`].
-/// Field access is crate-visible; dependents should prefer the `generate_*`
-/// helpers over hand-building schema graphs.
+/// Construct via [`Self::from_toml_str`], [`Self::insert_transfer`],
+/// [`Self::insert_family`], or [`super::generate_from_str`]. Inspect maps through [`Self::curves`],
+/// [`Self::transfers`], [`Self::transfer_families`], and [`Self::gaps`].
+/// Validate the description graph with [`Self::validate`] before overlaying
+/// host-evaluated truth.
 ///
-/// Unknown top-level keys are rejected so a misspelled table or a newer
-/// schema cannot succeed as empty output. Nested unknown fields are still
-/// ignored; that validation belongs to the family/member schema, not here.
-#[derive(Debug, Deserialize)]
+/// Unknown top-level keys are rejected so a misspelled table cannot succeed
+/// as empty output. Unknown fields directly on standalone transfer definitions
+/// and nested fields on families, their point and NTC sources, members,
+/// applicability, and gaps are also rejected. Nested unknown fields on
+/// standalone curves, point values, and legacy NTC model parameters are still
+/// ignored for compatibility; reserved
+/// observation-guard and provenance spellings cannot be nested inside source
+/// values.
+#[derive(Debug, Default, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DefinitionsFile {
     /// Normalized LUT curves keyed by TOML table name.
     #[serde(default)]
     pub(crate) curves: BTreeMap<String, CurveDef>,
     /// Sparse physical transfer functions keyed by TOML table name.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_transfers")]
     pub(crate) transfers: BTreeMap<String, transfer::TransferDef>,
+    /// Shared-source families expanded into sparse transfers at generation.
+    #[serde(default, deserialize_with = "deserialize_transfer_families")]
+    pub(crate) transfer_families: BTreeMap<String, transfer::TransferFamilyDef>,
+    /// Channels or procedures that must not be generated as transfers.
+    #[serde(default)]
+    pub(crate) gaps: BTreeMap<String, transfer::GapDef>,
+    /// Programmatic generation sources keyed by transfer name.
+    #[serde(skip)]
+    pub(crate) overlays: BTreeMap<String, transfer::TransferSourceOverlay>,
+}
+
+const OBSERVATION_GUARD_CAPABILITY: &str = "observation_guard_v1";
+const SOURCE_PROVENANCE_CAPABILITY: &str = "source_provenance_v1";
+
+fn reject_misplaced_reserved_transfer_fields(
+    definition_label: &str,
+    direct_table: &str,
+    value: &toml::Value,
+) -> Result<(), String> {
+    let toml::Value::Table(fields) = value else {
+        return Ok(());
+    };
+    // `model` and point entries are the intentionally permissive legacy source
+    // values. Restrict the scan to them: family selector maps are open user
+    // keyspaces where reserved words can be legitimate selector names.
+    for source_field in ["model", "points"] {
+        if let Some(nested) = fields.get(source_field) {
+            reject_nested_reserved_transfer_fields(
+                definition_label,
+                direct_table,
+                nested,
+                source_field,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn reject_nested_reserved_transfer_fields(
+    definition_label: &str,
+    direct_table: &str,
+    value: &toml::Value,
+    path: &str,
+) -> Result<(), String> {
+    match value {
+        toml::Value::Table(fields) => {
+            for (field, nested) in fields {
+                let nested_path = format!("{path}.{field}");
+                let direct_field = match field.as_str() {
+                    "saturation" | "observation_guard" => Some("saturation"),
+                    "provenance" => Some("provenance"),
+                    _ => None,
+                };
+                if let Some(direct_field) = direct_field {
+                    return Err(format!(
+                        "{definition_label}: misplaced `{field}` at `{nested_path}`; \
+                         declare `{direct_field}` directly under `{direct_table}`"
+                    ));
+                }
+                reject_nested_reserved_transfer_fields(
+                    definition_label,
+                    direct_table,
+                    nested,
+                    &nested_path,
+                )?;
+            }
+        }
+        toml::Value::Array(values) => {
+            for (index, nested) in values.iter().enumerate() {
+                reject_nested_reserved_transfer_fields(
+                    definition_label,
+                    direct_table,
+                    nested,
+                    &format!("{path}[{index}]"),
+                )?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn reject_unknown_family_source_fields(
+    family_name: &str,
+    value: &toml::Value,
+) -> Result<(), String> {
+    let toml::Value::Table(fields) = value else {
+        return Ok(());
+    };
+
+    if let Some(toml::Value::Array(points)) = fields.get("points") {
+        for (index, point) in points.iter().enumerate() {
+            let toml::Value::Table(point_fields) = point else {
+                // Leave type diagnostics to `PhysicalPoint`'s deserializer.
+                continue;
+            };
+            for field in point_fields.keys() {
+                if field != "input" && field != "output" {
+                    return Err(format!(
+                        "transfer family `{family_name}`: unknown field `{field}` at \
+                         `points[{index}].{field}`; family point fields are `input` and `output`"
+                    ));
+                }
+            }
+        }
+    }
+
+    if let Some(toml::Value::Table(model)) = fields.get("model") {
+        let is_ntc_beta_divider = matches!(
+            model.get("kind"),
+            Some(toml::Value::String(kind)) if kind == "ntc_beta_divider"
+        );
+        if is_ntc_beta_divider {
+            const NTC_BETA_DIVIDER_FIELDS: [&str; 7] = [
+                "kind",
+                "nominal_resistance_ohms",
+                "beta_kelvin",
+                "nominal_temperature_celsius",
+                "fixed_resistance_ohms",
+                "adc_max_code",
+                "topology",
+            ];
+            for field in model.keys() {
+                if !NTC_BETA_DIVIDER_FIELDS.contains(&field.as_str()) {
+                    return Err(format!(
+                        "transfer family `{family_name}`: unknown field `{field}` at \
+                         `model.{field}` for `ntc_beta_divider`"
+                    ));
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn deserialize_transfer_families<'de, D>(
+    deserializer: D,
+) -> Result<BTreeMap<String, transfer::TransferFamilyDef>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = BTreeMap::<String, toml::Value>::deserialize(deserializer)?;
+    let mut families = BTreeMap::new();
+    for (name, value) in raw {
+        reject_misplaced_reserved_transfer_fields(
+            &format!("transfer family `{name}`"),
+            &format!("[transfer_families.{name}]"),
+            &value,
+        )
+        .map_err(de::Error::custom)?;
+        reject_unknown_family_source_fields(&name, &value).map_err(de::Error::custom)?;
+        let definition: transfer::TransferFamilyDef = value
+            .try_into()
+            .map_err(|error| de::Error::custom(format!("transfer family `{name}`: {error}")))?;
+        families.insert(name, definition);
+    }
+    Ok(families)
+}
+
+/// Deserialize the `[transfers]` section while retaining a fail-closed
+/// capability markers for observation guards and source provenance.
+///
+/// The marker is deliberately an array inside `[transfers]`. Generators that
+/// predate this schema deserialize every value in that table as a transfer and
+/// therefore reject the array instead of silently ignoring `saturation` or
+/// `provenance` on a nested transfer definition.
+fn deserialize_transfers<'de, D>(
+    deserializer: D,
+) -> Result<BTreeMap<String, transfer::TransferDef>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let mut raw = BTreeMap::<String, toml::Value>::deserialize(deserializer)?;
+    let capabilities = match raw.remove("requires") {
+        Some(toml::Value::Array(values)) => {
+            let mut capabilities = Vec::with_capacity(values.len());
+            for value in values {
+                match value {
+                    toml::Value::String(capability) => capabilities.push(capability),
+                    other => {
+                        return Err(de::Error::custom(format!(
+                            "[transfers] requires entries must be strings, got {other}"
+                        )));
+                    }
+                }
+            }
+            capabilities
+        }
+        Some(table @ toml::Value::Table(_)) => {
+            // Preserve the previously valid `[transfers.requires]`
+            // transfer name. Only the array form is the section marker.
+            raw.insert("requires".into(), table);
+            Vec::new()
+        }
+        Some(other) => {
+            return Err(de::Error::custom(format!(
+                "[transfers] requires must be an array of capability strings, got {other}"
+            )));
+        }
+        None => Vec::new(),
+    };
+
+    for capability in &capabilities {
+        if capability != OBSERVATION_GUARD_CAPABILITY && capability != SOURCE_PROVENANCE_CAPABILITY
+        {
+            return Err(de::Error::custom(format!(
+                "unsupported [transfers] capability `{capability}`"
+            )));
+        }
+    }
+
+    let mut transfers = BTreeMap::new();
+    for (name, value) in raw {
+        reject_misplaced_reserved_transfer_fields(
+            &format!("standalone transfer `{name}`"),
+            &format!("[transfers.{name}]"),
+            &value,
+        )
+        .map_err(de::Error::custom)?;
+        let definition: transfer::TransferDef = value
+            .try_into()
+            .map_err(|error| de::Error::custom(format!("standalone transfer `{name}`: {error}")))?;
+        transfers.insert(name, definition);
+    }
+
+    let has_guard = transfers
+        .values()
+        .any(|definition| definition.observation_guard().is_some());
+    let has_guard_capability = capabilities
+        .iter()
+        .any(|capability| capability == OBSERVATION_GUARD_CAPABILITY);
+    let has_provenance = transfers.values().any(|definition| {
+        definition.provenance().is_some()
+            || definition
+                .observation_guard()
+                .is_some_and(|guard| guard.provenance.is_some())
+    });
+    let has_provenance_capability = capabilities
+        .iter()
+        .any(|capability| capability == SOURCE_PROVENANCE_CAPABILITY);
+    if has_guard && !has_guard_capability {
+        if transfers.contains_key("requires") {
+            return Err(de::Error::custom(
+                "a standalone transfer named `requires` cannot coexist with observation guards; \
+                 rename that transfer before declaring the `[transfers] requires` capability marker",
+            ));
+        }
+        return Err(de::Error::custom(
+            "standalone transfers using `saturation` require \
+             `[transfers] requires = [\"observation_guard_v1\"]`; \
+             the marker makes older generators reject the document instead of silently dropping the guard",
+        ));
+    }
+    if has_guard_capability && !has_guard {
+        return Err(de::Error::custom(
+            "[transfers] requires `observation_guard_v1`, but no standalone transfer declared a \
+             direct `saturation` guard; check the guard spelling and TOML table placement",
+        ));
+    }
+    if has_provenance && !has_provenance_capability {
+        if transfers.contains_key("requires") {
+            return Err(de::Error::custom(
+                "a standalone transfer named `requires` cannot coexist with source provenance; \
+                 rename that transfer before declaring the `[transfers] requires` capability marker",
+            ));
+        }
+        return Err(de::Error::custom(
+            "standalone transfers using `provenance` require \
+             `[transfers] requires = [\"source_provenance_v1\"]`; \
+             the marker makes older generators reject the document instead of silently dropping the citation",
+        ));
+    }
+    if has_provenance_capability && !has_provenance {
+        return Err(de::Error::custom(
+            "[transfers] requires `source_provenance_v1`, but no standalone transfer declared \
+             source provenance; check the provenance spelling and TOML table placement",
+        ));
+    }
+
+    Ok(transfers)
 }
 
 impl DefinitionsFile {
@@ -47,10 +336,88 @@ impl DefinitionsFile {
     pub fn from_toml_str(toml: &str) -> Result<Self, toml::de::Error> {
         toml::from_str(toml)
     }
+
+    /// Normalized LUT curves keyed by TOML table name.
+    pub fn curves(&self) -> &BTreeMap<String, CurveDef> {
+        &self.curves
+    }
+
+    /// Standalone `[transfers]` entries. Family members are not included;
+    /// inspect those through [`Self::validate`].
+    pub fn transfers(&self) -> &BTreeMap<String, transfer::TransferDef> {
+        &self.transfers
+    }
+
+    /// Declared transfer families. Empty on documents that only use `[transfers]`.
+    pub fn transfer_families(&self) -> &BTreeMap<String, transfer::TransferFamilyDef> {
+        &self.transfer_families
+    }
+
+    /// Declared gaps. A missing gap is not the same as an undefined one.
+    pub fn gaps(&self) -> &BTreeMap<String, transfer::GapDef> {
+        &self.gaps
+    }
+
+    /// Standalone transfers plus expanded `status = "emit"` family members.
+    pub(crate) fn resolved_transfers(
+        &self,
+    ) -> Result<BTreeMap<String, transfer::ResolvedTransfer>, String> {
+        for (name, gap) in &self.gaps {
+            if gap.reason.trim().is_empty() {
+                return Err(format!("gap `{name}`: reason must not be blank"));
+            }
+            if let Err(error) = gap.resolved_provenance() {
+                return Err(format!("gap `{name}`: {error}"));
+            }
+            if self.curves.contains_key(name) {
+                return Err(format!("gap `{name}` collides with a [curves] entry"));
+            }
+            if self.transfers.contains_key(name) {
+                return Err(format!("gap `{name}` collides with a [transfers] entry"));
+            }
+            if self.transfer_families.contains_key(name) {
+                return Err(format!(
+                    "gap `{name}` collides with a [transfer_families] entry"
+                ));
+            }
+        }
+
+        let expanded = transfer::family::expand_families(&self.transfer_families)?;
+        for name in expanded.keys() {
+            if self.gaps.contains_key(name) {
+                return Err(format!(
+                    "gap `{name}` collides with an emitted family member"
+                ));
+            }
+            if self.transfers.contains_key(name) {
+                return Err(format!(
+                    "emitted family member `{name}` collides with a standalone [transfers] entry"
+                ));
+            }
+        }
+
+        let mut resolved = BTreeMap::new();
+        for (name, def) in &self.transfers {
+            let mut def = def.clone();
+            def.resolved_guard_provenance = transfer::resolve_guard_provenance(
+                &format!("standalone transfer `{name}`"),
+                def.observation_guard(),
+                def.provenance(),
+            )?;
+            resolved.insert(
+                name.clone(),
+                transfer::ResolvedTransfer { def, origin: None },
+            );
+        }
+        for (name, expanded) in expanded {
+            resolved.insert(name, expanded);
+        }
+        Ok(resolved)
+    }
 }
 
 /// One normalized curve definition from the TOML `[curves]` map.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct CurveDef {
     /// Name of a built-in curve (e.g. "linear", "ease_in_quad").
     pub builtin: Option<String>,
@@ -357,12 +724,744 @@ monotonic = false
 
     #[test]
     fn from_toml_str_rejects_unknown_top_level_table() {
-        let error = DefinitionsFile::from_toml_str("[transfer_families]\n")
+        let error = DefinitionsFile::from_toml_str("[invented]\n")
             .unwrap_err()
             .to_string();
         assert!(
-            error.contains("unknown field `transfer_families`"),
+            error.contains("unknown field `invented`"),
             "expected the unrecognized field to be named, got: {error}"
+        );
+    }
+
+    #[test]
+    fn from_toml_str_accepts_empty_families_and_gaps() {
+        let defs = DefinitionsFile::from_toml_str("[transfer_families]\n[gaps]\n").unwrap();
+        assert!(defs.transfer_families().is_empty());
+        assert!(defs.gaps().is_empty());
+    }
+
+    fn guarded_standalone_toml(include_capability: bool) -> String {
+        let capability = if include_capability {
+            "[transfers]\nrequires = [\"observation_guard_v1\"]\n\n"
+        } else {
+            ""
+        };
+        format!(
+            "{capability}[transfers.guarded]\n\
+             input_unit = \"count\"\n\
+             output_unit = \"unit\"\n\
+             output_scale = 1\n\
+             max_interpolation_error = 1\n\
+             above = \"clamp\"\n\
+             saturation = {{ code = 65535, behavior = \"error\" }}\n\
+             formula = \"x\"\n\
+             domain = [1, 10]\n"
+        )
+    }
+
+    fn provenance_standalone_toml(include_capability: bool) -> String {
+        let capability = if include_capability {
+            "[transfers]\nrequires = [\"source_provenance_v1\"]\n\n"
+        } else {
+            ""
+        };
+        format!(
+            "{capability}[transfers.cited]\n\
+             input_unit = \"count\"\n\
+             output_unit = \"unit\"\n\
+             output_scale = 1\n\
+             max_interpolation_error = 1\n\
+             provenance = {{ identity = \"fixture source\", locator = \"Table 1\" }}\n\
+             formula = \"x\"\n\
+             domain = [1, 10]\n"
+        )
+    }
+
+    fn cited_guard_standalone_toml(capabilities: &str) -> String {
+        guarded_standalone_toml(true)
+            .replace(
+                "requires = [\"observation_guard_v1\"]",
+                &format!("requires = [{capabilities}]"),
+            )
+            .replace(
+                "saturation = { code = 65535, behavior = \"error\" }",
+                "saturation = { code = 65535, behavior = \"error\", provenance = { identity = \"device note\" } }",
+            )
+    }
+
+    #[test]
+    fn standalone_transfer_unknown_fields_fail_closed() {
+        for unknown in ["saturaton", "observation_guard"] {
+            let toml = guarded_standalone_toml(true).replace("saturation", unknown);
+            let error = DefinitionsFile::from_toml_str(&toml)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains(&format!("unknown field `{unknown}`")),
+                "expected the unknown field to be named, got: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn standalone_guard_requires_fail_closed_capability_marker() {
+        let error = DefinitionsFile::from_toml_str(&guarded_standalone_toml(false))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("requires = [\"observation_guard_v1\"]"),
+            "expected the required marker to be named, got: {error}"
+        );
+    }
+
+    #[test]
+    fn standalone_guard_accepts_supported_capability_marker() {
+        let defs = DefinitionsFile::from_toml_str(&guarded_standalone_toml(true)).unwrap();
+        assert!(defs.transfers()["guarded"].observation_guard().is_some());
+    }
+
+    #[test]
+    fn unused_observation_guard_capability_fails_closed() {
+        let toml = guarded_standalone_toml(true)
+            .replace("saturation = { code = 65535, behavior = \"error\" }\n", "");
+        let error = DefinitionsFile::from_toml_str(&toml)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("no standalone transfer declared a direct `saturation` guard"),
+            "expected the unused capability to fail, got: {error}"
+        );
+    }
+
+    #[test]
+    fn standalone_provenance_requires_fail_closed_capability_marker() {
+        let error = DefinitionsFile::from_toml_str(&provenance_standalone_toml(false))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("requires = [\"source_provenance_v1\"]"),
+            "expected the required marker to be named, got: {error}"
+        );
+    }
+
+    #[test]
+    fn standalone_provenance_accepts_supported_capability_marker() {
+        let defs = DefinitionsFile::from_toml_str(&provenance_standalone_toml(true)).unwrap();
+        assert_eq!(
+            defs.transfers()["cited"]
+                .provenance()
+                .map(|provenance| provenance.identity.as_str()),
+            Some("fixture source")
+        );
+    }
+
+    #[test]
+    fn unused_source_provenance_capability_fails_closed() {
+        let toml = provenance_standalone_toml(true).replace(
+            "provenance = { identity = \"fixture source\", locator = \"Table 1\" }\n",
+            "",
+        );
+        let error = DefinitionsFile::from_toml_str(&toml)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("no standalone transfer declared source provenance"),
+            "expected the unused capability to fail, got: {error}"
+        );
+    }
+
+    #[test]
+    fn standalone_guard_with_citation_requires_both_capabilities() {
+        let only_guard = cited_guard_standalone_toml("\"observation_guard_v1\"");
+        let error = DefinitionsFile::from_toml_str(&only_guard)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("requires = [\"source_provenance_v1\"]"),
+            "expected the source capability to be required, got: {error}"
+        );
+
+        let only_provenance = cited_guard_standalone_toml("\"source_provenance_v1\"");
+        let error = DefinitionsFile::from_toml_str(&only_provenance)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("requires = [\"observation_guard_v1\"]"),
+            "expected the guard capability to be required, got: {error}"
+        );
+
+        let both =
+            cited_guard_standalone_toml("\"observation_guard_v1\", \"source_provenance_v1\"");
+        let defs = DefinitionsFile::from_toml_str(&both).unwrap();
+        assert!(
+            defs.transfers()["guarded"]
+                .observation_guard()
+                .and_then(|guard| guard.provenance.as_ref())
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn observation_guard_nested_in_a_point_fails_closed() {
+        let toml = r#"
+[transfers]
+requires = ["observation_guard_v1"]
+
+[transfers.guarded]
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+points = [
+  { input = 1, output = 1.0, saturation = { code = 65535, behavior = "error" } },
+  { input = 10, output = 10.0 },
+]
+"#;
+        let error = DefinitionsFile::from_toml_str(toml)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("misplaced `saturation` at `points[0].saturation`")
+                && error.contains("directly under `[transfers.guarded]`"),
+            "expected the misplaced guard to fail, got: {error}"
+        );
+    }
+
+    #[test]
+    fn observation_guard_nested_in_legacy_ntc_model_fails_closed() {
+        let toml = r#"
+[transfers]
+requires = ["observation_guard_v1"]
+
+[transfers.ntc]
+input_unit = "adc_code"
+output_unit = "degree_celsius"
+output_scale = 1000
+max_interpolation_error = 50
+output_range = [-40.0, 125.0]
+
+[transfers.ntc.model]
+kind = "ntc_beta_divider"
+nominal_resistance_ohms = 10000.0
+beta_kelvin = 3950.0
+nominal_temperature_celsius = 25.0
+fixed_resistance_ohms = 10000.0
+adc_max_code = 4095
+topology = "ntc_to_ground"
+saturation = { code = 65535, behavior = "error" }
+"#;
+        let error = DefinitionsFile::from_toml_str(toml)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("misplaced `saturation` at `model.saturation`")
+                && error.contains("directly under `[transfers.ntc]`"),
+            "expected the misplaced guard to fail, got: {error}"
+        );
+    }
+
+    #[test]
+    fn provenance_nested_in_a_standalone_point_fails_closed_when_capability_is_used() {
+        let toml = r#"
+[transfers]
+requires = ["source_provenance_v1"]
+
+[transfers.cited]
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+provenance = { identity = "valid citation" }
+formula = "x"
+domain = [1, 10]
+
+[transfers.misplaced]
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+points = [
+  { input = 1, output = 1.0, provenance = { identity = "silently ignored" } },
+  { input = 10, output = 10.0 },
+]
+"#;
+        let error = DefinitionsFile::from_toml_str(toml)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("standalone transfer `misplaced`")
+                && error.contains("misplaced `provenance` at `points[0].provenance`")
+                && error.contains("directly under `[transfers.misplaced]`"),
+            "expected the misplaced citation to fail, got: {error}"
+        );
+    }
+
+    #[test]
+    fn provenance_nested_in_a_standalone_model_fails_closed_when_capability_is_used() {
+        let toml = r#"
+[transfers]
+requires = ["source_provenance_v1"]
+
+[transfers.cited]
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+provenance = { identity = "valid citation" }
+formula = "x"
+domain = [1, 10]
+
+[transfers.misplaced]
+input_unit = "adc_code"
+output_unit = "degree_celsius"
+output_scale = 1000
+max_interpolation_error = 50
+output_range = [-40.0, 125.0]
+
+[transfers.misplaced.model]
+kind = "ntc_beta_divider"
+nominal_resistance_ohms = 10000.0
+beta_kelvin = 3950.0
+nominal_temperature_celsius = 25.0
+fixed_resistance_ohms = 10000.0
+adc_max_code = 4095
+topology = "ntc_to_ground"
+provenance = { identity = "silently ignored" }
+"#;
+        let error = DefinitionsFile::from_toml_str(toml)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("standalone transfer `misplaced`")
+                && error.contains("misplaced `provenance` at `model.provenance`")
+                && error.contains("directly under `[transfers.misplaced]`"),
+            "expected the misplaced citation to fail, got: {error}"
+        );
+    }
+
+    #[test]
+    fn misplaced_standalone_provenance_fails_before_capability_accounting() {
+        let point_toml = r#"
+[transfers.misplaced]
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+points = [
+  { input = 1, output = 1.0, provenance = { identity = "silently ignored" } },
+  { input = 10, output = 10.0 },
+]
+"#;
+        let model_toml = r#"
+[transfers.misplaced]
+input_unit = "adc_code"
+output_unit = "degree_celsius"
+output_scale = 1000
+max_interpolation_error = 50
+output_range = [-40.0, 125.0]
+model = { kind = "ntc_beta_divider", nominal_resistance_ohms = 10000.0, beta_kelvin = 3950.0, nominal_temperature_celsius = 25.0, fixed_resistance_ohms = 10000.0, adc_max_code = 4095, topology = "ntc_to_ground", provenance = { identity = "silently ignored" } }
+"#;
+
+        for (toml, path) in [
+            (point_toml, "points[0].provenance"),
+            (model_toml, "model.provenance"),
+        ] {
+            let error = DefinitionsFile::from_toml_str(toml)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains(&format!("misplaced `provenance` at `{path}`"))
+                    && error.contains("directly under `[transfers.misplaced]`"),
+                "expected placement to fail before capability accounting, got: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn family_guard_nested_in_a_point_fails_closed() {
+        let toml = r#"
+[transfer_families.guarded]
+provenance = { identity = "test fixture" }
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+points = [
+  { input = 1, output = 1.0, saturation = { code = 65535, behavior = "error" } },
+  { input = 10, output = 10.0 },
+]
+
+[[transfer_families.guarded.members]]
+selectors = { variant = "one" }
+status = "emit"
+applicability = { observation = [1, 10] }
+"#;
+        let error = DefinitionsFile::from_toml_str(toml)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("transfer family `guarded`")
+                && error.contains("misplaced `saturation` at `points[0].saturation`")
+                && error.contains("directly under `[transfer_families.guarded]`"),
+            "expected the misplaced family guard to fail, got: {error}"
+        );
+    }
+
+    #[test]
+    fn family_guard_nested_in_legacy_ntc_model_fails_closed() {
+        let toml = r#"
+[transfer_families.ntc]
+provenance = { identity = "test fixture" }
+input_unit = "adc_code"
+output_unit = "degree_celsius"
+output_scale = 1000
+max_interpolation_error = 50
+output_range = [-40.0, 125.0]
+
+[transfer_families.ntc.model]
+kind = "ntc_beta_divider"
+nominal_resistance_ohms = 10000.0
+beta_kelvin = 3950.0
+nominal_temperature_celsius = 25.0
+fixed_resistance_ohms = 10000.0
+adc_max_code = 4095
+topology = "ntc_to_ground"
+saturation = { code = 65535, behavior = "error" }
+
+[[transfer_families.ntc.members]]
+selectors = { variant = "one" }
+status = "emit"
+applicability = { physical = [-40.0, 125.0] }
+"#;
+        let error = DefinitionsFile::from_toml_str(toml)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("transfer family `ntc`")
+                && error.contains("misplaced `saturation` at `model.saturation`")
+                && error.contains("directly under `[transfer_families.ntc]`"),
+            "expected the misplaced family guard to fail, got: {error}"
+        );
+    }
+
+    #[test]
+    fn provenance_nested_in_a_family_point_fails_closed() {
+        let toml = r#"
+[transfer_families.misplaced]
+provenance = { identity = "valid family citation" }
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+points = [
+  { input = 1, output = 1.0, provenance = { identity = "silently ignored" } },
+  { input = 10, output = 10.0 },
+]
+
+[[transfer_families.misplaced.members]]
+selectors = { variant = "one" }
+status = "emit"
+applicability = { observation = [1, 10] }
+"#;
+        let error = DefinitionsFile::from_toml_str(toml)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("transfer family `misplaced`")
+                && error.contains("misplaced `provenance` at `points[0].provenance`")
+                && error.contains("directly under `[transfer_families.misplaced]`"),
+            "expected the misplaced family citation to fail, got: {error}"
+        );
+    }
+
+    #[test]
+    fn provenance_nested_in_a_family_model_fails_closed() {
+        let toml = r#"
+[transfer_families.misplaced]
+provenance = { identity = "valid family citation" }
+input_unit = "adc_code"
+output_unit = "degree_celsius"
+output_scale = 1000
+max_interpolation_error = 50
+output_range = [-40.0, 125.0]
+
+[transfer_families.misplaced.model]
+kind = "ntc_beta_divider"
+nominal_resistance_ohms = 10000.0
+beta_kelvin = 3950.0
+nominal_temperature_celsius = 25.0
+fixed_resistance_ohms = 10000.0
+adc_max_code = 4095
+topology = "ntc_to_ground"
+provenance = { identity = "silently ignored" }
+
+[[transfer_families.misplaced.members]]
+selectors = { variant = "one" }
+status = "emit"
+applicability = { physical = [-40.0, 125.0] }
+"#;
+        let error = DefinitionsFile::from_toml_str(toml)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("transfer family `misplaced`")
+                && error.contains("misplaced `provenance` at `model.provenance`")
+                && error.contains("directly under `[transfer_families.misplaced]`"),
+            "expected the misplaced family citation to fail, got: {error}"
+        );
+    }
+
+    #[test]
+    fn family_point_unknown_fields_fail_closed_with_source_path() {
+        let toml = r#"
+[transfer_families.als]
+provenance = { identity = "test fixture" }
+input_unit = "count"
+output_unit = "lux"
+output_scale = 1000
+max_interpolation_error = 1
+points = [
+  { input = 1, output = 0.1, scale = 42 },
+  { input = 10, output = 1.0 },
+]
+
+[[transfer_families.als.members]]
+selectors = { gain = "div4" }
+status = "emit"
+applicability = { observation = [1, 10] }
+"#;
+        let error = DefinitionsFile::from_toml_str(toml)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("transfer family `als`")
+                && error.contains("unknown field `scale`")
+                && error.contains("`points[0].scale`"),
+            "expected the family point path to be named, got: {error}"
+        );
+    }
+
+    #[test]
+    fn family_ntc_unknown_fields_fail_closed_with_source_path() {
+        let toml = r#"
+[transfer_families.ntc]
+provenance = { identity = "test fixture" }
+input_unit = "adc_code"
+output_unit = "degree_celsius"
+output_scale = 1000
+max_interpolation_error = 50
+
+[transfer_families.ntc.model]
+kind = "ntc_beta_divider"
+nominal_resistance_ohms = 10000.0
+beta_kelvin = 3950.0
+nominal_temperature_celsius = 25.0
+fixed_resistance_ohms = 10000.0
+adc_max_code = 4095
+topology = "ntc_to_ground"
+scale = 42
+
+[[transfer_families.ntc.members]]
+selectors = { variant = "one" }
+status = "emit"
+applicability = { physical = [-40.0, 125.0] }
+"#;
+        let error = DefinitionsFile::from_toml_str(toml)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("transfer family `ntc`")
+                && error.contains("unknown field `scale`")
+                && error.contains("`model.scale`")
+                && error.contains("`ntc_beta_divider`"),
+            "expected the family NTC model path to be named, got: {error}"
+        );
+    }
+
+    #[test]
+    fn standalone_legacy_source_unreserved_fields_remain_permissive() {
+        let toml = r#"
+[transfers.points]
+input_unit = "count"
+output_unit = "lux"
+output_scale = 1000
+max_interpolation_error = 1
+points = [
+  { input = 1, output = 0.1, scale = 42 },
+  { input = 10, output = 1.0 },
+]
+
+[transfers.ntc]
+input_unit = "adc_code"
+output_unit = "degree_celsius"
+output_scale = 1000
+max_interpolation_error = 50
+output_range = [-40.0, 125.0]
+
+[transfers.ntc.model]
+kind = "ntc_beta_divider"
+nominal_resistance_ohms = 10000.0
+beta_kelvin = 3950.0
+nominal_temperature_celsius = 25.0
+fixed_resistance_ohms = 10000.0
+adc_max_code = 4095
+topology = "ntc_to_ground"
+scale = 42
+"#;
+        let defs = DefinitionsFile::from_toml_str(toml).unwrap();
+        assert!(defs.transfers().contains_key("points"));
+        assert!(defs.transfers().contains_key("ntc"));
+    }
+
+    #[test]
+    fn family_selector_may_be_named_saturation() {
+        let toml = r#"
+[transfer_families.valid]
+provenance = { identity = "test fixture" }
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+points = [
+  { input = 1, output = 1.0 },
+  { input = 10, output = 10.0 },
+]
+selector_axes = { saturation = ["enabled"], observation_guard = [1] }
+
+[[transfer_families.valid.members]]
+selectors = { saturation = "enabled", observation_guard = 1 }
+status = "emit"
+applicability = { observation = [1, 10] }
+"#;
+        let defs = DefinitionsFile::from_toml_str(toml).unwrap();
+        let selectors = &defs.transfer_families()["valid"].members[0].selectors;
+        assert_eq!(
+            selectors["saturation"],
+            transfer::SelectorValue::String("enabled".into())
+        );
+        assert_eq!(
+            selectors["observation_guard"],
+            transfer::SelectorValue::Integer(1)
+        );
+    }
+
+    #[test]
+    fn unsupported_standalone_transfer_capability_fails_closed() {
+        let toml =
+            guarded_standalone_toml(true).replace("observation_guard_v1", "observation_guard_v2");
+        let error = DefinitionsFile::from_toml_str(&toml)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("unsupported [transfers] capability `observation_guard_v2`"),
+            "expected the unsupported capability to be named, got: {error}"
+        );
+    }
+
+    #[test]
+    fn standalone_capabilities_are_incompatible_with_legacy_transfer_map_shape() {
+        #[allow(dead_code)]
+        #[derive(Debug, Deserialize)]
+        struct LegacyTransferDef {
+            input_unit: String,
+            output_unit: String,
+            output_scale: u32,
+            max_interpolation_error: u32,
+            max_knots: Option<usize>,
+            below: Option<String>,
+            above: Option<String>,
+            points: Option<Vec<toml::Value>>,
+            formula: Option<String>,
+            model: Option<toml::Value>,
+            domain: Option<[u16; 2]>,
+            output_range: Option<[f64; 2]>,
+        }
+
+        let unversioned: toml::Value = guarded_standalone_toml(false).parse().unwrap();
+        let silently_unguarded = unversioned
+            .get("transfers")
+            .unwrap()
+            .clone()
+            .try_into::<BTreeMap<String, LegacyTransferDef>>()
+            .unwrap();
+        assert!(silently_unguarded.contains_key("guarded"));
+
+        let document: toml::Value = guarded_standalone_toml(true).parse().unwrap();
+        let legacy_section = document.get("transfers").unwrap().clone();
+        let error = legacy_section
+            .try_into::<BTreeMap<String, LegacyTransferDef>>()
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("requires")
+                && (error.contains("invalid type") || error.contains("invalid length")),
+            "legacy transfer-map decoder unexpectedly accepted the marker: {error}"
+        );
+
+        let unversioned: toml::Value = provenance_standalone_toml(false).parse().unwrap();
+        let silently_uncited = unversioned
+            .get("transfers")
+            .unwrap()
+            .clone()
+            .try_into::<BTreeMap<String, LegacyTransferDef>>()
+            .unwrap();
+        assert!(silently_uncited.contains_key("cited"));
+
+        let document: toml::Value = provenance_standalone_toml(true).parse().unwrap();
+        let legacy_section = document.get("transfers").unwrap().clone();
+        let error = legacy_section
+            .try_into::<BTreeMap<String, LegacyTransferDef>>()
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("requires")
+                && (error.contains("invalid type") || error.contains("invalid length")),
+            "legacy transfer-map decoder unexpectedly accepted the source marker: {error}"
+        );
+    }
+
+    #[test]
+    fn requires_table_remains_a_legacy_transfer_name() {
+        let toml = r#"
+[transfers.requires]
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+formula = "x"
+domain = [1, 10]
+"#;
+        let defs = DefinitionsFile::from_toml_str(toml).unwrap();
+        assert!(defs.transfers().contains_key("requires"));
+    }
+
+    #[test]
+    fn requires_transfer_must_be_renamed_before_adding_a_guard() {
+        let toml = r#"
+[transfers.requires]
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+formula = "x"
+domain = [1, 10]
+
+[transfers.guarded]
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+saturation = { code = 65535, behavior = "error" }
+formula = "x"
+domain = [1, 10]
+"#;
+        let error = DefinitionsFile::from_toml_str(toml)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("transfer named `requires` cannot coexist")
+                && error.contains("rename that transfer"),
+            "expected an actionable reserved-name diagnostic, got: {error}"
         );
     }
 }

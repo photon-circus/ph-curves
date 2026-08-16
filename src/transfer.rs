@@ -18,9 +18,10 @@ pub trait TransferFunction {
 
     /// Convert an observation to a measurement.
     ///
-    /// Inputs outside the table domain follow the table's explicit lower and
-    /// upper [`BoundaryBehavior`] settings. Transfer functions never
-    /// extrapolate.
+    /// When a table declares an [`ObservationGuard`], that exact code is
+    /// classified first. Remaining inputs outside the table domain follow the
+    /// table's explicit lower and upper [`BoundaryBehavior`] settings.
+    /// Transfer functions never extrapolate.
     fn convert(&self, input: Self::Input) -> Result<Self::Output, TransferError<Self::Input>>;
 }
 
@@ -74,6 +75,45 @@ pub enum BoundaryBehavior {
     Clamp,
 }
 
+/// Policy applied when one explicitly declared observation code is seen.
+///
+/// Distinct from [`BoundaryBehavior`]: ordinary codes outside the fitted
+/// domain follow `below` / `above`, while this policy applies only to the
+/// guarded code and is not mapped through [`MonotonicDirection`].
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ObservationGuardBehavior {
+    /// Return [`TransferError::RejectedObservation`].
+    Error,
+    /// Return the output at `domain_max`, regardless of the `above` policy.
+    Clamp,
+}
+
+/// One explicitly declared observation code and the policy applied to it.
+///
+/// The code is consumer or device policy, not inferred from its integer
+/// value. It must be strictly above the table's fitted `domain_max`.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct ObservationGuard {
+    /// Observation code classified by this guard.
+    pub code: u16,
+    /// Policy applied when `code` is observed.
+    pub behavior: ObservationGuardBehavior,
+}
+
+/// Compact facts for a transfer's optional observation-code guard.
+///
+/// Adjacent to [`TransferMetadata`] rather than a required field on it, so
+/// generated struct literals for table metadata stay additive. Classification
+/// of a code as saturation is declared consumer/device policy, not inferred
+/// from the integer value.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct ObservationGuardMetadata {
+    /// Observation code classified by this guard.
+    pub code: u16,
+    /// Policy applied when `code` is observed.
+    pub behavior: ObservationGuardBehavior,
+}
+
 /// How to resolve a physical value that lands on a flat (non-unique) output run.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Default)]
 pub enum FlatResolution {
@@ -88,8 +128,9 @@ pub enum FlatResolution {
     Error,
 }
 
-/// Error returned when an observation is outside a transfer domain, or when
-/// affine calibration arithmetic cannot be represented.
+/// Error returned when an observation is outside a transfer domain, a
+/// declared observation guard rejects it, or affine calibration arithmetic
+/// cannot be represented.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum TransferError<I> {
     /// The observation is below the minimum supported input.
@@ -105,6 +146,15 @@ pub enum TransferError<I> {
         input: I,
         /// Largest supported input.
         maximum: I,
+    },
+    /// The observation matches an explicit [`ObservationGuard`] whose policy
+    /// is [`ObservationGuardBehavior::Error`].
+    ///
+    /// Distinct from [`Self::AboveDomain`]: the code was declared as a
+    /// rejected observation, not as an ordinary domain violation.
+    RejectedObservation {
+        /// Observation supplied by the caller.
+        input: I,
     },
     /// Affine calibration overflowed `i64` intermediates or the final `i32`
     /// result. Domain policy from the inner transfer is unchanged.
@@ -222,6 +272,10 @@ pub struct TransferMetadata {
 /// Inputs are searched in `O(log N)` time. The two arrays use six bytes of
 /// table payload per knot and require no allocation. Inverse conversion
 /// binary-searches the same output knots — no dense physical→input LUT.
+///
+/// An optional [`ObservationGuard`] is stored on the table itself. A transfer
+/// constructed without one keeps the previous convert/invert behavior; the
+/// struct is larger by that optional field.
 #[derive(Copy, Clone, Debug)]
 pub struct PiecewiseLinearTransfer<const N: usize> {
     inputs: &'static [u16; N],
@@ -230,6 +284,7 @@ pub struct PiecewiseLinearTransfer<const N: usize> {
     below: BoundaryBehavior,
     above: BoundaryBehavior,
     flat_resolution: FlatResolution,
+    observation_guard: Option<ObservationGuard>,
 }
 
 impl<const N: usize> PiecewiseLinearTransfer<N> {
@@ -271,6 +326,7 @@ impl<const N: usize> PiecewiseLinearTransfer<N> {
             below: BoundaryBehavior::Error,
             above: BoundaryBehavior::Error,
             flat_resolution: FlatResolution::PreferLowInput,
+            observation_guard: None,
         }
     }
 
@@ -293,6 +349,36 @@ impl<const N: usize> PiecewiseLinearTransfer<N> {
     pub const fn with_flat_resolution(mut self, policy: FlatResolution) -> Self {
         self.flat_resolution = policy;
         self
+    }
+
+    /// Set an explicit observation-code guard independent of `below` / `above`.
+    ///
+    /// The guarded code is classified before ordinary domain policy and is
+    /// not mapped through inverse range behavior. Classification of a code as
+    /// saturation is declared consumer/device policy, not inferred from the
+    /// integer value.
+    ///
+    /// # Panics
+    ///
+    /// Panics while defining the table if `code` is not strictly above the
+    /// fitted `domain_max`. Generated tables call this in a constant context,
+    /// making an invalid guard a compile error.
+    pub const fn with_observation_guard(
+        mut self,
+        code: u16,
+        behavior: ObservationGuardBehavior,
+    ) -> Self {
+        assert!(
+            code > self.inputs[N - 1],
+            "observation guard code must be strictly above domain_max"
+        );
+        self.observation_guard = Some(ObservationGuard { code, behavior });
+        self
+    }
+
+    /// Return the explicit observation-code guard, if one is set.
+    pub const fn observation_guard(&self) -> Option<ObservationGuard> {
+        self.observation_guard
     }
 
     /// Return the input knot array.
@@ -447,6 +533,17 @@ impl<const N: usize> TransferFunction for PiecewiseLinearTransfer<N> {
     fn convert(&self, input: u16) -> Result<i32, TransferError<u16>> {
         let minimum = self.inputs[0];
         let maximum = self.inputs[N - 1];
+
+        if let Some(guard) = self.observation_guard
+            && input == guard.code
+        {
+            return match guard.behavior {
+                ObservationGuardBehavior::Error => {
+                    Err(TransferError::RejectedObservation { input })
+                }
+                ObservationGuardBehavior::Clamp => Ok(self.outputs[N - 1]),
+            };
+        }
 
         if input < minimum {
             return match self.below {
@@ -930,6 +1027,110 @@ mod tests {
     }
 
     #[test]
+    fn observation_guard_error_overrides_above_clamp() {
+        let transfer =
+            PiecewiseLinearTransfer::new(&INPUTS, &OUTPUTS, MonotonicDirection::Increasing)
+                .with_boundaries(BoundaryBehavior::Error, BoundaryBehavior::Clamp)
+                .with_observation_guard(65_535, ObservationGuardBehavior::Error);
+        assert_eq!(
+            transfer.observation_guard(),
+            Some(ObservationGuard {
+                code: 65_535,
+                behavior: ObservationGuardBehavior::Error,
+            })
+        );
+        assert_eq!(
+            transfer.convert(65_535),
+            Err(TransferError::RejectedObservation { input: 65_535 })
+        );
+        assert_eq!(transfer.convert(401), Ok(2_000));
+        assert_eq!(transfer.convert(400), Ok(2_000));
+        assert_eq!(transfer.convert(200), Ok(0));
+    }
+
+    #[test]
+    fn observation_guard_clamp_overrides_above_error() {
+        let transfer =
+            PiecewiseLinearTransfer::new(&INPUTS, &OUTPUTS, MonotonicDirection::Increasing)
+                .with_boundaries(BoundaryBehavior::Error, BoundaryBehavior::Error)
+                .with_observation_guard(65_535, ObservationGuardBehavior::Clamp);
+        assert_eq!(transfer.convert(65_535), Ok(2_000));
+        assert_eq!(
+            transfer.convert(401),
+            Err(TransferError::AboveDomain {
+                input: 401,
+                maximum: 400
+            })
+        );
+    }
+
+    #[test]
+    fn observation_guard_absent_leaves_above_policy() {
+        let clamped =
+            PiecewiseLinearTransfer::new(&INPUTS, &OUTPUTS, MonotonicDirection::Increasing)
+                .with_boundaries(BoundaryBehavior::Clamp, BoundaryBehavior::Clamp);
+        assert_eq!(clamped.observation_guard(), None);
+        assert_eq!(clamped.convert(65_535), Ok(2_000));
+        assert_eq!(clamped.convert(401), Ok(2_000));
+
+        let errored =
+            PiecewiseLinearTransfer::new(&INPUTS, &OUTPUTS, MonotonicDirection::Increasing);
+        assert_eq!(
+            errored.convert(65_535),
+            Err(TransferError::AboveDomain {
+                input: 65_535,
+                maximum: 400
+            })
+        );
+        assert_eq!(
+            errored.convert(401),
+            Err(TransferError::AboveDomain {
+                input: 401,
+                maximum: 400
+            })
+        );
+    }
+
+    #[test]
+    fn observation_guard_does_not_change_inverse() {
+        let error_above =
+            PiecewiseLinearTransfer::new(&INPUTS, &OUTPUTS, MonotonicDirection::Increasing)
+                .with_observation_guard(65_535, ObservationGuardBehavior::Error);
+        assert_eq!(error_above.invert_physical(2_000), Ok(400));
+        assert_eq!(
+            error_above.invert_physical(2_001),
+            Err(InverseTransferError::AboveRange {
+                physical: 2_001,
+                maximum: 2_000
+            })
+        );
+
+        let clamp_above =
+            PiecewiseLinearTransfer::new(&INPUTS, &OUTPUTS, MonotonicDirection::Increasing)
+                .with_boundaries(BoundaryBehavior::Error, BoundaryBehavior::Clamp)
+                .with_observation_guard(65_535, ObservationGuardBehavior::Error);
+        assert_eq!(clamp_above.invert_physical(3_000), Ok(400));
+    }
+
+    #[test]
+    fn observation_guard_rejects_code_inside_or_at_domain() {
+        assert!(
+            std::panic::catch_unwind(|| {
+                PiecewiseLinearTransfer::new(&INPUTS, &OUTPUTS, MonotonicDirection::Increasing)
+                    .with_observation_guard(400, ObservationGuardBehavior::Error);
+            })
+            .is_err()
+        );
+        assert!(
+            std::panic::catch_unwind(|| {
+                PiecewiseLinearTransfer::new(&INPUTS, &OUTPUTS, MonotonicDirection::Increasing)
+                    .with_observation_guard(200, ObservationGuardBehavior::Clamp);
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
     fn decreasing_signed_transfer() {
         let transfer =
             PiecewiseLinearTransfer::new(&INPUTS, &DECREASING, MonotonicDirection::Decreasing);
@@ -1103,6 +1304,15 @@ mod tests {
                 input: 99,
                 minimum: 100
             })
+        );
+
+        let guarded =
+            PiecewiseLinearTransfer::new(&INPUTS, &OUTPUTS, MonotonicDirection::Increasing)
+                .with_observation_guard(65_535, ObservationGuardBehavior::Error);
+        let guarded_cal = AffineCalibration::new(guarded, 1, 0, 1).unwrap();
+        assert_eq!(
+            guarded_cal.convert(65_535),
+            Err(TransferError::RejectedObservation { input: 65_535 })
         );
 
         // Large gain maps an in-domain knot outside i32.

@@ -75,7 +75,7 @@ Set `monotonic = false` to skip inverse-LUT generation (default is `true`).
 Curve and transfer names are normalized to uppercase Rust identifiers. Names
 with no ASCII letters or digits, names that normalize to the same identifier,
 and names that collide with generated companions (`_FWD`, `_INV`, `_INPUTS`,
-`_OUTPUTS`, `_METADATA`) are rejected.
+`_OUTPUTS`, `_METADATA`, `_OBSERVATION_GUARD`) are rejected.
 
 ### 2. Generate Rust source
 
@@ -184,6 +184,40 @@ distinction matters.
 `below` and `above` independently select `"error"` (the default) or `"clamp"`.
 Transfer functions never extrapolate.
 
+One exact observation code may have a separate guard. It is checked before
+ordinary boundary behavior, must be strictly above the generated domain, and
+is never inferred from the integer value:
+
+```toml
+[transfers]
+requires = ["observation_guard_v1"]
+
+[transfers.guarded_identity]
+input_unit = "adc_code"
+output_unit = "millivolt"
+output_scale = 1
+max_interpolation_error = 1
+above = "clamp"
+saturation = { code = 65535, behavior = "error" }
+formula = "x"
+domain = [1, 60000]
+```
+
+`behavior = "error"` returns `TransferError::RejectedObservation`;
+`behavior = "clamp"` returns the output at `domain_max` regardless of
+`above`. Every other out-of-domain code still follows `below` / `above`, and
+inverse conversion is unchanged. Classification as saturation is explicit
+consumer/device policy, not a generic rule for `u16::MAX`.
+
+The `[transfers] requires` line is mandatory whenever a standalone transfer
+uses `saturation`. Its array shape makes an older generator reject the whole
+document instead of silently ignoring the guard. An unused capability or a
+guard misplaced inside a model/point value is also rejected. A legacy transfer
+named `requires` must be renamed before this capability can be declared.
+Generated output exposes
+`<NAME>_OBSERVATION_GUARD: Option<ObservationGuardMetadata>`; it agrees with
+`<NAME>.observation_guard()` and is `None` for an unguarded transfer.
+
 ### What transfer functions enable
 
 The transfer API is a good fit when all of the following are true:
@@ -192,7 +226,8 @@ The transfer API is a good fit when all of the following are true:
 - The relationship is static and monotonic, either increasing or decreasing.
 - A formula, empirical calibration points, or a supported host model can
   describe the ideal relationship.
-- Endpoint errors or clamps are sufficient outside the generated domain.
+- Endpoint errors or clamps, plus at most one explicit above-domain guard, are
+  sufficient outside the generated domain.
 - Numerical interpolation error can be bounded independently from real-world
   sensor accuracy.
 
@@ -216,8 +251,11 @@ The transfer layer does **not** currently provide:
 - Runtime/factory gain-and-offset calibration wrappers.
 - Automatic chaining or unit conversion between transfer functions.
 - Sensor fusion, state estimation, hysteretic application decisions, or
-  missing/invalid-sample policy.
-- A plugin interface for arbitrary host model code.
+  general missing/invalid-sample policy beyond the single explicit
+  observation-code guard.
+- A plugin interface for arbitrary host model code. Dedicated crates inspect
+  the validated transfer graph and supply evaluated truth or prefitted knots
+  through the host `gen-lib` IR instead.
 
 Only the NTC Beta-divider has a built-in physical model. Other devices should
 normally use a formula or empirical points. Dedicated crates may provide
@@ -234,7 +272,8 @@ six design steps:
    if it is static.
 2. Choose an output unit and integer scale. For example,
    `output_unit = "kilopascal"` with `output_scale = 1000` emits milli-kPa.
-3. Define the valid input domain and explicit below/above behavior.
+3. Define the valid input domain and explicit below/above behavior; optionally
+   declare one exact above-domain observation guard.
 4. Select either a formula over `x` or increasing-input physical points.
 5. Set the numerical error target and a bounded knot budget.
 6. Generate the table, inspect its reported domain/knot/error metadata, and
@@ -280,11 +319,168 @@ Point inputs must be strictly increasing and outputs must be monotonic.
 Endpoints define the valid domain; unlike normalized easing curves, physical
 points do not need to start at zero or end at full scale.
 
+Discrete selector combinations that share one source belong in a transfer
+family. Selectors are never interpolated. Only `status = "emit"` members are
+generated. `unnecessary` and `forbidden` members stay on the description,
+require a non-blank `reason`, and retain a validated source mapping.
+`unsupported` members also require a reason but set no applicability coordinate
+or `input_transform` because no source mapping exists. Every family declares
+its expected selector universe with `selector_axes` (Cartesian product) or
+`expected_selectors` (an explicit non-Cartesian set). Each expected identity
+must appear exactly once as a member or as a family-scoped gap with a
+non-blank reason. Document-level `[gaps]` records channels the sources leave
+undefined and do not satisfy family completeness:
+
+```toml
+[transfer_families.front_end]
+provenance = { identity = "synthetic multi-range ADC note", locator = "Table 1" }
+input_unit = "adc_code"
+output_unit = "millivolt"
+output_scale = 1000
+max_interpolation_error = 1
+selector_axes = { range = ["low"], coupling = ["dc", "ac"] }
+
+[transfer_families.front_end.model]
+kind = "scaled_polynomial"
+coefficients = [0.0, 1.0, 1.0e-4]
+
+[[transfer_families.front_end.members]]
+selectors = { range = "low", coupling = "dc" }
+status = "emit"
+emitted_name = "front_end_low_dc"
+input_transform = { numerator = 2000, denominator = 1000000 }
+applicability = { model_input = [0.2, 1.0] }
+
+[[transfer_families.front_end.gaps]]
+selectors = { range = "low", coupling = "ac" }
+status = "undefined"
+reason = "AC coupling saturates the low-range front end"
+provenance = { locator = "Table 1, omitted row" }
+
+[gaps.digital_flag]
+status = "undefined"
+reason = "auxiliary digital flag; no conversion"
+provenance = { identity = "synthetic multi-range ADC note", locator = "§9" }
+```
+
+Families may share a document with unrelated `[curves]`. Dense LUT generation
+stays curve-only; family members remain sparse integer transfers. Family knot
+default is 64 with a hard cap of 256. Every accepted member field is
+source-aware: formula and points members declare `applicability.observation`,
+NTC members declare `applicability.physical`, and `kind = "scaled_polynomial"`
+requires an exact `input_transform` plus `applicability.model_input`. The
+matrix applies to mapped (`emit`, `unnecessary`, and `forbidden`) members;
+`unsupported` members carry selector identity and a reason only. Unknown
+fields in family point entries and NTC model tables fail closed, while
+unreserved extension fields in the legacy standalone source formats retain
+their compatibility behavior. The
+generator applies that transform as `u = count * numerator / denominator` with
+an exact integer product, and converts inclusive model-input bounds to
+observation codes:
+
+```toml
+[transfer_families.front_end.model]
+kind = "scaled_polynomial"
+coefficients = [0.0, 1.0, 1.0e-4]
+
+[[transfer_families.front_end.members]]
+selectors = { range = "low", coupling = "dc" }
+status = "emit"
+input_transform = { numerator = 2000, denominator = 1000000 }
+applicability = { model_input = [0.2, 1.0] }
+```
+
+The scaled-polynomial snippet above still needs a declared universe on the
+family table (`selector_axes` or `expected_selectors`) covering that member.
+
+Standalone polynomial definitions supply their own `scale` and `domain`. The
+generic polynomial evaluator includes `u16::MAX` whenever that declared domain
+includes it; there is no implicit saturation rule. A guard may target that code
+only when the fitted `domain_max` is lower. A family-level `saturation` table is
+copied to every emitted member and validated against each member's domain.
+Generated output is still independent `PiecewiseLinearTransfer` constants.
+Inspect parsed families and gaps through
+`DefinitionsFile::transfer_families` and `gaps`. `DefinitionsFile::validate`
+returns a `ValidatedDefinitions` graph that includes description-only members
+and family-scoped gaps, the declared selector universe and completeness
+status, and document-level gap reasons. The universe exposes a checked
+`identity_count`; Cartesian overflow is a validation error, completeness is
+proven from indexed occupancy counts, and `identities()` enumerates lazily
+without materializing the axis product.
+
+Family citations are a structured `provenance` table
+(identity, optional revision/locator/URL/note), distinct from fit policy,
+boundaries, emission status, and observation-guard classification. Members
+and family-scoped gaps inherit the family citation unless they declare an
+override. Validated gaps expose both the effective citation and their declared
+override. An override may
+remove inherited optional fields with `clear = ["revision", "locator", "url",
+"note"]`; replacing `identity` starts a new citation and clears every
+unspecified optional field. A family guard citation resolves against the family
+citation, not a member override. A standalone guard citation likewise resolves
+against the declared transfer citation before any generation-source overlay,
+so replacing or clearing source provenance does not rewrite or remove the
+guard-classification citation. `ValidatedFamily` also exposes units, output
+scale, aggregate budgets, and its exact validated `FamilySource` through
+`ValidatedFamily::source`, including scaled-polynomial coefficients or every
+NTC Beta-divider parameter. The declared-source, formula, points, and
+model-presence accessors remain convenient projections. Members expose their
+resolved observation domain and emitted identity. Construct a
+family without TOML through `FamilySpec` / `FamilySource` and `insert_family`;
+that path uses the same validation and generation pipeline, including
+provenance. An optional member `emitted_name` keeps the generated stem stable
+when selector display spelling changes. An emitted-name collision identifies
+both origin families and their exact typed selector maps. `emission_manifest`
+maps family plus typed selectors to the table stem, symbol, and companion
+metadata names before fitting. Generated rustdoc for family members names the
+family and the exact selector map.
+
+Inspect `ValidatedFamily::provenance`,
+`ValidatedFamily::observation_guard_provenance`, and the citation-free
+`ValidatedFamily::policy` separately; generated rustdoc labels them the same
+way. Runtime transfer objects do not retain citation strings.
+
+Standalone TOML provenance must opt in with
+`[transfers] requires = ["source_provenance_v1"]`. Put both capability strings
+in the same array when a standalone transfer uses cited provenance and an
+observation guard. The marker makes released 0.2.1 transfer-map readers reject
+the document instead of silently discarding the citation. Programmatic
+`TransferSpec::with_provenance` and `FamilySpec` need no wire-format marker. A `provenance`
+table nested inside a point or model is rejected as misplaced rather than
+accepted by a permissive legacy source parser.
+
+A host tool that owns device evaluation can overlay
+`TransferSource::evaluated_truth` or prefitted knots on an emitted member and
+still receive ordinary generated tables. A family-member overlay must span
+the member's resolved observation domain; a standalone overlay replaces its
+declared source and may define a different domain. Every overlay also chooses
+its citation disposition explicitly with `.inherit_provenance()`,
+`.with_provenance(...)`, or `.clear_provenance()`. Inheritance means the
+target's declared, resolved pre-overlay citation and restores it when replacing
+an earlier overlay. Emitted family-member overlays may inherit or replace their
+mandatory citation but cannot clear it. The validated member's effective
+`provenance()` follows that choice while `provenance_override()` remains the
+original document declaration. Transfer-only generation uses
+`GenerateOptions::transfers_only()`; curve LUT `value_type` / `lut_size` are
+not required.
+
+`generate_report` exposes the same distinctions for audit tooling. Each
+emitted transfer reports its effective source citation, the separately
+resolved pre-overlay guard citation, and citation-free generation policy.
+Family reports retain the compact selector universe, completeness result,
+family citation and budgets, every member (including description-only
+statuses), and family-scoped gaps. Member and gap records keep both effective
+and declared-override provenance; emitted members additionally map to their
+table, Rust symbol, and `_METADATA` / `_OBSERVATION_GUARD` companions. Named
+document-level gaps are reported independently.
+Resource totals still count emitted tables only.
+
 If a model needs conditionals, multiple independent inputs, dynamic
 calibration, temperature/load compensation, or domain-specific state, compute
-calibration points in a dedicated host tool/crate and feed those points to the
-generic generator. Do not turn `ph-curves` into a device driver or an
-open-ended sensor-model catalog.
+calibration points or dense truth in a dedicated host tool/crate and feed them
+to the generic generator through `TransferSpec` / `TransferSource` or
+`FamilySpec`. Do not turn
+`ph-curves` into a device driver or an open-ended sensor-model catalog.
 
 ### Accuracy scope
 
@@ -505,6 +701,8 @@ formula = "pow((t + 0.16) / 1.16, 3.0)"
 | `CurveLut65536`        | Type alias: `CurveLut<u16, u16, 65536>`             |
 | `MonotonicCurveLut65536` | Type alias: `MonotonicCurveLut<u16, u16, 65536>`  |
 | `PiecewiseLinearTransfer<N>` | Sparse integer ADC↔measurement transfer (forward + inverse) |
+| `ObservationGuard`         | Explicit observation-code policy, independent of `below`/`above` |
+| `ObservationGuardMetadata` | Adjacent optional guard facts (not a `TransferMetadata` field) |
 | `TransferMetadata`       | Units, scale, domain/range, flats, and error bounds |
 | `FlatResolution`         | Policy for non-unique (flat) inverse outputs      |
 | `AffineCalibration<T>`   | Gain/offset/scale wrapper over any transfer, invertible |

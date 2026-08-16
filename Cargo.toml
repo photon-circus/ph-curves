@@ -60,3 +60,17 @@ clap = { version = "4", features = ["derive"], optional = true }
 name = "ph-curves-gen"
 path = "src/bin/gen/main.rs"
 required-features = ["gen-cli"]
+
+[[test]]
+name = "generation_report"
+path = "tests/generation_report.rs"
+required-features = ["gen-lib"]
+
+[[test]]
+name = "family_acceptance_gen"
+path = "tests/family_acceptance_gen.rs"
+required-features = ["gen-lib"]
+
+[[example]]
+name = "no_std_generated_fixtures"
+crate-type = ["lib"]
