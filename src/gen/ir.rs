@@ -9,10 +9,11 @@ use std::prelude::v1::*;
 
 use super::api::{Error, GenerateOptions};
 use super::curve::DefinitionsFile;
-use super::transfer::family::expanded_name;
+use super::transfer::family::{expanded_name, resolved_selector_universe};
 use super::transfer::{
-    ApplicabilityDef, GapDef, InputTransform, MemberStatus, SelectorValue, TransferFamilyDef,
-    TransferSource, TransferSpec, family_source_observation_domain, overlay_observation_span,
+    ApplicabilityDef, FamilyCompleteness, GapDef, GapStatus, InputTransform, MemberStatus,
+    SelectorUniverse, SelectorValue, TransferFamilyDef, TransferSource, TransferSpec,
+    family_source_observation_domain, overlay_observation_span,
 };
 
 /// Family, member, and gap graph after identity and collision checks.
@@ -27,11 +28,14 @@ pub struct ValidatedDefinitions {
     family_overlay_domains: BTreeMap<String, [u16; 2]>,
 }
 
-/// One validated family, including description-only members.
+/// One validated family, including description-only members and family-scoped gaps.
 #[derive(Clone, Debug)]
 pub struct ValidatedFamily {
     name: String,
+    selector_universe: SelectorUniverse,
     members: Vec<ValidatedMember>,
+    gaps: Vec<ValidatedFamilyGap>,
+    completeness: FamilyCompleteness,
 }
 
 impl ValidatedFamily {
@@ -40,9 +44,53 @@ impl ValidatedFamily {
         &self.name
     }
 
+    /// Declared expected selector identities (Cartesian axes or an explicit set).
+    pub fn selector_universe(&self) -> &SelectorUniverse {
+        &self.selector_universe
+    }
+
     /// Every member, in declaration order. Non-`emit` members are present.
     pub fn members(&self) -> &[ValidatedMember] {
         &self.members
+    }
+
+    /// Family-scoped gaps, in declaration order.
+    ///
+    /// Document-level `[gaps]` are on [`ValidatedDefinitions::gaps`] and do not
+    /// occupy family selector identities.
+    pub fn gaps(&self) -> &[ValidatedFamilyGap] {
+        &self.gaps
+    }
+
+    /// Occupancy result. Successful validation always yields
+    /// [`FamilyCompleteness::Complete`].
+    pub fn completeness(&self) -> FamilyCompleteness {
+        self.completeness
+    }
+}
+
+/// One validated family-scoped gap occupying an expected selector identity.
+#[derive(Clone, Debug)]
+pub struct ValidatedFamilyGap {
+    selectors: BTreeMap<String, SelectorValue>,
+    status: GapStatus,
+    reason: String,
+}
+
+impl ValidatedFamilyGap {
+    /// Selector map; keys, value types, and values are the identity.
+    pub fn selectors(&self) -> &BTreeMap<String, SelectorValue> {
+        &self.selectors
+    }
+
+    /// Always [`GapStatus::Undefined`].
+    pub fn status(&self) -> GapStatus {
+        self.status
+    }
+
+    /// Non-blank rationale for this expected identity not being a member.
+    pub fn reason(&self) -> &str {
+        &self.reason
     }
 }
 
@@ -165,6 +213,7 @@ fn inspect_families(
 ) -> Result<Vec<ValidatedFamily>, String> {
     let mut out = Vec::new();
     for (family_name, family) in families {
+        let selector_universe = resolved_selector_universe(family_name, family)?;
         let mut members = Vec::new();
         for member in &family.members {
             members.push(ValidatedMember {
@@ -176,9 +225,21 @@ fn inspect_families(
                 expanded_name: expanded_name(family_name, &member.selectors)?,
             });
         }
+        let gaps = family
+            .gaps
+            .iter()
+            .map(|gap| ValidatedFamilyGap {
+                selectors: gap.selectors.clone(),
+                status: gap.status,
+                reason: gap.reason.clone(),
+            })
+            .collect();
         out.push(ValidatedFamily {
             name: family_name.clone(),
+            selector_universe,
             members,
+            gaps,
+            completeness: FamilyCompleteness::Complete,
         });
     }
     Ok(out)
@@ -213,7 +274,9 @@ impl ValidatedDefinitions {
         &self.families
     }
 
-    /// Declared gaps. A missing gap is not the same as an undefined one.
+    /// Declared document-level gaps. A missing gap is not the same as an
+    /// undefined one. Family-scoped selector gaps live on
+    /// [`ValidatedFamily::gaps`].
     pub fn gaps(&self) -> &BTreeMap<String, GapDef> {
         self.defs.gaps()
     }
@@ -292,8 +355,9 @@ impl ValidatedDefinitions {
 mod tests {
     use super::*;
     use crate::r#gen::{
-        GenerateOptions, MemberStatus, ObservationGuardBehaviorDef, ObservationGuardDef,
-        PhysicalPoint, SelectorValue, TransferSource, TransferSpec,
+        FamilyCompleteness, GenerateOptions, MemberStatus, ObservationGuardBehaviorDef,
+        ObservationGuardDef, PhysicalPoint, SelectorUniverse, SelectorValue, TransferSource,
+        TransferSpec,
     };
     use std::vec;
 
@@ -305,6 +369,7 @@ output_unit = "unit"
 output_scale = 1000
 max_interpolation_error = 50
 formula = "x"
+selector_axes = { gain = ["div4", "x1", "x2"], integration_time_ms = [100] }
 
 [[transfer_families.als.members]]
 selectors = { gain = "div4", integration_time_ms = 100 }
@@ -374,6 +439,85 @@ reason = "counts only; no conversion"
         );
         let emitted: Vec<_> = validated.emitted_transfer_names().collect();
         assert_eq!(emitted, ["als_gain_div4_integration_time_ms_100"]);
+        assert_eq!(family.completeness(), FamilyCompleteness::Complete);
+        assert_eq!(family.gaps().len(), 0);
+        match family.selector_universe() {
+            SelectorUniverse::Cartesian { axes } => {
+                assert_eq!(axes.get("gain").map(Vec::len), Some(3));
+                assert_eq!(axes.get("integration_time_ms").map(Vec::len), Some(1));
+            }
+            other => panic!("expected cartesian universe, got {other:?}"),
+        }
+        assert_eq!(family.selector_universe().identities().len(), 3);
+    }
+
+    #[test]
+    fn validate_enumerates_family_scoped_gaps_independently_of_global_gaps() {
+        let toml = r#"
+[transfer_families.front_end]
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+formula = "x"
+selector_axes = { range = ["low", "high"], gain = [1, 8] }
+
+[[transfer_families.front_end.members]]
+selectors = { range = "low", gain = 1 }
+status = "emit"
+applicability = { observation = [1, 10] }
+
+[[transfer_families.front_end.members]]
+selectors = { range = "high", gain = 1 }
+status = "forbidden"
+reason = "exceeds the absolute maximum rating"
+applicability = { observation = [1, 10] }
+
+[[transfer_families.front_end.members]]
+selectors = { range = "high", gain = 8 }
+status = "emit"
+applicability = { observation = [1, 10] }
+
+[[transfer_families.front_end.gaps]]
+selectors = { range = "low", gain = 8 }
+status = "undefined"
+reason = "not characterized at this combination"
+
+[gaps.white_channel]
+status = "undefined"
+reason = "counts only; no conversion"
+"#;
+        let validated = DefinitionsFile::from_toml_str(toml)
+            .unwrap()
+            .validate()
+            .unwrap();
+        let family = &validated.families()[0];
+        assert_eq!(family.completeness(), FamilyCompleteness::Complete);
+        assert_eq!(family.members().len(), 3);
+        assert_eq!(family.gaps().len(), 1);
+        assert_eq!(
+            family.gaps()[0].reason(),
+            "not characterized at this combination"
+        );
+        assert_eq!(family.gaps()[0].status(), GapStatus::Undefined);
+        assert_eq!(
+            family.gaps()[0].selectors()["gain"],
+            SelectorValue::Integer(8)
+        );
+        let identities = family.selector_universe().identities();
+        assert_eq!(identities.len(), 4);
+        assert!(identities.iter().any(|identity| {
+            identity.get("range") == Some(&SelectorValue::String("low".into()))
+                && identity.get("gain") == Some(&SelectorValue::Integer(8))
+        }));
+        assert_eq!(
+            validated.gaps()["white_channel"].reason,
+            "counts only; no conversion"
+        );
+        assert_eq!(
+            family.members()[1].reason(),
+            Some("exceeds the absolute maximum rating")
+        );
     }
 
     #[test]
@@ -435,6 +579,7 @@ reason = "counts only; no conversion"
                 output_unit = "unit"
                 output_scale = 1
                 max_interpolation_error = 1
+                selector_axes = { range = ["middle"] }
                 points = [
                     { input = 1, output = 1.0 },
                     { input = 5, output = 5.0 },
@@ -483,6 +628,7 @@ reason = "counts only; no conversion"
                 output_unit = "degree_celsius"
                 output_scale = 1000
                 max_interpolation_error = 50
+                selector_axes = { probe = ["wide"] }
 
                 [transfer_families.ntc.model]
                 kind = "ntc_beta_divider"

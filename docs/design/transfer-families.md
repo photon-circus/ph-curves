@@ -15,10 +15,12 @@ remain distinguishable from omissions.
 Issue #24 is the generic schema, integrity, inspection, and sparse emission
 slice of [#23](https://github.com/photon-circus/ph-curves/issues/23). Issue
 [#39](https://github.com/photon-circus/ph-curves/issues/39) makes every
-accepted member field source-aware and effectful. The host
-inspection/extension IR is documented in
-[host-transfer-ir.md](host-transfer-ir.md). This slice does not add a
-device-specific model, a runtime family registry, or firmware API.
+accepted member field source-aware and effectful. Issue
+[#40](https://github.com/photon-circus/ph-curves/issues/40) requires a declared
+selector universe and family-scoped gaps so an omitted combination is not
+indistinguishable from an intentional hole. The host inspection/extension IR
+is documented in [host-transfer-ir.md](host-transfer-ir.md). This slice does
+not add a device-specific model, a runtime family registry, or firmware API.
 
 ## Schema
 
@@ -33,6 +35,26 @@ Each family has one shared source (`formula`, `points`, or `model`) and an
 explicit `members` array. Selectors are string or integer maps and are never
 interpolated. `interpolate_selectors` is not a field; leftover copies are
 unknown-field errors.
+
+Every family declares its expected selector universe with exactly one of:
+
+- `selector_axes` — named axes whose Cartesian product is expected (`BTreeMap`
+  axis-key order, then each axis's declared value order);
+- `expected_selectors` — an explicit list of selector maps for a non-Cartesian
+  family. Missing product cells are not invented.
+
+Every expected identity is occupied by exactly one member (any status) or one
+family-scoped gap. A missing occupancy is an error; so is a member or
+family-scoped gap outside the universe, a wrong or missing selector key, a
+selector value type that disagrees with a homogeneous axis, or the same typed
+map used as both a member and a gap. Integer `1` and string `"1"` remain
+distinct identities.
+
+Family-scoped gaps are `[[transfer_families.<name>.gaps]]` records with the
+same typed selector map, `status = "undefined"`, and a non-blank `reason`.
+Document-level `[gaps.<name>]` remain globally named `{ status, reason }`
+records. They do not occupy family selector identities and do not satisfy
+completeness.
 
 Mapped member fields are a capability matrix. A field unsupported by the
 selected source fails validation with a diagnostic that names the family,
@@ -63,11 +85,13 @@ the selector combination has no source mapping and therefore forbids both
 `input_transform` and `applicability`.
 
 Gaps require `status = "undefined"` and a non-blank `reason`. They are not
-generated as transfers.
+generated as transfers. Family-scoped gaps carry a selector identity;
+document-level gaps do not.
 
 Unknown fields on family, shared point entry, shared NTC model, member,
-applicability, input-transform, and gap tables are rejected. Standalone point
-and legacy NTC source values retain their compatibility behavior.
+applicability, input-transform, family-scoped gap, and document-level gap
+tables are rejected. Standalone point and legacy NTC source values retain
+their compatibility behavior.
 
 Evaluated-truth and prefitted overlays are observation-space generation
 inputs. They do not re-apply `input_transform` to samples. The member's
@@ -84,15 +108,24 @@ also define their own domain.
    source/member capability matrix for mapped statuses) before filtering
    non-`emit` statuses. An `unsupported` member is instead checked to ensure
    no source mapping was invented.
-3. Expand only `status = "emit"` members into ordinary `TransferDef` values.
+3. Resolve the declared selector universe (`selector_axes` xor
+   `expected_selectors`). Reject empty axes, duplicate typed axis values,
+   empty or duplicate expected maps, and heterogeneous key sets in
+   `expected_selectors`.
+4. Check every member and family-scoped gap against that universe (keys,
+   value types, and membership). Duplicate member identities, duplicate
+   family-scoped gap identities, and member/gap occupancy of the same map
+   fail here. Then require every expected identity to be occupied exactly
+   once.
+5. Expand only `status = "emit"` members into ordinary `TransferDef` values.
    Scaled-polynomial members receive the member's `input_transform` and an
    observation `domain` converted from `applicability.model_input`. Formula
    members receive `applicability.observation` as `domain`. Points members
    receive the clipped point set. NTC members receive `applicability.physical`
    as `output_range`.
-4. Reject a gap name colliding with a curve, standalone transfer, family, or
-   emitted member.
-5. Run the existing identifier / companion-symbol collision check on the
+6. Reject a document-level gap name colliding with a curve, standalone
+   transfer, family, or emitted member.
+7. Run the existing identifier / companion-symbol collision check on the
    merged transfer set.
 
 Canonical identity is the selector map itself: keys, value types, and values.

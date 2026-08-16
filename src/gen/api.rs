@@ -328,6 +328,7 @@ output_unit = "unit"
 output_scale = 1000
 max_interpolation_error = 50
 formula = "x"
+selector_axes = { gain = ["div4", "x1"], integration_time_ms = [100] }
 
 [[transfer_families.als.members]]
 selectors = { gain = "div4", integration_time_ms = 100 }
