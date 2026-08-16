@@ -29,7 +29,18 @@ A definitions document may contain `[transfer_families.<name>]` and
 Dense LUT generation remains curve-only; family members still expand to sparse
 `PiecewiseLinearTransfer` constants. Family knot default is 64 with a hard cap
 of 256 so discrete members cannot become dense ADC tables. Standalone
-transfers keep default 256 / cap 4096.
+transfers keep default 256 / cap 4096. Optional family-level `max_total_knots`
+and `max_table_bytes` bound the **sum** of emitted members. They are
+independent of per-member `max_knots`: every member may fit its own cap and
+generation still fails if the family total exceeds the aggregate. Omitted
+means no aggregate cap. Zero is rejected during validation. Diagnostics name
+the family, the field, the requested limit, and the achieved amount. Knots are
+checked before bytes, families in name order.
+
+Array payload is six bytes per knot (`u16` input + `i32` output). That is the
+`_INPUTS` plus `_OUTPUTS` static arrays only. Structural runtime overhead is
+excluded. Identical tables are not deduplicated; duplicated payload remains
+visible in the totals.
 
 Each family has one shared source (`formula`, `points`, or `model`) and an
 explicit `members` array. Selectors are string or integer maps and are never
@@ -182,6 +193,23 @@ Generated firmware remains independent `PiecewiseLinearTransfer` constants.
 There is no runtime family type. A family-level `saturation = { code, behavior }`
 table is copied onto emitted members as an observation-code guard; it is not
 folded into `above` and the guarded code is not added to the fitting domain.
+
+Host generation returns a structured report alongside the source. Each
+emitted transfer records resolved family/member identity (empty for
+standalones), the Rust symbol, observation domain and physical range,
+requested and achieved interpolation error, worst-case input, knot count,
+array-payload bytes, the fitting path actually used (overlays replace the
+declared TOML source), observation-guard metadata, citation-free generation
+policy, effective source provenance, and the independently resolved
+pre-overlay guard citation. Family records retain the family citation, guard
+citation, policy, compact selector universe/completeness, aggregate-budget
+declarations, every member (including description-only statuses), and scoped
+gaps. Member and gap records keep effective provenance separate from the
+declared override; emitted members map to their table and symbol. Named
+document-level gaps are reported independently. Transfers are ordered by table
+name, families and document gaps by name, and family members/scoped gaps by
+declaration order. Totals include every emitted transfer, exclude curve LUT
+bytes, and never count description-only members or gaps.
 
 ## Keep-outs
 

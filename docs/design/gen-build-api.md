@@ -38,9 +38,24 @@ pub fn generate_to_path(input: impl AsRef<Path>, output: impl AsRef<Path>, opts:
     -> Result<(), Error>;
 pub fn generate(defs: &DefinitionsFile, opts: &GenerateOptions)
     -> Result<String, Error>;
+pub fn generate_report(defs: &DefinitionsFile, opts: &GenerateOptions)
+    -> Result<GenerationResult, Error>;
+pub fn generate_from_str_report(toml: &str, opts: &GenerateOptions)
+    -> Result<GenerationResult, Error>;
+pub fn generate_from_toml_report(path: impl AsRef<Path>, opts: &GenerateOptions)
+    -> Result<GenerationResult, Error>;
 
 pub struct GenerateOptions { /* value_type, lut_size; ignored without [curves] */ }
 pub fn GenerateOptions::transfers_only() -> Self;
+
+pub const TABLE_BYTES_PER_KNOT: usize = 6; // u16 input + i32 output arrays only
+pub struct GenerationResult { pub source: String, pub report: GenerationReport }
+pub struct GenerationReport {
+    pub transfers: Vec<TransferReport>, // sorted by table name
+    pub families: Vec<FamilyReport>,    // sorted by family name; all members/gaps
+    pub gaps: Vec<GapReport>,           // document-level, sorted by name
+    pub totals: ResourceTotals,         // all emitted transfers; no curve LUTs
+}
 
 // Inspection / extension IR (host-only; not a plugin ABI)
 impl DefinitionsFile {
@@ -58,6 +73,7 @@ impl ValidatedDefinitions {
         overlay: TransferSourceOverlay,
     ) -> Result<(), Error>;
     pub fn generate(&self, opts: &GenerateOptions) -> Result<String, Error>;
+    pub fn generate_report(&self, opts: &GenerateOptions) -> Result<GenerationResult, Error>;
 }
 impl TransferSource {
     pub fn inherit_provenance(self) -> TransferSourceOverlay;
@@ -66,6 +82,16 @@ impl TransferSource {
 }
 pub enum Error { Io(...), Toml(...), Validation(...) }
 ```
+
+`TransferReport` keeps runtime metadata metrics together with the fitting path,
+effective source provenance, independently resolved pre-overlay guard
+provenance, and citation-free `GenerationPolicy`. `FamilyReport` preserves the
+family citation, guard citation, policy, compact `SelectorUniverse`,
+completeness result, total-budget declarations, every member, and scoped gaps.
+Member and gap report records expose their effective provenance separately
+from the declared override; only emitted members carry a table/symbol mapping.
+Resource totals and aggregate budget enforcement continue to count emitted
+members only. Member and scoped-gap vectors retain declaration order.
 
 The overlay citation disposition is mandatory. Use inheritance only when the
 new representation still comes from the already-cited source. It means the
@@ -98,6 +124,8 @@ generate_to_path("assets/curves.toml", &out, &GenerateOptions::default())?;
   [host-transfer-ir.md](host-transfer-ir.md) instead of a callback/trait plugin.
 - Keep CLI flags and generated source shape stable where practical
 - Library generate path does not print transfer-fit progress to stderr (avoids spamming `build.rs` logs); the CLI may report write status separately
+- String-returning `generate*` helpers stay; they call the report pipeline so family aggregate budgets fail closed without a CLI `--report` flag
+- Array payload in reports is `_INPUTS` + `_OUTPUTS` only (`TABLE_BYTES_PER_KNOT = 6`); structural/runtime overhead is excluded
 
 ## Non-goals
 

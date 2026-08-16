@@ -89,6 +89,13 @@ Extension:
   `TransferSource::{inherit_provenance, with_provenance, clear_provenance}`.
   Emitted family-member overlays accept intentional inheritance or
   replacement, not clearing.
+- `ValidatedDefinitions::generate` / `generate_report` emit ordinary
+  `PiecewiseLinearTransfer` constants. The report path is the source of
+  family totals and aggregate budget diagnostics; the `String` helper
+  discards the report after the same checks. Reports preserve effective
+  overlay provenance, pre-overlay guard provenance, citation-free policy,
+  every family member and scoped gap, and named document gaps. Totals remain
+  emit-only.
 - Evaluated truth is dense unscaled physical samples; the existing greedy
   fitter runs.
 - Prefitted knots skip the fitter. Inverse-code-error measurement and
@@ -117,7 +124,9 @@ both strings in the same array. Programmatic construction needs no marker.
 `GenerateOptions::transfers_only` exists so transfer-only generation does not
 need meaningful `value_type` / `lut_size`. Those fields are validated only
 when the document contains `[curves]`. Fit policy (`max_interpolation_error`,
-`max_knots`, boundaries) lives on the transfer/family spec.
+`max_knots`, boundaries) lives on the transfer/family spec. Optional family
+`max_total_knots` / `max_table_bytes` are aggregate generation budgets, not
+LUT options; `generate` and `generate_report` both enforce them.
 
 ## Keep-outs
 

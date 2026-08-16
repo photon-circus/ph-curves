@@ -444,6 +444,16 @@ original document declaration. Transfer-only generation uses
 `GenerateOptions::transfers_only()`; curve LUT `value_type` / `lut_size` are
 not required.
 
+`generate_report` exposes the same distinctions for audit tooling. Each
+emitted transfer reports its effective source citation, the separately
+resolved pre-overlay guard citation, and citation-free generation policy.
+Family reports retain the compact selector universe, completeness result,
+family citation and budgets, every member (including description-only
+statuses), and family-scoped gaps. Member and gap records keep both effective
+and declared-override provenance; emitted members additionally map to their
+table and Rust symbol. Named document-level gaps are reported independently.
+Resource totals still count emitted tables only.
+
 If a model needs conditionals, multiple independent inputs, dynamic
 calibration, temperature/load compensation, or domain-specific state, compute
 calibration points or dense truth in a dedicated host tool/crate and feed them

@@ -17,12 +17,14 @@ use crate::MonotonicDirection;
 use serde::Deserialize;
 
 use super::formula;
+use super::report::GenerationPath;
 
 pub use family::{
     ApplicabilityDef, DeclaredSource, FamilyCompleteness, FamilyGapDef, FamilyMemberDef, GapDef,
     GapStatus, InputTransform, MemberStatus, SelectorIdentities, SelectorUniverse, SelectorValue,
     TransferFamilyDef,
 };
+pub(crate) use family::{FamilyMemberOrigin, ResolvedTransfer};
 pub use provenance::{
     GenerationPolicy, ObservationGuardPolicy, SourceProvenance, SourceProvenanceField,
     SourceProvenanceOverride,
@@ -272,6 +274,7 @@ pub struct TransferData {
     pub representation: String,
     pub provenance: Option<SourceProvenance>,
     pub guard_provenance: Option<SourceProvenance>,
+    pub generation_path: GenerationPath,
 }
 
 pub fn build(name: &str, def: &TransferDef) -> Result<TransferData, String> {
@@ -310,7 +313,9 @@ pub(crate) fn build_with_source(
         ));
     }
 
-    let (domain_min, truth, representation) = if let Some(control_points) = &def.points {
+    let (domain_min, truth, representation, generation_path) = if let Some(control_points) =
+        &def.points
+    {
         if def.domain.is_some() || def.output_range.is_some() {
             return Err(format!(
                 "transfer `{name}`: points define their domain; domain and output_range are forbidden"
@@ -321,6 +326,7 @@ pub(crate) fn build_with_source(
             minimum,
             scale_truth(name, &physical, def.output_scale)?,
             format!("physical points ({} control points)", control_points.len()),
+            GenerationPath::PhysicalPoints,
         )
     } else if let Some(expression) = &def.formula {
         if def.output_range.is_some() {
@@ -349,6 +355,7 @@ pub(crate) fn build_with_source(
             minimum,
             scale_truth(name, &physical, def.output_scale)?,
             format!("formula y = {expression}"),
+            GenerationPath::Formula,
         )
     } else if let Some(model::ModelDef::ScaledPolynomial {
         coefficients,
@@ -372,6 +379,7 @@ pub(crate) fn build_with_source(
             minimum,
             scale_truth(name, &physical, def.output_scale)?,
             description,
+            GenerationPath::ScaledPolynomial,
         )
     } else {
         if def.domain.is_some() {
@@ -391,10 +399,18 @@ pub(crate) fn build_with_source(
             minimum,
             scale_truth(name, &physical, def.output_scale)?,
             description,
+            GenerationPath::NtcBetaDivider,
         )
     };
 
-    finish_from_scaled_truth(name, def, domain_min, &truth, representation)
+    finish_from_scaled_truth(
+        name,
+        def,
+        domain_min,
+        &truth,
+        representation,
+        generation_path,
+    )
 }
 
 fn build_from_overlay(
@@ -405,7 +421,14 @@ fn build_from_overlay(
     match overlay {
         TransferSource::EvaluatedTruth(truth) => {
             let (domain_min, scaled, representation) = evaluated_truth_to_scaled(name, def, truth)?;
-            finish_from_scaled_truth(name, def, domain_min, &scaled, representation)
+            finish_from_scaled_truth(
+                name,
+                def,
+                domain_min,
+                &scaled,
+                representation,
+                GenerationPath::EvaluatedTruth,
+            )
         }
         TransferSource::Points(control_points) => {
             let (minimum, physical) = points::evaluate(name, control_points)?;
@@ -416,6 +439,7 @@ fn build_from_overlay(
                 minimum,
                 &scaled,
                 format!("physical points ({} control points)", control_points.len()),
+                GenerationPath::PhysicalPoints,
             )
         }
         TransferSource::PrefittedKnots {
@@ -536,6 +560,7 @@ fn finish_from_scaled_truth(
     domain_min: u16,
     truth: &[f64],
     representation: String,
+    generation_path: GenerationPath,
 ) -> Result<TransferData, String> {
     let direction = validate_monotonic(name, truth)?;
     let result = adaptive::fit(
@@ -568,6 +593,7 @@ fn finish_from_scaled_truth(
         representation,
         provenance: def.provenance.clone(),
         guard_provenance,
+        generation_path,
     })
 }
 
@@ -661,6 +687,7 @@ fn build_prefitted(
         ),
         provenance: def.provenance.clone(),
         guard_provenance,
+        generation_path: GenerationPath::PrefittedKnots,
     })
 }
 

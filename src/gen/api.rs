@@ -159,6 +159,39 @@ pub fn generate(defs: &DefinitionsFile, opts: &GenerateOptions) -> Result<String
     codegen::generate(defs, opts.value_type.as_str(), opts.lut_size).map_err(Error::Validation)
 }
 
+/// Read a TOML definitions file and return source plus the host audit report.
+pub fn generate_from_toml_report(
+    path: impl AsRef<Path>,
+    opts: &GenerateOptions,
+) -> Result<super::GenerationResult, Error> {
+    let toml_str = fs::read_to_string(path)?;
+    generate_from_str_report(&toml_str, opts)
+}
+
+/// Parse an in-memory TOML string and return source plus the host audit report.
+pub fn generate_from_str_report(
+    toml: &str,
+    opts: &GenerateOptions,
+) -> Result<super::GenerationResult, Error> {
+    let defs = DefinitionsFile::from_toml_str(toml)?;
+    generate_report(&defs, opts)
+}
+
+/// Lower-level entry: already-parsed definitions → source plus the host audit report.
+///
+/// Family aggregate budgets fail closed here. The `String`-returning helpers
+/// call this function and discard the report, so they cannot bypass a budget.
+pub fn generate_report(
+    defs: &DefinitionsFile,
+    opts: &GenerateOptions,
+) -> Result<super::GenerationResult, Error> {
+    if !defs.curves().is_empty() {
+        validate_options(opts)?;
+    }
+    codegen::generate_with_report(defs, opts.value_type.as_str(), opts.lut_size)
+        .map_err(Error::Validation)
+}
+
 fn validate_options(opts: &GenerateOptions) -> Result<(), Error> {
     let required = opts.value_type.required_lut_size();
     if opts.lut_size != required {
