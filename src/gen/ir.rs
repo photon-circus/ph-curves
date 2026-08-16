@@ -11,8 +11,8 @@ use super::api::{Error, GenerateOptions};
 use super::curve::DefinitionsFile;
 use super::transfer::family::expanded_name;
 use super::transfer::{
-    ApplicabilityDef, GapDef, MemberStatus, SelectorValue, TransferFamilyDef, TransferSource,
-    TransferSpec,
+    ApplicabilityDef, GapDef, InputTransform, MemberStatus, SelectorValue, TransferFamilyDef,
+    TransferSource, TransferSpec, family_source_observation_domain, overlay_observation_span,
 };
 
 /// Family, member, and gap graph after identity and collision checks.
@@ -24,6 +24,7 @@ pub struct ValidatedDefinitions {
     defs: DefinitionsFile,
     families: Vec<ValidatedFamily>,
     resolved_names: BTreeSet<String>,
+    family_overlay_domains: BTreeMap<String, [u16; 2]>,
 }
 
 /// One validated family, including description-only members.
@@ -49,8 +50,9 @@ impl ValidatedFamily {
 #[derive(Clone, Debug)]
 pub struct ValidatedMember {
     selectors: BTreeMap<String, SelectorValue>,
-    scale: u32,
+    input_transform: Option<InputTransform>,
     status: MemberStatus,
+    reason: Option<String>,
     applicability: ApplicabilityDef,
     expanded_name: String,
 }
@@ -61,12 +63,13 @@ impl ValidatedMember {
         &self.selectors
     }
 
-    /// Per-member model-input scale.
+    /// Exact input transform, when the shared source applies one.
     ///
-    /// Applied to host truth for `kind = "scaled_polynomial"`
-    /// (`u = count * scale / 1e6`). Inspectable for formula and points sources.
-    pub fn scale(&self) -> u32 {
-        self.scale
+    /// Present for mapped `kind = "scaled_polynomial"` members
+    /// (`u = count * numerator / denominator`). Absent for formula, points,
+    /// NTC, and `unsupported` members.
+    pub fn input_transform(&self) -> Option<InputTransform> {
+        self.input_transform
     }
 
     /// Whether this member is generated.
@@ -74,7 +77,13 @@ impl ValidatedMember {
         self.status
     }
 
-    /// Source-backed window in the model's input units.
+    /// Non-blank rationale for a non-`emit` status.
+    pub fn reason(&self) -> Option<&str> {
+        self.reason.as_deref()
+    }
+
+    /// Source-backed window in the coordinate space the shared source uses.
+    /// All fields are absent for an `unsupported` member.
     pub fn applicability(&self) -> &ApplicabilityDef {
         &self.applicability
     }
@@ -93,24 +102,20 @@ impl DefinitionsFile {
     /// Every family member is checked before non-`emit` statuses are filtered.
     /// Description-only members remain inspectable on the returned graph.
     pub fn validate(&self) -> Result<ValidatedDefinitions, Error> {
-        if !self.curves.is_empty() && !self.transfer_families.is_empty() {
-            return Err(Error::Validation(
-                "transfer families forbid [curves] in the same document (dense LUT path is not allowed)"
-                    .into(),
-            ));
-        }
-
         let resolved = self.resolved_transfers().map_err(Error::Validation)?;
         let curves: Vec<_> = self.curves.iter().collect();
         let transfers: Vec<_> = resolved.iter().collect();
         super::codegen::emitted_const_names(&curves, &transfers).map_err(Error::Validation)?;
         let families = inspect_families(&self.transfer_families).map_err(Error::Validation)?;
+        let family_overlay_domains =
+            family_overlay_domains(&families, &resolved).map_err(Error::Validation)?;
         let resolved_names = resolved.keys().cloned().collect();
 
         Ok(ValidatedDefinitions {
             defs: self.clone(),
             families,
             resolved_names,
+            family_overlay_domains,
         })
     }
 
@@ -164,8 +169,9 @@ fn inspect_families(
         for member in &family.members {
             members.push(ValidatedMember {
                 selectors: member.selectors.clone(),
-                scale: member.scale,
+                input_transform: member.input_transform,
                 status: member.status,
+                reason: member.reason.clone(),
                 applicability: member.applicability.clone(),
                 expanded_name: expanded_name(family_name, &member.selectors)?,
             });
@@ -176,6 +182,29 @@ fn inspect_families(
         });
     }
     Ok(out)
+}
+
+fn family_overlay_domains(
+    families: &[ValidatedFamily],
+    resolved: &BTreeMap<String, super::transfer::TransferDef>,
+) -> Result<BTreeMap<String, [u16; 2]>, String> {
+    let mut domains = BTreeMap::new();
+    for family in families {
+        for member in &family.members {
+            if member.status != MemberStatus::Emit {
+                continue;
+            }
+            let def = resolved.get(&member.expanded_name).ok_or_else(|| {
+                format!(
+                    "transfer family `{}`: emitted member `{}` was not expanded",
+                    family.name, member.expanded_name
+                )
+            })?;
+            let domain = family_source_observation_domain(&member.expanded_name, def)?;
+            domains.insert(member.expanded_name.clone(), domain);
+        }
+    }
+    Ok(domains)
 }
 
 impl ValidatedDefinitions {
@@ -197,9 +226,22 @@ impl ValidatedDefinitions {
     /// Overlay a generation source on a standalone transfer or emitted member.
     ///
     /// Rejects unknown names and description-only members so source facts on
-    /// the graph stay distinct from generation input.
+    /// the graph stay distinct from generation input. Family-member overlays
+    /// must cover the resolved shared-source observation domain exactly;
+    /// standalone overlays replace their declared source and may define a
+    /// different observation domain.
     pub fn set_source(&mut self, name: &str, source: TransferSource) -> Result<(), Error> {
         if self.resolved_names.contains(name) {
+            if let Some(expected) = self.family_overlay_domains.get(name) {
+                let span = overlay_observation_span(name, &source).map_err(Error::Validation)?;
+                if span != *expected {
+                    return Err(Error::Validation(format!(
+                        "transfer `{name}`: overlay observation domain [{}, {}] must equal \
+                         resolved member observation domain [{}, {}]",
+                        span[0], span[1], expected[0], expected[1]
+                    )));
+                }
+            }
             self.defs.overlays.insert(name.to_string(), source);
             return Ok(());
         }
@@ -263,26 +305,23 @@ output_unit = "unit"
 output_scale = 1000
 max_interpolation_error = 50
 formula = "x"
-domain = [1, 10]
-interpolate_selectors = false
 
 [[transfer_families.als.members]]
 selectors = { gain = "div4", integration_time_ms = 100 }
-scale = 268800
 status = "emit"
-applicability = { model_input = [100.0, 22000.0] }
+applicability = { observation = [1, 10] }
 
 [[transfer_families.als.members]]
 selectors = { gain = "x1", integration_time_ms = 100 }
-scale = 4200
-status = "none"
-applicability = { model_input = [100.0, 22000.0] }
+status = "unnecessary"
+reason = "high-gain row is documented, not generated"
+applicability = { observation = [1, 10] }
 
 [[transfer_families.als.members]]
 selectors = { gain = "x2", integration_time_ms = 100 }
-scale = 2100
-status = "do_not_use"
-applicability = { model_input = [100.0, 22000.0] }
+status = "forbidden"
+reason = "exceeds the absolute maximum rating"
+applicability = { observation = [1, 10] }
 
 [gaps.white_channel]
 status = "undefined"
@@ -307,7 +346,8 @@ reason = "counts only; no conversion"
 
         let emit = &family.members()[0];
         assert_eq!(emit.status(), MemberStatus::Emit);
-        assert_eq!(emit.scale(), 268_800);
+        assert_eq!(emit.input_transform(), None);
+        assert_eq!(emit.applicability().observation, Some([1, 10]));
         assert_eq!(
             emit.selectors()["gain"],
             SelectorValue::String("div4".into())
@@ -317,12 +357,16 @@ reason = "counts only; no conversion"
             "als_gain_div4_integration_time_ms_100"
         );
 
-        assert_eq!(family.members()[1].status(), MemberStatus::None);
+        assert_eq!(family.members()[1].status(), MemberStatus::Unnecessary);
+        assert_eq!(
+            family.members()[1].reason(),
+            Some("high-gain row is documented, not generated")
+        );
         assert_eq!(
             family.members()[1].expanded_name(),
             "als_gain_x1_integration_time_ms_100"
         );
-        assert_eq!(family.members()[2].status(), MemberStatus::DoNotUse);
+        assert_eq!(family.members()[2].status(), MemberStatus::Forbidden);
 
         assert_eq!(
             validated.gaps()["white_channel"].reason,
@@ -364,6 +408,199 @@ reason = "counts only; no conversion"
         assert!(out.contains("TransferMetadata"));
         assert!(!out.contains("CurveLut"));
         assert!(!out.contains("pub const ALS_GAIN_X1"));
+    }
+
+    #[test]
+    fn overlay_evaluated_truth_must_match_member_observation_domain() {
+        let defs = DefinitionsFile::from_toml_str(family_toml()).unwrap();
+        let mut validated = defs.validate().unwrap();
+        let error = validated
+            .set_source(
+                "als_gain_div4_integration_time_ms_100",
+                TransferSource::evaluated_truth(2, vec![2.0, 3.0, 4.0]),
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("overlay observation domain"), "{error}");
+        assert!(error.contains("[2, 4]"), "{error}");
+        assert!(error.contains("[1, 10]"), "{error}");
+    }
+
+    #[test]
+    fn points_family_overlay_uses_resolved_clipped_control_point_domain() {
+        let defs = DefinitionsFile::from_toml_str(
+            r#"
+                [transfer_families.front_end]
+                input_unit = "count"
+                output_unit = "unit"
+                output_scale = 1
+                max_interpolation_error = 1
+                points = [
+                    { input = 1, output = 1.0 },
+                    { input = 5, output = 5.0 },
+                    { input = 8, output = 8.0 },
+                    { input = 10, output = 10.0 },
+                ]
+
+                [[transfer_families.front_end.members]]
+                selectors = { range = "middle" }
+                status = "emit"
+                applicability = { observation = [2, 9] }
+            "#,
+        )
+        .unwrap();
+        let mut validated = defs.validate().unwrap();
+        let name = "front_end_range_middle";
+        assert_eq!(validated.family_overlay_domains[name], [5, 8]);
+
+        let error = validated
+            .set_source(
+                name,
+                TransferSource::evaluated_truth(2, (2..=9).map(f64::from).collect()),
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("overlay observation domain [2, 9]"),
+            "{error}"
+        );
+        assert!(error.contains("[5, 8]"), "{error}");
+
+        validated
+            .set_source(
+                name,
+                TransferSource::evaluated_truth(5, (5..=8).map(f64::from).collect()),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn ntc_family_overlay_uses_derived_observation_domain() {
+        let defs = DefinitionsFile::from_toml_str(
+            r#"
+                [transfer_families.ntc]
+                input_unit = "adc_code"
+                output_unit = "degree_celsius"
+                output_scale = 1000
+                max_interpolation_error = 50
+
+                [transfer_families.ntc.model]
+                kind = "ntc_beta_divider"
+                nominal_resistance_ohms = 10000.0
+                beta_kelvin = 3950.0
+                nominal_temperature_celsius = 25.0
+                fixed_resistance_ohms = 10000.0
+                adc_max_code = 4095
+                topology = "ntc_to_ground"
+
+                [[transfer_families.ntc.members]]
+                selectors = { probe = "wide" }
+                status = "emit"
+                applicability = { physical = [-20.0, 80.0] }
+            "#,
+        )
+        .unwrap();
+        let mut validated = defs.validate().unwrap();
+        let name = "ntc_probe_wide";
+        let expected = validated.family_overlay_domains[name];
+        assert_eq!(expected, [462, 3740]);
+
+        let wrong_len = usize::from(expected[1] - expected[0]);
+        let error = validated
+            .set_source(
+                name,
+                TransferSource::evaluated_truth(expected[0] + 1, vec![0.0; wrong_len]),
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("overlay observation domain [463, 3740]"),
+            "{error}"
+        );
+        assert!(error.contains("[462, 3740]"), "{error}");
+
+        let matching_len = wrong_len + 1;
+        validated
+            .set_source(
+                name,
+                TransferSource::evaluated_truth(expected[0], vec![0.0; matching_len]),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn standalone_toml_overlay_may_replace_the_declared_domain() {
+        let defs = DefinitionsFile::from_toml_str(
+            r#"
+                [transfers.standalone]
+                input_unit = "code"
+                output_unit = "unit"
+                output_scale = 1
+                max_interpolation_error = 1
+                formula = "x"
+                domain = [1, 10]
+            "#,
+        )
+        .unwrap();
+        let mut validated = defs.validate().unwrap();
+        validated
+            .set_source(
+                "standalone",
+                TransferSource::evaluated_truth(20, vec![20.0, 21.0, 22.0]),
+            )
+            .unwrap();
+
+        let out = validated
+            .generate(&GenerateOptions::transfers_only())
+            .unwrap();
+        assert!(out.contains("domain_min: 20"), "{out}");
+        assert!(out.contains("domain_max: 22"), "{out}");
+        assert!(out.contains("evaluated physical truth"), "{out}");
+    }
+
+    #[test]
+    fn programmatic_transfer_overlay_may_replace_its_source_domain() {
+        let mut defs = DefinitionsFile::default();
+        defs.insert_transfer(TransferSpec::new(
+            "programmatic",
+            "code",
+            "unit",
+            1,
+            1,
+            TransferSource::evaluated_truth(1, vec![1.0, 2.0]),
+        ))
+        .unwrap();
+        let mut validated = defs.validate().unwrap();
+        validated
+            .set_source(
+                "programmatic",
+                TransferSource::evaluated_truth(30, vec![30.0, 31.0, 32.0]),
+            )
+            .unwrap();
+
+        let out = validated
+            .generate(&GenerateOptions::transfers_only())
+            .unwrap();
+        assert!(out.contains("domain_min: 30"), "{out}");
+        assert!(out.contains("domain_max: 32"), "{out}");
+    }
+
+    #[test]
+    fn prefitted_knots_on_a_family_member_must_match_observation_domain() {
+        let defs = DefinitionsFile::from_toml_str(family_toml()).unwrap();
+        let mut validated = defs.validate().unwrap();
+        let truth = crate::r#gen::EvaluatedTruth::new(1, (1..=10).map(f64::from).collect());
+        validated
+            .set_source(
+                "als_gain_div4_integration_time_ms_100",
+                TransferSource::prefitted_knots_verified(vec![1, 10], vec![1000, 10_000], truth),
+            )
+            .unwrap();
+        let out = validated
+            .generate(&GenerateOptions::transfers_only())
+            .unwrap();
+        assert!(out.contains("verified against evaluated truth"));
+        assert!(out.contains("ALS_GAIN_DIV4_INTEGRATION_TIME_MS_100"));
     }
 
     #[test]

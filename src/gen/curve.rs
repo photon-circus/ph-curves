@@ -33,9 +33,10 @@ use super::{builtin, formula, points, transfer};
 ///
 /// Unknown top-level keys are rejected so a misspelled table cannot succeed
 /// as empty output. Unknown fields directly on standalone transfer definitions
-/// and nested fields on families, members, applicability, and gaps are also
-/// rejected. Nested unknown fields on standalone curves and other legacy NTC
-/// model parameters are still ignored for compatibility; reserved
+/// and nested fields on families, their point and NTC sources, members,
+/// applicability, and gaps are also rejected. Nested unknown fields on
+/// standalone curves, point values, and legacy NTC model parameters are still
+/// ignored for compatibility; reserved
 /// observation-guard spellings cannot be nested inside source values.
 #[derive(Debug, Default, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -117,6 +118,60 @@ fn reject_nested_observation_guard(
     Ok(())
 }
 
+fn reject_unknown_family_source_fields(
+    family_name: &str,
+    value: &toml::Value,
+) -> Result<(), String> {
+    let toml::Value::Table(fields) = value else {
+        return Ok(());
+    };
+
+    if let Some(toml::Value::Array(points)) = fields.get("points") {
+        for (index, point) in points.iter().enumerate() {
+            let toml::Value::Table(point_fields) = point else {
+                // Leave type diagnostics to `PhysicalPoint`'s deserializer.
+                continue;
+            };
+            for field in point_fields.keys() {
+                if field != "input" && field != "output" {
+                    return Err(format!(
+                        "transfer family `{family_name}`: unknown field `{field}` at \
+                         `points[{index}].{field}`; family point fields are `input` and `output`"
+                    ));
+                }
+            }
+        }
+    }
+
+    if let Some(toml::Value::Table(model)) = fields.get("model") {
+        let is_ntc_beta_divider = matches!(
+            model.get("kind"),
+            Some(toml::Value::String(kind)) if kind == "ntc_beta_divider"
+        );
+        if is_ntc_beta_divider {
+            const NTC_BETA_DIVIDER_FIELDS: [&str; 7] = [
+                "kind",
+                "nominal_resistance_ohms",
+                "beta_kelvin",
+                "nominal_temperature_celsius",
+                "fixed_resistance_ohms",
+                "adc_max_code",
+                "topology",
+            ];
+            for field in model.keys() {
+                if !NTC_BETA_DIVIDER_FIELDS.contains(&field.as_str()) {
+                    return Err(format!(
+                        "transfer family `{family_name}`: unknown field `{field}` at \
+                         `model.{field}` for `ntc_beta_divider`"
+                    ));
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn deserialize_transfer_families<'de, D>(
     deserializer: D,
 ) -> Result<BTreeMap<String, transfer::TransferFamilyDef>, D::Error>
@@ -132,6 +187,7 @@ where
             &value,
         )
         .map_err(de::Error::custom)?;
+        reject_unknown_family_source_fields(&name, &value).map_err(de::Error::custom)?;
         let definition: transfer::TransferFamilyDef = value
             .try_into()
             .map_err(|error| de::Error::custom(format!("transfer family `{name}`: {error}")))?;
@@ -765,9 +821,8 @@ points = [
 
 [[transfer_families.guarded.members]]
 selectors = { variant = "one" }
-scale = 1
 status = "emit"
-applicability = { model_input = [1.0, 10.0] }
+applicability = { observation = [1, 10] }
 "#;
         let error = DefinitionsFile::from_toml_str(toml)
             .unwrap_err()
@@ -802,9 +857,8 @@ saturation = { code = 65535, behavior = "error" }
 
 [[transfer_families.ntc.members]]
 selectors = { variant = "one" }
-scale = 1
 status = "emit"
-applicability = { model_input = [-40.0, 125.0] }
+applicability = { physical = [-40.0, 125.0] }
 "#;
         let error = DefinitionsFile::from_toml_str(toml)
             .unwrap_err()
@@ -815,6 +869,106 @@ applicability = { model_input = [-40.0, 125.0] }
                 && error.contains("directly under `[transfer_families.ntc]`"),
             "expected the misplaced family guard to fail, got: {error}"
         );
+    }
+
+    #[test]
+    fn family_point_unknown_fields_fail_closed_with_source_path() {
+        let toml = r#"
+[transfer_families.als]
+input_unit = "count"
+output_unit = "lux"
+output_scale = 1000
+max_interpolation_error = 1
+points = [
+  { input = 1, output = 0.1, scale = 42 },
+  { input = 10, output = 1.0 },
+]
+
+[[transfer_families.als.members]]
+selectors = { gain = "div4" }
+status = "emit"
+applicability = { observation = [1, 10] }
+"#;
+        let error = DefinitionsFile::from_toml_str(toml)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("transfer family `als`")
+                && error.contains("unknown field `scale`")
+                && error.contains("`points[0].scale`"),
+            "expected the family point path to be named, got: {error}"
+        );
+    }
+
+    #[test]
+    fn family_ntc_unknown_fields_fail_closed_with_source_path() {
+        let toml = r#"
+[transfer_families.ntc]
+input_unit = "adc_code"
+output_unit = "degree_celsius"
+output_scale = 1000
+max_interpolation_error = 50
+
+[transfer_families.ntc.model]
+kind = "ntc_beta_divider"
+nominal_resistance_ohms = 10000.0
+beta_kelvin = 3950.0
+nominal_temperature_celsius = 25.0
+fixed_resistance_ohms = 10000.0
+adc_max_code = 4095
+topology = "ntc_to_ground"
+scale = 42
+
+[[transfer_families.ntc.members]]
+selectors = { variant = "one" }
+status = "emit"
+applicability = { physical = [-40.0, 125.0] }
+"#;
+        let error = DefinitionsFile::from_toml_str(toml)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("transfer family `ntc`")
+                && error.contains("unknown field `scale`")
+                && error.contains("`model.scale`")
+                && error.contains("`ntc_beta_divider`"),
+            "expected the family NTC model path to be named, got: {error}"
+        );
+    }
+
+    #[test]
+    fn standalone_legacy_source_unknown_fields_remain_permissive() {
+        let toml = r#"
+[transfers.points]
+input_unit = "count"
+output_unit = "lux"
+output_scale = 1000
+max_interpolation_error = 1
+points = [
+  { input = 1, output = 0.1, scale = 42 },
+  { input = 10, output = 1.0 },
+]
+
+[transfers.ntc]
+input_unit = "adc_code"
+output_unit = "degree_celsius"
+output_scale = 1000
+max_interpolation_error = 50
+output_range = [-40.0, 125.0]
+
+[transfers.ntc.model]
+kind = "ntc_beta_divider"
+nominal_resistance_ohms = 10000.0
+beta_kelvin = 3950.0
+nominal_temperature_celsius = 25.0
+fixed_resistance_ohms = 10000.0
+adc_max_code = 4095
+topology = "ntc_to_ground"
+scale = 42
+"#;
+        let defs = DefinitionsFile::from_toml_str(toml).unwrap();
+        assert!(defs.transfers().contains_key("points"));
+        assert!(defs.transfers().contains_key("ntc"));
     }
 
     #[test]
@@ -832,9 +986,8 @@ points = [
 
 [[transfer_families.valid.members]]
 selectors = { saturation = "enabled", observation_guard = 1 }
-scale = 1
 status = "emit"
-applicability = { model_input = [1.0, 10.0] }
+applicability = { observation = [1, 10] }
 "#;
         let defs = DefinitionsFile::from_toml_str(toml).unwrap();
         let selectors = &defs.transfer_families()["valid"].members[0].selectors;

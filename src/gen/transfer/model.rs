@@ -24,14 +24,15 @@ pub enum ModelDef {
         adc_max_code: u16,
         topology: DividerTopology,
     },
-    /// `y = c0 + c1*u + c2*u^2 + ...` with `u = count * scale / 1e6`.
+    /// `y = c0 + c1*u + c2*u^2 + ...` with `u = count * scale / denominator`.
     ///
-    /// Standalone TOML supplies `scale`. Family TOML omits it (defaults to
-    /// `None`); expansion fills it from the member so shared coefficients stay
-    /// distinct from per-member scale.
+    /// Standalone TOML supplies `scale` and uses denominator `1e6`. Family
+    /// TOML omits `scale` (defaults to `None`); expansion fills numerator and
+    /// denominator from the member `input_transform`.
     ScaledPolynomial {
         coefficients: Vec<f64>,
         scale: Option<u32>,
+        denominator: u32,
     },
 }
 
@@ -83,6 +84,7 @@ impl<'de> Deserialize<'de> for ModelDef {
             }) => Self::ScaledPolynomial {
                 coefficients,
                 scale,
+                denominator: MODEL_INPUT_SCALE_DENOMINATOR as u32,
             },
         })
     }
@@ -97,23 +99,30 @@ pub enum DividerTopology {
 
 /// Model input `u` from an observation code using exact integer-product scale.
 ///
-/// Computes `(count as u64 * scale as u64) as f64 / 1e6`. The product is
-/// less than `2^48`, so it is exact in `f64` before the divide. Pre-rounding
-/// `scale / 1e6` then multiplying by `count` is the off-by-one this exists
-/// to prevent.
-pub(crate) fn scaled_input(count: u16, scale: u32) -> f64 {
-    let product = u64::from(count) * u64::from(scale);
-    (product as f64) / MODEL_INPUT_SCALE_DENOMINATOR as f64
+/// Computes `(count as u64 * numerator as u64) as f64 / denominator`. The
+/// product is less than `2^48`, so it is exact in `f64` before the divide.
+/// Pre-rounding `numerator / denominator` then multiplying by `count` is the
+/// off-by-one this exists to prevent.
+pub(crate) fn scaled_input(count: u16, numerator: u32, denominator: u32) -> f64 {
+    let product = u64::from(count) * u64::from(numerator);
+    (product as f64) / f64::from(denominator)
 }
 
-/// Inclusive observation-domain window covering `model_input` at `scale`.
+/// Inclusive observation-domain window covering `model_input` at `numerator / denominator`.
 ///
 /// Uses the same `u(count)` as evaluation: smallest code with `u >= min`,
 /// largest with `u <= max`. `u16::MAX` is included when it falls inside the
 /// window. Fewer than two codes is an error.
-pub(crate) fn observation_domain(scale: u32, model_input: [f64; 2]) -> Result<[u16; 2], String> {
-    if scale == 0 {
-        return Err("scale must be positive".into());
+pub(crate) fn observation_domain(
+    numerator: u32,
+    denominator: u32,
+    model_input: [f64; 2],
+) -> Result<[u16; 2], String> {
+    if numerator == 0 {
+        return Err("input_transform.numerator must be positive".into());
+    }
+    if denominator == 0 {
+        return Err("input_transform.denominator must be nonzero".into());
     }
     let [min, max] = model_input;
     if !min.is_finite() || !max.is_finite() || min >= max {
@@ -125,7 +134,7 @@ pub(crate) fn observation_domain(scale: u32, model_input: [f64; 2]) -> Result<[u
     let mut first = None;
     let mut last = None;
     for code in 0..=u16::MAX {
-        let u = scaled_input(code, scale);
+        let u = scaled_input(code, numerator, denominator);
         if u >= min && u <= max {
             if first.is_none() {
                 first = Some(code);
@@ -245,12 +254,18 @@ pub fn evaluate_scaled_polynomial(
     name: &str,
     coefficients: &[f64],
     scale: u32,
+    denominator: u32,
     domain: [u16; 2],
 ) -> Result<(u16, Vec<f64>, String), String> {
     validate_coefficients(coefficients).map_err(|error| format!("transfer `{name}`: {error}"))?;
     if scale == 0 {
         return Err(format!(
             "transfer `{name}`: scaled_polynomial scale must be positive"
+        ));
+    }
+    if denominator == 0 {
+        return Err(format!(
+            "transfer `{name}`: scaled_polynomial denominator must be nonzero"
         ));
     }
     let [minimum, maximum] = domain;
@@ -262,7 +277,7 @@ pub fn evaluate_scaled_polynomial(
 
     let mut values = Vec::with_capacity(usize::from(maximum - minimum) + 1);
     for code in minimum..=maximum {
-        let u = scaled_input(code, scale);
+        let u = scaled_input(code, scale, denominator);
         let y = horner(coefficients, u);
         if !y.is_finite() {
             return Err(format!(
@@ -276,7 +291,7 @@ pub fn evaluate_scaled_polynomial(
         minimum,
         values,
         format!(
-            "scaled polynomial ({} coefficients, scale={scale})",
+            "scaled polynomial ({} coefficients, scale={scale}/{denominator})",
             coefficients.len()
         ),
     ))
@@ -365,27 +380,49 @@ scale_micro_lux_per_count = 33600
 
     #[test]
     fn scaled_input_keeps_the_integer_product_exact() {
-        assert_eq!(scaled_input(1875, 33_600), 63.0);
-        assert!(scaled_input(1874, 33_600) < 63.0);
-        assert_eq!(scaled_input(5581, 268_800), 1500.1728);
+        assert_eq!(scaled_input(1875, 33_600, 1_000_000), 63.0);
+        assert!(scaled_input(1874, 33_600, 1_000_000) < 63.0);
+        assert_eq!(scaled_input(5581, 268_800, 1_000_000), 1500.1728);
     }
 
     #[test]
     fn inclusive_lower_bound_includes_the_exact_endpoint_code() {
-        let [lo, _] = observation_domain(33_600, [63.0, 100.0]).unwrap();
+        let [lo, _] = observation_domain(33_600, 1_000_000, [63.0, 100.0]).unwrap();
         assert_eq!(lo, 1875);
     }
 
     #[test]
+    fn inclusive_upper_bound_includes_the_exact_endpoint_code() {
+        let [_, hi] = observation_domain(33_600, 1_000_000, [63.0, 100.0]).unwrap();
+        assert!(scaled_input(hi, 33_600, 1_000_000) <= 100.0);
+        assert!(scaled_input(hi.saturating_add(1), 33_600, 1_000_000) > 100.0);
+    }
+
+    #[test]
+    fn explicit_denominator_keeps_exact_rational_endpoints() {
+        let [lo, hi] = observation_domain(2, 1, [4.0, 10.0]).unwrap();
+        assert_eq!(lo, 2);
+        assert_eq!(hi, 5);
+        assert_eq!(scaled_input(lo, 2, 1), 4.0);
+        assert_eq!(scaled_input(hi, 2, 1), 10.0);
+    }
+
+    #[test]
     fn observation_domain_may_include_u16_max() {
-        let [_, hi] = observation_domain(1_000, [0.0, 100.0]).unwrap();
+        let [_, hi] = observation_domain(1_000, 1_000_000, [0.0, 100.0]).unwrap();
         assert_eq!(hi, u16::MAX);
     }
 
     #[test]
     fn empty_observation_window_fails_closed() {
-        let error = observation_domain(33_600, [0.0, 0.01]).unwrap_err();
+        let error = observation_domain(33_600, 1_000_000, [0.0, 0.01]).unwrap_err();
         assert!(error.contains("fewer than two"), "{error}");
+    }
+
+    #[test]
+    fn zero_denominator_fails_closed() {
+        let error = observation_domain(33_600, 0, [63.0, 100.0]).unwrap_err();
+        assert!(error.contains("denominator must be nonzero"), "{error}");
     }
 
     #[test]

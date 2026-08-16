@@ -321,8 +321,11 @@ points do not need to start at zero or end at full scale.
 
 Discrete selector combinations that share one source belong in a transfer
 family. Selectors are never interpolated. Only `status = "emit"` members are
-generated; `none` and `do_not_use` members stay on the description.
-`[gaps]` records channels the sources leave undefined:
+generated. `unnecessary` and `forbidden` members stay on the description,
+require a non-blank `reason`, and retain a validated source mapping.
+`unsupported` members also require a reason but set no applicability coordinate
+or `input_transform` because no source mapping exists. `[gaps]` records
+channels the sources leave undefined:
 
 ```toml
 [transfer_families.als]
@@ -331,29 +334,41 @@ output_unit = "unit"
 output_scale = 1000
 max_interpolation_error = 50
 formula = "x"
-domain = [1, 10]
-interpolate_selectors = false
 
 [[transfer_families.als.members]]
 selectors = { gain = "div4", integration_time_ms = 100 }
-scale = 268800
 status = "emit"
-applicability = { model_input = [100.0, 22000.0] }
+applicability = { observation = [1, 10] }
 
 [gaps.white_channel]
 status = "undefined"
 reason = "counts only; no conversion"
 ```
 
-Families cannot share a document with `[curves]` (the dense LUT path).
-Per-member `scale` is required. For `kind = "scaled_polynomial"` the generator
-applies it as `u = count * scale / 1e6` with an exact integer product, and
-converts inclusive `applicability.model_input` to observation codes:
+Families may share a document with unrelated `[curves]`. Dense LUT generation
+stays curve-only; family members remain sparse integer transfers. Family knot
+default is 64 with a hard cap of 256. Every accepted member field is
+source-aware: formula and points members declare `applicability.observation`,
+NTC members declare `applicability.physical`, and `kind = "scaled_polynomial"`
+requires an exact `input_transform` plus `applicability.model_input`. The
+matrix applies to mapped (`emit`, `unnecessary`, and `forbidden`) members;
+`unsupported` members carry selector identity and a reason only. Unknown
+fields in family point entries and NTC model tables fail closed, while the
+legacy standalone source formats retain their compatibility behavior. The
+generator applies that transform as `u = count * numerator / denominator` with
+an exact integer product, and converts inclusive model-input bounds to
+observation codes:
 
 ```toml
 [transfer_families.als.model]
 kind = "scaled_polynomial"
 coefficients = [0.0, 1.0023, 8.1488e-5, -9.3924e-9, 6.0135e-13]
+
+[[transfer_families.als.members]]
+selectors = { gain = "div4", integration_time_ms = 100 }
+status = "emit"
+input_transform = { numerator = 268800, denominator = 1000000 }
+applicability = { model_input = [100.0, 22000.0] }
 ```
 
 Standalone polynomial definitions supply their own `scale` and `domain`. The
@@ -367,9 +382,11 @@ Inspect parsed families and gaps through
 returns a `ValidatedDefinitions` graph that includes description-only members
 and gap reasons. A host tool that owns device evaluation can overlay
 `TransferSource::evaluated_truth` or prefitted knots on an emitted member and
-still receive ordinary generated tables. Transfer-only generation uses
-`GenerateOptions::transfers_only()`; curve LUT `value_type` / `lut_size` are
-not required.
+still receive ordinary generated tables. A family-member overlay must span
+the member's resolved observation domain; a standalone overlay replaces its
+declared source and may define a different domain. Transfer-only generation
+uses `GenerateOptions::transfers_only()`; curve LUT `value_type` / `lut_size`
+are not required.
 
 If a model needs conditionals, multiple independent inputs, dynamic
 calibration, temperature/load compensation, or domain-specific state, compute

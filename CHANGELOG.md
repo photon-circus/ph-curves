@@ -18,14 +18,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Host-only `[transfer_families]` and `[gaps]` tables. A family shares one
   formula, points, or model source across explicit selector members; only
   `status = "emit"` members become independent `PiecewiseLinearTransfer`
-  constants. Gaps record `status = "undefined"` with a non-blank reason and
-  are not generated. `DefinitionsFile::transfer_families` and `gaps` are
-  read-only inspection views. Selectors are never interpolated, unknown
-  nested family/member/applicability/gap fields are rejected, and every
-  member is validated before non-emitted statuses are filtered.
+  constants. Non-`emit` statuses are `unnecessary`, `unsupported`, and
+  `forbidden`, each requiring a non-blank `reason`. `unnecessary` and
+  `forbidden` members retain a validated source mapping; `unsupported`
+  members have no mapping and therefore set no applicability coordinate or
+  input transform. Gaps record
+  `status = "undefined"` with a non-blank reason and are not generated.
+  `DefinitionsFile::transfer_families` and `gaps` are read-only inspection
+  views. Selectors are never interpolated, unknown nested family source,
+  member, applicability, and gap fields are rejected, and every member is
+  validated before non-emitted statuses are filtered. Mapped member fields
+  follow a source capability matrix: formula and points use
+  `applicability.observation`, NTC uses `applicability.physical`, and
+  `scaled_polynomial` requires
+  `input_transform = { numerator, denominator }` plus
+  `applicability.model_input`. Families may share a document with unrelated
+  `[curves]`; dense LUT generation stays curve-only.
 - Host-only transfer inspection and extension IR. `DefinitionsFile::validate`
   returns a `ValidatedDefinitions` graph of families, every member (including
-  `none` / `do_not_use`), and gap reasons without generating Rust.
+  `unnecessary` / `unsupported` / `forbidden`), and gap reasons without
+  generating Rust.
   `TransferSpec` / `TransferSource` construct or overlay evaluated physical
   truth and prefitted knots so a device crate can own source interpretation
   while reusing ph-curves fitting, metadata, and `PiecewiseLinearTransfer`
@@ -35,8 +47,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Host-only `kind = "scaled_polynomial"` models. Coefficients are
   `[c0, c1, ...]` for `y = c0 + c1*u + c2*u^2 + ...` with Horner evaluation.
   Model input is the exact rational `u = count * scale / 1e6` (integer product
-  first). Family members keep shared coefficients and required per-member
-  scale; standalone definitions carry their own scale and observation domain.
+  first) for standalone definitions. Family members keep shared coefficients
+  and required per-member `input_transform = { numerator, denominator }`;
+  standalone definitions carry their own scale and observation domain.
   Inclusive applicability bounds convert to codes without the floating-point
   off-by-one from pre-rounding `scale / 1e6`. `u16::MAX` is legal unless the
   caller excludes it. Empty or non-finite coefficients, zero scale, invalid
@@ -63,6 +76,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Unreleased host schema:** transfer-family member fields are source-aware.
+  Accepted-but-inert `scale` / `applicability.model_input` on formula, points,
+  and NTC members are rejected. `interpolate_selectors` is removed (discreteness
+  is an invariant). Member statuses are `emit`, `unnecessary`, `unsupported`,
+  and `forbidden`; non-`emit` statuses require a non-blank `reason`.
+  `unsupported` represents a selector combination without a source mapping,
+  while the other three statuses require the source-specific mapping. Families
+  may share a document with unrelated `[curves]`; dense LUT fallback remains
+  curve-only. This is the publish shape of `[transfer_families]`, which has not
+  shipped in 0.2.1. Standalone transfer TOML is unchanged. A whole-document
+  `schema_version` field remains a separate decision.
+
 - **Breaking (pre-1.0):** `TransferError` gained `RejectedObservation { input }`
   so a deliberately rejected observation code is not an `AboveDomain`.
   Exhaustive downstream matches need a new arm. `PiecewiseLinearTransfer`
@@ -87,11 +112,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   GitHub and crates.io, so the two should not disagree about what the crate
   does.
 - `[transfer_families]` and `[gaps]` are now known top-level definition
-  tables. Nested unknown fields on those types, and on family members and
-  applicability, are rejected. Standalone curve definitions still ignore
-  nested unknown fields.
+  tables. Nested unknown fields on those types, on family point and NTC model
+  sources, and on family members and applicability are rejected. Standalone
+  curve definitions and legacy standalone point/NTC source values retain
+  their permissive compatibility behavior.
 
 ### Fixed
+
+- Family source fields now fail closed: unknown keys in family point entries
+  or NTC model tables are rejected with the family and source path instead of
+  being accepted and discarded.
+- Overlay domain constraints now apply only to emitted family members.
+  Standalone TOML and programmatic transfer overlays may replace the original
+  source with a different observation domain.
+- Generated Rust files end with exactly one newline, so regenerated fixtures
+  no longer introduce a blank line at end of file.
 
 - Documentation CI now runs rustdoc with `--features gen-lib`, matching the
   docs.rs feature set. The previous default-features-only invocation never

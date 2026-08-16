@@ -18,8 +18,8 @@ use serde::Deserialize;
 use super::formula;
 
 pub use family::{
-    ApplicabilityDef, DeclaredSource, FamilyMemberDef, GapDef, GapStatus, MemberStatus,
-    SelectorValue, TransferFamilyDef,
+    ApplicabilityDef, DeclaredSource, FamilyMemberDef, GapDef, GapStatus, InputTransform,
+    MemberStatus, SelectorValue, TransferFamilyDef,
 };
 pub use source::{EvaluatedTruth, TransferSource, TransferSpec};
 
@@ -280,6 +280,7 @@ pub(crate) fn build_with_source(
     } else if let Some(model::ModelDef::ScaledPolynomial {
         coefficients,
         scale,
+        denominator,
     }) = &def.model
     {
         if def.output_range.is_some() {
@@ -293,7 +294,7 @@ pub(crate) fn build_with_source(
             format!("transfer `{name}`: scaled_polynomial requires domain = [min, max]")
         })?;
         let (minimum, physical, description) =
-            model::evaluate_scaled_polynomial(name, coefficients, scale, domain)?;
+            model::evaluate_scaled_polynomial(name, coefficients, scale, *denominator, domain)?;
         (
             minimum,
             scale_truth(name, &physical, def.output_scale)?,
@@ -350,6 +351,85 @@ fn build_from_overlay(
             truth,
         } => build_prefitted(name, def, inputs, outputs, truth),
     }
+}
+
+pub(crate) fn overlay_observation_span(
+    name: &str,
+    overlay: &TransferSource,
+) -> Result<[u16; 2], String> {
+    match overlay {
+        TransferSource::EvaluatedTruth(truth) | TransferSource::PrefittedKnots { truth, .. } => {
+            evaluated_truth_span(name, truth)
+        }
+        TransferSource::Points(control_points) => {
+            if control_points.len() < 2 {
+                return Err(format!(
+                    "transfer `{name}`: overlay points must contain at least two entries"
+                ));
+            }
+            Ok([
+                control_points[0].input,
+                control_points.last().expect("length checked").input,
+            ])
+        }
+    }
+}
+
+fn evaluated_truth_span(name: &str, truth: &EvaluatedTruth) -> Result<[u16; 2], String> {
+    let physical = truth.physical();
+    if physical.len() < 2 {
+        return Err(format!(
+            "transfer `{name}`: evaluated truth must contain at least two samples"
+        ));
+    }
+    let last_offset = physical.len() - 1;
+    let domain_max = truth
+        .domain_min()
+        .checked_add(
+            u16::try_from(last_offset)
+                .map_err(|_| format!("transfer `{name}`: evaluated truth domain exceeds u16"))?,
+        )
+        .ok_or_else(|| format!("transfer `{name}`: evaluated truth domain exceeds u16"))?;
+    Ok([truth.domain_min(), domain_max])
+}
+
+/// Resolve the observation domain of an expanded family member's shared source.
+///
+/// The caller is responsible for establishing that `def` originated from a
+/// family. Standalone definitions may intentionally be replaced by overlays
+/// with a different domain.
+pub(crate) fn family_source_observation_domain(
+    name: &str,
+    def: &TransferDef,
+) -> Result<[u16; 2], String> {
+    if let Some(domain) = def.domain {
+        return Ok(domain);
+    }
+    if let Some(points) = &def.points {
+        if points.len() < 2 {
+            return Err(format!(
+                "transfer `{name}`: points must contain at least two entries"
+            ));
+        }
+        return Ok([
+            points[0].input,
+            points.last().expect("length checked").input,
+        ]);
+    }
+    if let (Some(model), Some(output_range)) = (&def.model, def.output_range) {
+        let (minimum, physical, _) = model::evaluate(name, model, output_range)?;
+        let last_offset = physical.len() - 1;
+        let domain_max = minimum
+            .checked_add(
+                u16::try_from(last_offset)
+                    .map_err(|_| format!("transfer `{name}`: derived model domain exceeds u16"))?,
+            )
+            .ok_or_else(|| format!("transfer `{name}`: derived model domain exceeds u16"))?;
+        return Ok([minimum, domain_max]);
+    }
+    Err(format!(
+        "transfer `{name}`: expanded family member has no resolvable observation domain"
+    ))
 }
 
 fn evaluated_truth_to_scaled(
@@ -807,6 +887,7 @@ mod tests {
             model: Some(ModelDef::ScaledPolynomial {
                 coefficients,
                 scale: Some(scale),
+                denominator: model::MODEL_INPUT_SCALE_DENOMINATOR as u32,
             }),
             domain: Some(domain),
             ..base_def()
@@ -815,9 +896,14 @@ mod tests {
 
     #[test]
     fn scaled_polynomial_exact_half_quantum_tie_quantizes_away_from_zero() {
-        let (minimum, physical, _) =
-            model::evaluate_scaled_polynomial("tie", &[0.0, 0.5], 33_600, [1875, 1876]).unwrap();
-        assert_eq!(minimum, 1875);
+        let (_minimum, physical, _) = model::evaluate_scaled_polynomial(
+            "tie",
+            &[0.0, 0.5],
+            33_600,
+            model::MODEL_INPUT_SCALE_DENOMINATOR as u32,
+            [1875, 1876],
+        )
+        .unwrap();
         assert_eq!(physical[0], 31.5);
         assert_eq!(physical[0].round() as i32, 32);
 
