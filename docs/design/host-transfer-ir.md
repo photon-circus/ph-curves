@@ -3,6 +3,10 @@
 **Status:** Host generator API in `gen-lib` — design rationale only; the
 code and its rustdoc are authoritative.
 
+`FamilySpec` construction, `TransferSource` overlays, and TOML generation are
+proven equivalent by the device-neutral ADC fixture in
+`assets/family-acceptance.toml` and `tests/family_acceptance_gen.rs`.
+
 ## Motivation
 
 A device crate should own source interpretation. ph-curves should own generic

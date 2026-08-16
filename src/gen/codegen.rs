@@ -963,6 +963,25 @@ mod tests {
     }
 
     #[test]
+    fn family_acceptance_examples_match_golden_output() {
+        let definition: DefinitionsFile =
+            toml::from_str(include_str!("../../assets/family-acceptance.toml")).unwrap();
+        let output = generate(&definition, "u8", 256).unwrap();
+        let expected = include_str!("../../tests/fixtures/family_acceptance_generated.rs")
+            .replace("\r\n", "\n");
+        assert_eq!(output, expected);
+        assert!(output.ends_with('\n'));
+        assert!(!output.ends_with("\n\n"));
+        assert!(output.contains("CurveLut"));
+        assert!(output.contains("pub const LINEAR"));
+        assert!(output.contains("PiecewiseLinearTransfer"));
+        assert!(output.contains("pub const FRONT_END_LOW_DC"));
+        assert!(output.contains("pub const GUARDED_IDENTITY"));
+        assert!(!output.contains("f32"));
+        assert!(!output.contains("f64"));
+    }
+
+    #[test]
     fn unguarded_transfers_also_reserve_observation_guard_companion_names() {
         let mut transfers = BTreeMap::new();
         for name in ["ntc", "ntc_observation_guard"] {

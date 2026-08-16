@@ -79,6 +79,7 @@ $targets = @(
 
 foreach ($target in $targets) {
     Invoke-Cargo build --target $target
+    Invoke-Cargo build --example no_std_generated_fixtures --target $target
 }
 
 # Builds the sysroot from `core` alone: if anything on the default-feature path
@@ -92,6 +93,7 @@ $coreOnlyTargets = @(
 
 foreach ($target in $coreOnlyTargets) {
     Invoke-Cargo +nightly build --target $target -Z build-std=core
+    Invoke-Cargo +nightly build --example no_std_generated_fixtures --target $target -Z build-std=core
 }
 
 $xtensaTargets = @(
@@ -102,6 +104,7 @@ $xtensaTargets = @(
 
 foreach ($target in $xtensaTargets) {
     Invoke-Cargo +esp build --target $target -Zbuild-std=core
+    Invoke-Cargo +esp build --example no_std_generated_fixtures --target $target -Zbuild-std=core
 }
 
 # Dependency policy: advisories, licences, bans, sources.

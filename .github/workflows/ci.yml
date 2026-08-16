@@ -91,6 +91,8 @@ jobs:
       # so a bare `cargo` here resolves to stable and rejects `-Z`.
       - name: Build against core only
         run: cargo +nightly build --target ${{ matrix.target }} -Z build-std=core
+      - name: Generated fixtures compile against core only
+        run: cargo +nightly build --example no_std_generated_fixtures --target ${{ matrix.target }} -Z build-std=core
 
   clippy:
     name: Clippy
@@ -156,6 +158,7 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: cargo build --target ${{ matrix.target }}
+      - run: cargo build --example no_std_generated_fixtures --target ${{ matrix.target }}
 
   build-esp-xtensa:
     name: Build (ESP32 Xtensa)
@@ -180,6 +183,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: cargo +esp build --target ${{ matrix.target }} -Zbuild-std=core
+      - run: cargo +esp build --example no_std_generated_fixtures --target ${{ matrix.target }} -Zbuild-std=core
 
   doc:
     name: Docs

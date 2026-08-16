@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Device-neutral transfer-family acceptance fixtures and documentation. A
+  mixed definitions document (`assets/family-acceptance.toml`) proves a
+  synthetic multi-range ADC family: two selector axes, three emitted members
+  with distinct input transforms and applicability windows, a forbidden
+  mapped member, a selector-addressed family gap, an unsupported combination,
+  ordinary boundaries plus an observation guard, an unrelated normalized
+  curve, and a document-level gap. Runtime tests exhaustively check conversion
+  against an independent quadratic oracle. Host tests prove TOML/`FamilySpec`
+  parity, evaluated-truth overlays, fail-closed completeness/provenance/budget
+  checks, structured reports, and rustdoc family/selector/provenance mapping.
+  Representative generated fixtures compile on the no-std and core-only
+  target matrix via `examples/no_std_generated_fixtures.rs`. The README
+  worked example is this ADC front end; VEML remains a downstream integration
+  concern.
 - Complete host family IR, programmatic family construction, and stable
   emitted member identity. `ValidatedFamily` exposes units, output scale,
   its exact `FamilySource` through `ValidatedFamily::source` (including the
