@@ -51,9 +51,10 @@ pub use api::{
     generate_to_path,
 };
 pub use curve::{CurveDef, DefinitionsFile};
-pub use ir::{ValidatedDefinitions, ValidatedFamily, ValidatedMember};
+pub use ir::{ValidatedDefinitions, ValidatedFamily, ValidatedFamilyGap, ValidatedMember};
 pub use transfer::{
-    ApplicabilityDef, BoundaryDef, DeclaredSource, EvaluatedTruth, FamilyMemberDef, GapDef,
-    GapStatus, InputTransform, MemberStatus, ObservationGuardBehaviorDef, ObservationGuardDef,
-    PhysicalPoint, SelectorValue, TransferDef, TransferFamilyDef, TransferSource, TransferSpec,
+    ApplicabilityDef, BoundaryDef, DeclaredSource, EvaluatedTruth, FamilyCompleteness,
+    FamilyGapDef, FamilyMemberDef, GapDef, GapStatus, InputTransform, MemberStatus,
+    ObservationGuardBehaviorDef, ObservationGuardDef, PhysicalPoint, SelectorIdentities,
+    SelectorUniverse, SelectorValue, TransferDef, TransferFamilyDef, TransferSource, TransferSpec,
 };

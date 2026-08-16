@@ -25,19 +25,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   input transform. Gaps record
   `status = "undefined"` with a non-blank reason and are not generated.
   `DefinitionsFile::transfer_families` and `gaps` are read-only inspection
-  views. Selectors are never interpolated, unknown nested family source,
+  views. Every family declares `selector_axes` (Cartesian product) or
+  `expected_selectors` (explicit maps); each expected identity is occupied
+  by exactly one member or family-scoped gap with a typed selector map and
+  a non-blank reason. Document-level `[gaps]` do not satisfy that occupancy.
+  Cartesian cardinality is checked for overflow, completeness is proven from
+  indexed duplicate-free occupancy and count equality without materializing
+  the product, and host IR enumeration is lazy. Explicit-universe membership
+  and selector-type checks use a single precomputed index rather than repeated
+  linear scans.
+  Selectors are never interpolated, unknown nested family source,
   member, applicability, and gap fields are rejected, and every member is
   validated before non-emitted statuses are filtered. Mapped member fields
   follow a source capability matrix: formula and points use
   `applicability.observation`, NTC uses `applicability.physical`, and
   `scaled_polynomial` requires
   `input_transform = { numerator, denominator }` plus
-  `applicability.model_input`. Families may share a document with unrelated
+  `applicability.model_input`. Family-scoped gap tables reject unknown
+  fields. Families may share a document with unrelated
   `[curves]`; dense LUT generation stays curve-only.
 - Host-only transfer inspection and extension IR. `DefinitionsFile::validate`
   returns a `ValidatedDefinitions` graph of families, every member (including
   `unnecessary` / `unsupported` / `forbidden`), and gap reasons without
   generating Rust.
+  `ValidatedFamily` exposes the declared selector universe, every member,
+  family-scoped gaps, typed selector identities, and completeness status.
   `TransferSpec` / `TransferSource` construct or overlay evaluated physical
   truth and prefitted knots so a device crate can own source interpretation
   while reusing ph-curves fitting, metadata, and `PiecewiseLinearTransfer`
@@ -80,13 +92,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Accepted-but-inert `scale` / `applicability.model_input` on formula, points,
   and NTC members are rejected. `interpolate_selectors` is removed (discreteness
   is an invariant). Member statuses are `emit`, `unnecessary`, `unsupported`,
-  and `forbidden`; non-`emit` statuses require a non-blank `reason`.
+  and   `forbidden`; non-`emit` statuses require a non-blank `reason`.
   `unsupported` represents a selector combination without a source mapping,
-  while the other three statuses require the source-specific mapping. Families
-  may share a document with unrelated `[curves]`; dense LUT fallback remains
-  curve-only. This is the publish shape of `[transfer_families]`, which has not
-  shipped in 0.2.1. Standalone transfer TOML is unchanged. A whole-document
-  `schema_version` field remains a separate decision.
+  while the other three statuses require the source-specific mapping. Every
+  family declares a selector universe (`selector_axes` or
+  `expected_selectors`) and proves completeness with members and
+  family-scoped gaps. Families may share a document with unrelated
+  `[curves]`; dense LUT fallback remains curve-only. This is the publish
+  shape of `[transfer_families]`, which has not shipped in 0.2.1. Standalone
+  transfer TOML is unchanged. A whole-document `schema_version` field remains
+  a separate decision.
 
 - **Breaking (pre-1.0):** `TransferError` gained `RejectedObservation { input }`
   so a deliberately rejected observation code is not an `AboveDomain`.

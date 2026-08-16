@@ -150,11 +150,18 @@ documentation, and a field unsupported by the selected source fails closed.
 Mapped `emit`, `unnecessary`, and `forbidden` members require exactly the
 source-specific mapping. `unsupported` is the explicit no-mapping state and
 forbids applicability and input transforms instead of requiring fabricated
-source coordinates.
-That is the publish shape. `[transfer_families]` has not shipped in 0.2.1, so
-this is not a 0.2.x document break. Standalone transfer TOML (`scale` / `1e6`,
-`domain`) is unchanged. The first release that publishes families must include
-this matrix; do not ship accepted-but-inert member fields.
+source coordinates. Every family also declares its expected selector universe
+with exactly one of `selector_axes` (Cartesian product) or
+`expected_selectors` (explicit maps). Each expected identity is occupied by
+exactly one member or family-scoped gap; document-level `[gaps]` do not
+satisfy that occupancy. Cartesian cardinality uses checked multiplication and
+must fit the generator host's `usize`; completeness validation compares that
+count with indexed, duplicate-free occupancy without materializing the
+product. That is the publish shape. `[transfer_families]` has
+not shipped in 0.2.1, so this is not a 0.2.x document break. Standalone
+transfer TOML (`scale` / `1e6`, `domain`) is unchanged. The first release that
+publishes families must include this matrix and the required universe; do not
+ship accepted-but-inert member fields or undeclared selector spaces.
 
 No runtime API is involved. The version that ships a TOML tightening is a
 release decision, not part of the behaviour change. A broader whole-document

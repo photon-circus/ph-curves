@@ -983,6 +983,7 @@ points = [
   { input = 1, output = 1.0 },
   { input = 10, output = 10.0 },
 ]
+selector_axes = { saturation = ["enabled"], observation_guard = [1] }
 
 [[transfer_families.valid.members]]
 selectors = { saturation = "enabled", observation_guard = 1 }

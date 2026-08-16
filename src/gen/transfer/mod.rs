@@ -18,8 +18,9 @@ use serde::Deserialize;
 use super::formula;
 
 pub use family::{
-    ApplicabilityDef, DeclaredSource, FamilyMemberDef, GapDef, GapStatus, InputTransform,
-    MemberStatus, SelectorValue, TransferFamilyDef,
+    ApplicabilityDef, DeclaredSource, FamilyCompleteness, FamilyGapDef, FamilyMemberDef, GapDef,
+    GapStatus, InputTransform, MemberStatus, SelectorIdentities, SelectorUniverse, SelectorValue,
+    TransferFamilyDef,
 };
 pub use source::{EvaluatedTruth, TransferSource, TransferSpec};
 

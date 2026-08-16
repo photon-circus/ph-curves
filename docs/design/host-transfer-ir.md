@@ -19,10 +19,13 @@ plugin ABI: README and `docs/design/gen-build-api.md` keep that as a non-goal.
 ## Layers
 
 1. **Parsed** — `DefinitionsFile` from TOML or `insert_transfer`.
-2. **Validated** — `DefinitionsFile::validate` runs family/gap/identity checks
-   without fitting or emitting Rust. Every member, including `unnecessary`,
-   `unsupported`, and `forbidden`, is inspectable. Expanded names are reserved
-   only for `emit`.
+2. **Validated** — `DefinitionsFile::validate` runs family/gap/identity and
+   selector-universe completeness checks without fitting or emitting Rust.
+   Every member, including `unnecessary`, `unsupported`, and `forbidden`, is
+   inspectable, as is every family-scoped gap. Expanded names are reserved
+   only for `emit`. Successful validation yields
+   `FamilyCompleteness::Complete`. Document-level `[gaps]` remain a separate
+   named map and do not occupy family identities.
 3. **Generation sources** — TOML formula/points/model, or a `TransferSource`
    overlay (`EvaluatedTruth`, `PrefittedKnots`, `Points`). Source facts stay on
    the graph; fit policy stays on the transfer spec. `kind = "scaled_polynomial"`
@@ -34,16 +37,30 @@ plugin ABI: README and `docs/design/gen-build-api.md` keep that as a non-goal.
    different observation domain.
 
 This slice stores resolved family-member observation domains internally so
-overlay validation is source-independent. Exposing that derived fact on the
-complete public family IR remains part of
-[#41](https://github.com/photon-circus/ph-curves/issues/41).
+overlay validation is source-independent. Exposing that derived fact, the
+shared source, units, fitting policy, and a programmatic family builder
+remains part of [#41](https://github.com/photon-circus/ph-curves/issues/41).
+Selector universe, family-scoped gaps, typed identities, and completeness are
+already on `ValidatedFamily` ([#40](https://github.com/photon-circus/ph-curves/issues/40)).
 
 ## Public surface
 
 Host tools inspect through nameable types: `ValidatedDefinitions`,
-`ValidatedFamily`, `ValidatedMember`, `DeclaredSource`, `TransferFamilyDef`
-accessors, `DefinitionsFile::curves` / `transfers` / `transfer_families` /
-`gaps`. Built-in `ModelDef` remains crate-private.
+`ValidatedFamily`, `ValidatedMember`, `ValidatedFamilyGap`,
+`SelectorUniverse`, its lazy `SelectorIdentities` iterator,
+`FamilyCompleteness`, `DeclaredSource`,
+`TransferFamilyDef` accessors, `DefinitionsFile::curves` / `transfers` /
+`transfer_families` / `gaps`. `ValidatedFamily::gaps` is the family-scoped
+selector list; `ValidatedDefinitions::gaps` is the document-level named map.
+Built-in `ModelDef` remains crate-private.
+
+`SelectorUniverse::identity_count` is the explicit-list length or checked
+Cartesian axis-length product. Family validation rejects a Cartesian product
+that does not fit the host's `usize`. Completeness follows from indexed
+in-universe membership, duplicate rejection, and equality between occupied
+and expected counts; validation never materializes the product.
+`SelectorUniverse::identities` yields maps lazily in deterministic axis/value
+order for callers that need independent enumeration.
 
 Extension:
 
