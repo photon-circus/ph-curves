@@ -3,6 +3,12 @@
 **Status:** Host generator schema in `gen-lib` — design rationale only; the
 code and its rustdoc are authoritative.
 
+Device-neutral acceptance lives in `assets/family-acceptance.toml` (a
+multi-range ADC family) and `tests/family_acceptance.rs` /
+`tests/family_acceptance_gen.rs`. That pack is the promotion evidence for
+[#44](https://github.com/photon-circus/ph-curves/issues/44); it is not a
+device catalog.
+
 ## Motivation
 
 Some devices expose discrete selector combinations that share one physical

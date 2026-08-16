@@ -192,9 +192,9 @@ is never inferred from the integer value:
 [transfers]
 requires = ["observation_guard_v1"]
 
-[transfers.ambient_light]
-input_unit = "count"
-output_unit = "lux"
+[transfers.guarded_identity]
+input_unit = "adc_code"
+output_unit = "millivolt"
 output_scale = 1
 max_interpolation_error = 1
 above = "clamp"
@@ -332,30 +332,35 @@ non-blank reason. Document-level `[gaps]` records channels the sources leave
 undefined and do not satisfy family completeness:
 
 ```toml
-[transfer_families.als]
-provenance = { identity = "synthetic ALS application note", locator = "Table 1" }
-input_unit = "count"
-output_unit = "unit"
+[transfer_families.front_end]
+provenance = { identity = "synthetic multi-range ADC note", locator = "Table 1" }
+input_unit = "adc_code"
+output_unit = "millivolt"
 output_scale = 1000
-max_interpolation_error = 50
-formula = "x"
-selector_axes = { gain = ["div4"], integration_time_ms = [100, 200] }
+max_interpolation_error = 1
+selector_axes = { range = ["low"], coupling = ["dc", "ac"] }
 
-[[transfer_families.als.members]]
-selectors = { gain = "div4", integration_time_ms = 100 }
+[transfer_families.front_end.model]
+kind = "scaled_polynomial"
+coefficients = [0.0, 1.0, 1.0e-4]
+
+[[transfer_families.front_end.members]]
+selectors = { range = "low", coupling = "dc" }
 status = "emit"
-applicability = { observation = [1, 10] }
+emitted_name = "front_end_low_dc"
+input_transform = { numerator = 2000, denominator = 1000000 }
+applicability = { model_input = [0.2, 1.0] }
 
-[[transfer_families.als.gaps]]
-selectors = { gain = "div4", integration_time_ms = 200 }
+[[transfer_families.front_end.gaps]]
+selectors = { range = "low", coupling = "ac" }
 status = "undefined"
-reason = "not characterized at 200 ms"
+reason = "AC coupling saturates the low-range front end"
 provenance = { locator = "Table 1, omitted row" }
 
-[gaps.white_channel]
+[gaps.digital_flag]
 status = "undefined"
-reason = "counts only; no conversion"
-provenance = { identity = "synthetic ALS application note", locator = "§9 white channel" }
+reason = "auxiliary digital flag; no conversion"
+provenance = { identity = "synthetic multi-range ADC note", locator = "§9" }
 ```
 
 Families may share a document with unrelated `[curves]`. Dense LUT generation
@@ -374,15 +379,15 @@ an exact integer product, and converts inclusive model-input bounds to
 observation codes:
 
 ```toml
-[transfer_families.als.model]
+[transfer_families.front_end.model]
 kind = "scaled_polynomial"
-coefficients = [0.0, 1.0023, 8.1488e-5, -9.3924e-9, 6.0135e-13]
+coefficients = [0.0, 1.0, 1.0e-4]
 
-[[transfer_families.als.members]]
-selectors = { gain = "div4", integration_time_ms = 100 }
+[[transfer_families.front_end.members]]
+selectors = { range = "low", coupling = "dc" }
 status = "emit"
-input_transform = { numerator = 268800, denominator = 1000000 }
-applicability = { model_input = [100.0, 22000.0] }
+input_transform = { numerator = 2000, denominator = 1000000 }
+applicability = { model_input = [0.2, 1.0] }
 ```
 
 The scaled-polynomial snippet above still needs a declared universe on the

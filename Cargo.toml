@@ -65,3 +65,12 @@ required-features = ["gen-cli"]
 name = "generation_report"
 path = "tests/generation_report.rs"
 required-features = ["gen-lib"]
+
+[[test]]
+name = "family_acceptance_gen"
+path = "tests/family_acceptance_gen.rs"
+required-features = ["gen-lib"]
+
+[[example]]
+name = "no_std_generated_fixtures"
+crate-type = ["lib"]

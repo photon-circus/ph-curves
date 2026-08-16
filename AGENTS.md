@@ -115,13 +115,18 @@ Regenerate the checked-in fixture whenever table generation changes:
 ```bash
 cargo run --features gen-cli --bin ph-curves-gen -- --input assets/transfers.toml --output tests/fixtures/ntc_generated.rs
 cargo run --features gen-cli --bin ph-curves-gen -- --input assets/observation-guards.toml --output tests/fixtures/observation_guards_generated.rs
+cargo run --features gen-cli --bin ph-curves-gen -- --input assets/family-acceptance.toml --output tests/fixtures/family_acceptance_generated.rs
 ```
 
 `tests/ntc_transfer.rs` re-measures the emitted table at runtime and asserts it
 matches the generator's recorded metadata. That cross-check is what catches
 drift between host and runtime arithmetic — if you change one side's rounding,
 it fails. `tests/observation_guards.rs` compiles standalone and family guard
-fixtures and executes their policy matrix. Host audits should reuse
+fixtures and executes their policy matrix. `tests/family_acceptance.rs` and
+`tests/family_acceptance_gen.rs` prove the device-neutral family pack: an
+independent quadratic oracle, TOML/`FamilySpec`/overlay parity, completeness
+and budget fail-closed checks, and mixed curve/family emission. Host audits
+should reuse
 `interpolate_segment` / `invert_segment` rather than reimplementing the math.
 
 ## Validating
@@ -196,3 +201,6 @@ building, testing, and running.
   ph-curves-gen -- --input assets/curves.toml --output /tmp/out.rs` exercises the
   headline generator path. Regenerating the checked-in fixture with the
   `assets/transfers.toml` command above should leave `git diff` empty.
+  Regenerating `assets/family-acceptance.toml` into
+  `tests/fixtures/family_acceptance_generated.rs` should also leave `git diff`
+  empty.

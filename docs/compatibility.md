@@ -164,11 +164,17 @@ against the family citation. A selector key literally named `provenance`
 remains part of the typed selector identity. Together, these constraints are
 the intended first-publish shape. `[transfer_families]` has not shipped in
 0.2.1, so this is not a 0.2.x document break. Legacy standalone transfer TOML
-without the new provenance or guard fields is unchanged. The first release
-that publishes
-families must include the capability matrix, required provenance, and declared
-universe; do not ship accepted-but-inert member fields or undeclared selector
-spaces.
+without the new provenance or guard fields is unchanged. The first-publish
+shape is now evidenced by the device-neutral acceptance fixture
+(`assets/family-acceptance.toml`, `tests/family_acceptance.rs`,
+`tests/family_acceptance_gen.rs`): two selector axes, distinct member
+transforms, an explicit gap and description-only statuses, observation-guard
+parity, TOML/`FamilySpec`/overlay convergence, and mixed curve/family
+emission. The first release that publishes families must keep that capability
+matrix, required provenance, and declared universe; do not ship
+accepted-but-inert member fields or undeclared selector spaces. That release
+is the next pre-1.0 minor, together with the observation-guard and provenance
+breaks already recorded below.
 
 No runtime API is involved. The version that ships a TOML tightening is a
 release decision, not part of the behaviour change. A broader whole-document
