@@ -144,3 +144,12 @@ fields.
 
 No runtime API is involved. The version that ships a TOML tightening is a
 release decision, not part of the behaviour change.
+
+## Host `GenerateOptions` on transfer-only documents
+
+`value_type` and `lut_size` describe dense curve LUTs. They are now validated
+only when the definitions contain `[curves]`. Transfer-only and family-only
+generation may use `GenerateOptions::transfers_only()`; mismatched LUT fields
+are ignored rather than rejected. Documents that still contain curves keep the
+existing full-domain LUT check. No runtime API is involved; the change is
+additive for `gen-lib` callers.

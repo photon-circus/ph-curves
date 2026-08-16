@@ -10,6 +10,7 @@ mod adaptive;
 pub(crate) mod family;
 mod model;
 mod points;
+mod source;
 
 use crate::MonotonicDirection;
 use serde::Deserialize;
@@ -17,21 +18,25 @@ use serde::Deserialize;
 use super::formula;
 
 pub use family::{
-    ApplicabilityDef, FamilyMemberDef, GapDef, GapStatus, MemberStatus, SelectorValue,
-    TransferFamilyDef,
+    ApplicabilityDef, DeclaredSource, FamilyMemberDef, GapDef, GapStatus, MemberStatus,
+    SelectorValue, TransferFamilyDef,
 };
+pub use source::{EvaluatedTruth, TransferSource, TransferSpec};
 
 const ABSOLUTE_MAX_KNOTS: usize = 4096;
 
+/// How a generated transfer treats observations outside its domain.
 #[derive(Copy, Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum BoundaryDef {
+    /// Out-of-domain observations return an error.
     Error,
+    /// Out-of-domain observations clamp to the nearest endpoint.
     Clamp,
 }
 
 impl BoundaryDef {
-    pub fn rust_name(self) -> &'static str {
+    pub(crate) fn rust_name(self) -> &'static str {
         match self {
             Self::Error => "BoundaryBehavior::Error",
             Self::Clamp => "BoundaryBehavior::Clamp",
@@ -47,29 +52,85 @@ fn default_max_knots() -> usize {
     256
 }
 
+/// One physical control point: integer observation to unscaled physical output.
 #[derive(Clone, Debug, Deserialize)]
 pub struct PhysicalPoint {
+    /// Observation-domain input code.
     pub input: u16,
+    /// Unscaled physical output at this input.
     pub output: f64,
 }
 
+impl PhysicalPoint {
+    /// Construct a control point.
+    pub fn new(input: u16, output: f64) -> Self {
+        Self { input, output }
+    }
+}
+
+/// Parsed standalone transfer, or the policy copied onto an expanded family member.
+///
+/// Built-in model parameters stay crate-private; use [`Self::has_model`] and
+/// [`Self::declared_source`] to inspect the source kind.
 #[derive(Clone, Debug, Deserialize)]
 pub struct TransferDef {
+    /// Observation-domain unit label.
     pub input_unit: String,
+    /// Physical-domain unit label.
     pub output_unit: String,
+    /// Integer output quanta per physical unit.
     pub output_scale: u32,
+    /// Requested interpolation error bound in output quanta.
     pub max_interpolation_error: u32,
+    /// Knot budget (default 256, hard cap 4096 for standalone transfers).
     #[serde(default = "default_max_knots")]
     pub max_knots: usize,
+    /// Below-domain policy.
     #[serde(default = "default_boundary")]
     pub below: BoundaryDef,
+    /// Above-domain policy.
     #[serde(default = "default_boundary")]
     pub above: BoundaryDef,
+    /// Sparse physical control points, when that is the declared source.
     pub points: Option<Vec<PhysicalPoint>>,
+    /// Formula over `x`, when that is the declared source.
     pub formula: Option<String>,
-    pub model: Option<model::ModelDef>,
+    pub(crate) model: Option<model::ModelDef>,
+    /// Inclusive observation domain, required for formula sources.
     pub domain: Option<[u16; 2]>,
+    /// Physical output window, required for model sources.
     pub output_range: Option<[f64; 2]>,
+}
+
+impl TransferDef {
+    /// Shared formula text, when the source is a formula.
+    pub fn formula_text(&self) -> Option<&str> {
+        self.formula.as_deref()
+    }
+
+    /// Physical control points, when the source is points.
+    pub fn control_points(&self) -> Option<&[PhysicalPoint]> {
+        self.points.as_deref()
+    }
+
+    /// Whether the source is a built-in host model.
+    pub fn has_model(&self) -> bool {
+        self.model.is_some()
+    }
+
+    /// Which of formula, points, or model is set. `None` if missing or mixed.
+    pub fn declared_source(&self) -> Option<DeclaredSource> {
+        match (
+            self.formula.is_some(),
+            self.points.is_some(),
+            self.model.is_some(),
+        ) {
+            (true, false, false) => Some(DeclaredSource::Formula),
+            (false, true, false) => Some(DeclaredSource::Points),
+            (false, false, true) => Some(DeclaredSource::Model),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -84,6 +145,14 @@ pub struct TransferData {
 }
 
 pub fn build(name: &str, def: &TransferDef) -> Result<TransferData, String> {
+    build_with_source(name, def, None)
+}
+
+pub(crate) fn build_with_source(
+    name: &str,
+    def: &TransferDef,
+    overlay: Option<&TransferSource>,
+) -> Result<TransferData, String> {
     if def.output_scale == 0 {
         return Err(format!("transfer `{name}`: output_scale must be positive"));
     }
@@ -91,6 +160,10 @@ pub fn build(name: &str, def: &TransferDef) -> Result<TransferData, String> {
         return Err(format!(
             "transfer `{name}`: max_knots must be in 2..={ABSOLUTE_MAX_KNOTS}"
         ));
+    }
+
+    if let Some(overlay) = overlay {
+        return build_from_overlay(name, def, overlay);
     }
 
     let source_count =
@@ -162,11 +235,75 @@ pub fn build(name: &str, def: &TransferDef) -> Result<TransferData, String> {
         )
     };
 
-    let direction = validate_monotonic(name, &truth)?;
+    finish_from_scaled_truth(name, def, domain_min, &truth, provenance)
+}
+
+fn build_from_overlay(
+    name: &str,
+    def: &TransferDef,
+    overlay: &TransferSource,
+) -> Result<TransferData, String> {
+    match overlay {
+        TransferSource::EvaluatedTruth(truth) => {
+            let (domain_min, scaled, provenance) = evaluated_truth_to_scaled(name, def, truth)?;
+            finish_from_scaled_truth(name, def, domain_min, &scaled, provenance)
+        }
+        TransferSource::Points(control_points) => {
+            let (minimum, physical) = points::evaluate(name, control_points)?;
+            let scaled = scale_truth(name, &physical, def.output_scale)?;
+            finish_from_scaled_truth(
+                name,
+                def,
+                minimum,
+                &scaled,
+                format!("physical points ({} control points)", control_points.len()),
+            )
+        }
+        TransferSource::PrefittedKnots {
+            inputs,
+            outputs,
+            truth,
+        } => build_prefitted(name, def, inputs, outputs, truth),
+    }
+}
+
+fn evaluated_truth_to_scaled(
+    name: &str,
+    def: &TransferDef,
+    truth: &EvaluatedTruth,
+) -> Result<(u16, Vec<f64>, String), String> {
+    let physical = truth.physical();
+    if physical.len() < 2 {
+        return Err(format!(
+            "transfer `{name}`: evaluated truth must contain at least two samples"
+        ));
+    }
+    let last_offset = physical.len() - 1;
+    if last_offset > usize::from(u16::MAX - truth.domain_min()) {
+        return Err(format!(
+            "transfer `{name}`: evaluated truth domain exceeds u16"
+        ));
+    }
+    let scaled = scale_truth(name, physical, def.output_scale)?;
+    Ok((
+        truth.domain_min(),
+        scaled,
+        format!("evaluated physical truth ({} samples)", physical.len()),
+    ))
+}
+
+fn finish_from_scaled_truth(
+    name: &str,
+    def: &TransferDef,
+    domain_min: u16,
+    truth: &[f64],
+    provenance: String,
+) -> Result<TransferData, String> {
+    let direction = validate_monotonic(name, truth)?;
     let result = adaptive::fit(
         name,
         domain_min,
-        &truth,
+        truth,
         def.max_interpolation_error,
         def.max_knots,
     )?;
@@ -179,6 +316,83 @@ pub fn build(name: &str, def: &TransferDef) -> Result<TransferData, String> {
         achieved_max_error_exact: result.achieved_max_error_exact,
         worst_case_input: result.worst_case_input,
         provenance,
+    })
+}
+
+fn build_prefitted(
+    name: &str,
+    def: &TransferDef,
+    inputs: &[u16],
+    outputs: &[i32],
+    truth: &EvaluatedTruth,
+) -> Result<TransferData, String> {
+    if inputs.len() != outputs.len() {
+        return Err(format!(
+            "transfer `{name}`: prefitted inputs and outputs must have the same length"
+        ));
+    }
+    if inputs.len() < 2 {
+        return Err(format!(
+            "transfer `{name}`: prefitted knots must contain at least two entries"
+        ));
+    }
+    if inputs.len() > def.max_knots {
+        return Err(format!(
+            "transfer `{name}`: prefitted knot count {} exceeds max_knots={}",
+            inputs.len(),
+            def.max_knots
+        ));
+    }
+    for pair in inputs.windows(2) {
+        if pair[1] <= pair[0] {
+            return Err(format!(
+                "transfer `{name}`: prefitted inputs must be strictly increasing"
+            ));
+        }
+    }
+
+    let scaled_knots: Vec<f64> = outputs.iter().map(|&value| f64::from(value)).collect();
+    let direction = validate_monotonic(name, &scaled_knots)?;
+
+    let (domain_min, scaled, _) = evaluated_truth_to_scaled(name, def, truth)?;
+    if domain_min != inputs[0] {
+        return Err(format!(
+            "transfer `{name}`: prefitted truth domain_min must match the first knot"
+        ));
+    }
+    let last = *inputs.last().expect("knot count checked");
+    let expected_len = usize::from(last - domain_min) + 1;
+    if scaled.len() != expected_len {
+        return Err(format!(
+            "transfer `{name}`: prefitted truth must cover {domain_min}..={last} ({expected_len} samples)"
+        ));
+    }
+    let knot_offsets: Vec<usize> = inputs
+        .iter()
+        .map(|&input| usize::from(input - domain_min))
+        .collect();
+    let (worst_offset, worst_error) =
+        adaptive::measure_error(domain_min, &scaled, &knot_offsets, outputs)?;
+    if worst_error > f64::from(def.max_interpolation_error) {
+        return Err(format!(
+            "transfer `{name}`: prefitted knots exceed maximum error {}; \
+                 measured {worst_error:.6} at input {}",
+            def.max_interpolation_error,
+            domain_min + worst_offset as u16
+        ));
+    }
+
+    Ok(TransferData {
+        inputs: inputs.to_vec(),
+        outputs: outputs.to_vec(),
+        direction,
+        achieved_max_error: worst_error.ceil() as u32,
+        achieved_max_error_exact: worst_error,
+        worst_case_input: domain_min + worst_offset as u16,
+        provenance: format!(
+            "prefitted knots ({} knots) verified against evaluated truth",
+            inputs.len()
+        ),
     })
 }
 

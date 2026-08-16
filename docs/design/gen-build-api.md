@@ -39,11 +39,26 @@ pub fn generate_to_path(input: impl AsRef<Path>, output: impl AsRef<Path>, opts:
 pub fn generate(defs: &DefinitionsFile, opts: &GenerateOptions)
     -> Result<String, Error>;
 
-pub struct GenerateOptions { /* value_type, lut_size; CLI-compatible defaults */ }
+pub struct GenerateOptions { /* value_type, lut_size; ignored without [curves] */ }
+pub fn GenerateOptions::transfers_only() -> Self;
+
+// Inspection / extension IR (host-only; not a plugin ABI)
+impl DefinitionsFile {
+    pub fn validate(&self) -> Result<ValidatedDefinitions, Error>;
+    pub fn insert_transfer(&mut self, spec: TransferSpec) -> Result<(), Error>;
+    pub fn curves(&self) -> &BTreeMap<String, CurveDef>;
+    pub fn transfers(&self) -> &BTreeMap<String, TransferDef>;
+    pub fn transfer_families(&self) -> &BTreeMap<String, TransferFamilyDef>;
+    pub fn gaps(&self) -> &BTreeMap<String, GapDef>;
+}
+impl ValidatedDefinitions {
+    pub fn set_source(&mut self, name: &str, source: TransferSource) -> Result<(), Error>;
+    pub fn generate(&self, opts: &GenerateOptions) -> Result<String, Error>;
+}
 pub enum Error { Io(...), Toml(...), Validation(...) }
 ```
 
-**Module layout:** `src/gen/{mod,api,codegen,curve,builtin,formula,points,transfer/*}.rs` exposed as `ph_curves::r#gen`; `src/bin/gen/main.rs` is a thin clap → lib API.
+**Module layout:** `src/gen/{mod,api,ir,codegen,curve,builtin,formula,points,transfer/*}.rs` exposed as `ph_curves::r#gen`; `src/bin/gen/main.rs` is a thin clap → lib API.
 
 **Consumer sketch**
 
@@ -62,7 +77,9 @@ generate_to_path("assets/curves.toml", &out, &GenerateOptions::default())?;
 - No proc-macro DSL (`#[curve(...)]` / derive embedding TOML) in 0.2.0
 - No firmware API growth from enabling `gen-lib`
 - No separate crates.io `ph-curves-gen` package required for this design
-- No WASM/plugin host ABI, runtime TOML watching, or proc-macro auto-invoke
+- No WASM/plugin host ABI, runtime TOML watching, or proc-macro auto-invoke.
+  Device crates inspect and extend through the public IR in
+  [host-transfer-ir.md](host-transfer-ir.md) instead of a callback/trait plugin.
 - Keep CLI flags and generated source shape stable where practical
 - Library generate path does not print transfer-fit progress to stderr (avoids spamming `build.rs` logs); the CLI may report write status separately
 

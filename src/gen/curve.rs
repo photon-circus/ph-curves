@@ -24,17 +24,17 @@ use super::{builtin, formula, points, transfer};
 
 /// Parsed TOML definitions for normalized curves and physical transfers.
 ///
-/// Construct via [`Self::from_toml_str`] or [`super::generate_from_str`].
-/// Curve and standalone transfer maps are crate-visible; families and gaps
-/// are inspectable through [`Self::transfer_families`] and [`Self::gaps`].
-/// Dependents should prefer the `generate_*` helpers over hand-building
-/// schema graphs.
+/// Construct via [`Self::from_toml_str`], [`Self::insert_transfer`], or
+/// [`super::generate_from_str`]. Inspect maps through [`Self::curves`],
+/// [`Self::transfers`], [`Self::transfer_families`], and [`Self::gaps`].
+/// Validate the description graph with [`Self::validate`] before overlaying
+/// host-evaluated truth.
 ///
 /// Unknown top-level keys are rejected so a misspelled table cannot succeed
 /// as empty output. Nested unknown fields on family, member, applicability,
 /// and gap tables are also rejected. Nested unknown fields on standalone
 /// curve and transfer definitions are still ignored.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DefinitionsFile {
     /// Normalized LUT curves keyed by TOML table name.
@@ -49,12 +49,26 @@ pub struct DefinitionsFile {
     /// Channels or procedures that must not be generated as transfers.
     #[serde(default)]
     pub(crate) gaps: BTreeMap<String, transfer::GapDef>,
+    /// Programmatic generation sources keyed by transfer name.
+    #[serde(skip)]
+    pub(crate) overlays: BTreeMap<String, transfer::TransferSource>,
 }
 
 impl DefinitionsFile {
     /// Parse a TOML definitions document.
     pub fn from_toml_str(toml: &str) -> Result<Self, toml::de::Error> {
         toml::from_str(toml)
+    }
+
+    /// Normalized LUT curves keyed by TOML table name.
+    pub fn curves(&self) -> &BTreeMap<String, CurveDef> {
+        &self.curves
+    }
+
+    /// Standalone `[transfers]` entries. Family members are not included;
+    /// inspect those through [`Self::validate`].
+    pub fn transfers(&self) -> &BTreeMap<String, transfer::TransferDef> {
+        &self.transfers
     }
 
     /// Declared transfer families. Empty on documents that only use `[transfers]`.
@@ -111,7 +125,7 @@ impl DefinitionsFile {
 }
 
 /// One normalized curve definition from the TOML `[curves]` map.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct CurveDef {
     /// Name of a built-in curve (e.g. "linear", "ease_in_quad").
     pub builtin: Option<String>,
