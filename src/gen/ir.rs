@@ -15,10 +15,10 @@ use super::transfer::family::{
     resolved_member_provenance, resolved_selector_universe,
 };
 use super::transfer::{
-    ApplicabilityDef, DeclaredSource, FamilyCompleteness, FamilySpec, GapDef, GapStatus,
-    GenerationPolicy, InputTransform, MemberStatus, PhysicalPoint, SelectorUniverse, SelectorValue,
-    SourceProvenance, SourceProvenanceDisposition, SourceProvenanceOverride, TransferFamilyDef,
-    TransferSourceOverlay, TransferSpec, family_source_observation_domain,
+    ApplicabilityDef, DeclaredSource, FamilyCompleteness, FamilySource, FamilySpec, GapDef,
+    GapStatus, GenerationPolicy, InputTransform, MemberStatus, PhysicalPoint, SelectorUniverse,
+    SelectorValue, SourceProvenance, SourceProvenanceDisposition, SourceProvenanceOverride,
+    TransferFamilyDef, TransferSourceOverlay, TransferSpec, family_source_observation_domain,
     overlay_observation_span, resolve_guard_provenance,
 };
 
@@ -42,10 +42,7 @@ pub struct ValidatedFamily {
     input_unit: String,
     output_unit: String,
     output_scale: u32,
-    declared_source: DeclaredSource,
-    formula: Option<String>,
-    points: Option<Vec<PhysicalPoint>>,
-    has_model: bool,
+    source: FamilySource,
     max_total_knots: Option<usize>,
     max_table_bytes: Option<usize>,
     provenance: SourceProvenance,
@@ -78,31 +75,54 @@ impl ValidatedFamily {
         self.output_scale
     }
 
+    /// Exact validated shared source declared by the family.
+    ///
+    /// Unlike [`Self::declared_source`], this preserves formula text, physical
+    /// points, scaled-polynomial coefficients, and every NTC model parameter.
+    /// Per-member generation-source overlays do not rewrite this declaration.
+    pub fn source(&self) -> &FamilySource {
+        &self.source
+    }
+
     /// Shared source kind and therefore the member applicability coordinate space.
     ///
     /// Formula and points members use `applicability.observation`. Scaled
     /// polynomial members use `applicability.model_input` plus
     /// `input_transform`. NTC members use `applicability.physical`.
     pub fn declared_source(&self) -> DeclaredSource {
-        self.declared_source
+        match &self.source {
+            FamilySource::Formula(_) => DeclaredSource::Formula,
+            FamilySource::Points(_) => DeclaredSource::Points,
+            FamilySource::ScaledPolynomial { .. } | FamilySource::NtcBetaDivider { .. } => {
+                DeclaredSource::Model
+            }
+        }
     }
 
     /// Shared formula text, when the family source is a formula.
     pub fn formula(&self) -> Option<&str> {
-        self.formula.as_deref()
+        match &self.source {
+            FamilySource::Formula(formula) => Some(formula),
+            _ => None,
+        }
     }
 
     /// Shared physical control points, when the family source is points.
     pub fn points(&self) -> Option<&[PhysicalPoint]> {
-        self.points.as_deref()
+        match &self.source {
+            FamilySource::Points(points) => Some(points),
+            _ => None,
+        }
     }
 
     /// Whether the shared source is a built-in host model.
     ///
-    /// Model parameters stay crate-private. Distinguish kinds through
-    /// [`Self::declared_source`].
+    /// Inspect exact model kind and parameters through [`Self::source`].
     pub fn has_model(&self) -> bool {
-        self.has_model
+        matches!(
+            &self.source,
+            FamilySource::ScaledPolynomial { .. } | FamilySource::NtcBetaDivider { .. }
+        )
     }
 
     /// Optional aggregate knot budget across every emitted member.
@@ -307,7 +327,9 @@ impl DefinitionsFile {
             .map(|(name, resolved)| (name, &resolved.def))
             .collect();
         super::codegen::emitted_const_names(&curves, &transfers).map_err(Error::Validation)?;
-        let families = inspect_families(&self.transfer_families).map_err(Error::Validation)?;
+        let mut families = inspect_families(&self.transfer_families).map_err(Error::Validation)?;
+        apply_family_overlay_provenance(&mut families, &self.overlays)
+            .map_err(Error::Validation)?;
         let family_overlay_domains =
             family_overlay_domains(&families, &resolved).map_err(Error::Validation)?;
         let resolved_names = resolved.keys().cloned().collect();
@@ -429,7 +451,7 @@ fn inspect_families(
                 "transfer family `{family_name}`: source-backed family requires provenance.identity"
             )
         })?;
-        let declared_source = family.declared_source().ok_or_else(|| {
+        let source = FamilySource::from_family(family).ok_or_else(|| {
             format!(
                 "transfer family `{family_name}`: exactly one of points, formula, or model must be specified"
             )
@@ -453,10 +475,7 @@ fn inspect_families(
             input_unit: family.input_unit.clone(),
             output_unit: family.output_unit.clone(),
             output_scale: family.output_scale,
-            declared_source,
-            formula: family.formula.clone(),
-            points: family.points.clone(),
-            has_model: family.has_model(),
+            source,
             max_total_knots: family.max_total_knots,
             max_table_bytes: family.max_table_bytes,
             provenance,
@@ -473,6 +492,37 @@ fn inspect_families(
         });
     }
     Ok(out)
+}
+
+fn apply_family_overlay_provenance(
+    families: &mut [ValidatedFamily],
+    overlays: &BTreeMap<String, TransferSourceOverlay>,
+) -> Result<(), String> {
+    for member in families
+        .iter_mut()
+        .flat_map(|family| family.members.iter_mut())
+        .filter(|member| member.status == MemberStatus::Emit)
+    {
+        let Some(overlay) = overlays.get(&member.emitted_name) else {
+            continue;
+        };
+        member.provenance = match overlay.provenance_disposition() {
+            SourceProvenanceDisposition::Inherit => member.declared_provenance.clone(),
+            SourceProvenanceDisposition::Replace(provenance) => {
+                provenance
+                    .validate()
+                    .map_err(|error| format!("transfer `{}`: {error}", member.emitted_name))?;
+                provenance.clone()
+            }
+            SourceProvenanceDisposition::Clear => {
+                return Err(format!(
+                    "transfer `{}`: a source-backed family overlay cannot clear its mandatory provenance; inherit it intentionally or supply a replacement",
+                    member.emitted_name
+                ));
+            }
+        };
+    }
+    Ok(())
 }
 
 fn family_overlay_domains(
@@ -2127,6 +2177,35 @@ provenance = { identity = "errata sheet" }
         }])
     }
 
+    fn auxiliary_formula_family_spec(name: &str) -> FamilySpec {
+        FamilySpec::new(
+            name,
+            "count",
+            "unit",
+            1,
+            1,
+            FamilySource::formula("x"),
+            SourceProvenance::new("auxiliary fixture"),
+        )
+        .with_selector_axes(BTreeMap::from([(
+            "variant".into(),
+            vec![SelectorValue::String("only".into())],
+        )]))
+        .with_members(vec![FamilyMemberDef {
+            selectors: BTreeMap::from([("variant".into(), SelectorValue::String("only".into()))]),
+            input_transform: None,
+            status: MemberStatus::Emit,
+            reason: None,
+            applicability: ApplicabilityDef {
+                observation: Some([1, 3]),
+                model_input: None,
+                physical: None,
+            },
+            provenance: None,
+            emitted_name: None,
+        }])
+    }
+
     #[test]
     fn programmatic_family_matches_toml_validated_ir_and_generated_bytes() {
         let from_toml = DefinitionsFile::from_toml_str(formula_family_toml())
@@ -2143,6 +2222,7 @@ provenance = { identity = "errata sheet" }
         assert_eq!(toml_family.input_unit(), spec_family.input_unit());
         assert_eq!(toml_family.output_unit(), spec_family.output_unit());
         assert_eq!(toml_family.output_scale(), spec_family.output_scale());
+        assert_eq!(toml_family.source(), spec_family.source());
         assert_eq!(toml_family.declared_source(), spec_family.declared_source());
         assert_eq!(toml_family.formula(), spec_family.formula());
         assert_eq!(toml_family.policy(), spec_family.policy());
@@ -2242,6 +2322,10 @@ applicability = { observation = [0, 10] }
             .unwrap();
         let from_spec = programmatic.validate().unwrap();
         assert_eq!(
+            from_toml.families()[0].source(),
+            from_spec.families()[0].source()
+        );
+        assert_eq!(
             from_toml.families()[0].declared_source(),
             DeclaredSource::Points
         );
@@ -2319,8 +2403,18 @@ applicability = { model_input = [100.0, 22000.0] }
             .unwrap();
         let poly_spec_ir = poly_spec.validate().unwrap();
         assert_eq!(
+            poly_toml_ir.families()[0].source(),
+            poly_spec_ir.families()[0].source()
+        );
+        assert_eq!(
             poly_toml_ir.families()[0].declared_source(),
             DeclaredSource::Model
+        );
+        assert_eq!(
+            poly_toml_ir.families()[0].source(),
+            &FamilySource::ScaledPolynomial {
+                coefficients: vec![0.0, 1.0],
+            }
         );
         assert!(poly_spec_ir.families()[0].has_model());
         assert_eq!(
@@ -2330,54 +2424,99 @@ applicability = { model_input = [100.0, 22000.0] }
     }
 
     #[test]
-    fn programmatic_ntc_family_validates_without_toml() {
-        let mut defs = DefinitionsFile::default();
-        defs.insert_family(
-            FamilySpec::new(
-                "ntc",
-                "adc_code",
-                "degree_celsius",
-                1000,
-                50,
-                FamilySource::ntc_beta_divider(
-                    10_000.0,
-                    3950.0,
-                    25.0,
-                    10_000.0,
-                    4095,
-                    DividerTopology::NtcToGround,
-                ),
-                SourceProvenance::new("test fixture"),
+    fn programmatic_ntc_family_matches_toml_validated_ir_and_generated_bytes() {
+        let toml = r#"
+[transfer_families.ntc]
+provenance = { identity = "test fixture" }
+input_unit = "adc_code"
+output_unit = "degree_celsius"
+output_scale = 1000
+max_interpolation_error = 50
+selector_axes = { probe = ["wide"] }
+
+[transfer_families.ntc.model]
+kind = "ntc_beta_divider"
+nominal_resistance_ohms = 10000.0
+beta_kelvin = 3950.0
+nominal_temperature_celsius = 25.0
+fixed_resistance_ohms = 10000.0
+adc_max_code = 4095
+topology = "ntc_to_ground"
+
+[[transfer_families.ntc.members]]
+selectors = { probe = "wide" }
+status = "emit"
+applicability = { physical = [-20.0, 80.0] }
+"#;
+        let from_toml = DefinitionsFile::from_toml_str(toml)
+            .unwrap()
+            .validate()
+            .unwrap();
+        let mut programmatic = DefinitionsFile::default();
+        programmatic
+            .insert_family(
+                FamilySpec::new(
+                    "ntc",
+                    "adc_code",
+                    "degree_celsius",
+                    1000,
+                    50,
+                    FamilySource::ntc_beta_divider(
+                        10_000.0,
+                        3950.0,
+                        25.0,
+                        10_000.0,
+                        4095,
+                        DividerTopology::NtcToGround,
+                    ),
+                    SourceProvenance::new("test fixture"),
+                )
+                .with_selector_axes(BTreeMap::from([(
+                    "probe".into(),
+                    vec![SelectorValue::String("wide".into())],
+                )]))
+                .with_members(vec![FamilyMemberDef {
+                    selectors: BTreeMap::from([(
+                        "probe".into(),
+                        SelectorValue::String("wide".into()),
+                    )]),
+                    input_transform: None,
+                    status: MemberStatus::Emit,
+                    reason: None,
+                    applicability: ApplicabilityDef {
+                        observation: None,
+                        model_input: None,
+                        physical: Some([-20.0, 80.0]),
+                    },
+                    provenance: None,
+                    emitted_name: None,
+                }]),
             )
-            .with_selector_axes(BTreeMap::from([(
-                "probe".into(),
-                vec![SelectorValue::String("wide".into())],
-            )]))
-            .with_members(vec![FamilyMemberDef {
-                selectors: BTreeMap::from([("probe".into(), SelectorValue::String("wide".into()))]),
-                input_transform: None,
-                status: MemberStatus::Emit,
-                reason: None,
-                applicability: ApplicabilityDef {
-                    observation: None,
-                    model_input: None,
-                    physical: Some([-20.0, 80.0]),
-                },
-                provenance: None,
-                emitted_name: None,
-            }]),
-        )
-        .unwrap();
-        let validated = defs.validate().unwrap();
-        let family = &validated.families()[0];
+            .unwrap();
+        let from_spec = programmatic.validate().unwrap();
+        let family = &from_spec.families()[0];
+        assert_eq!(from_toml.families()[0].source(), family.source());
+        assert_eq!(
+            family.source(),
+            &FamilySource::NtcBetaDivider {
+                nominal_resistance_ohms: 10_000.0,
+                beta_kelvin: 3950.0,
+                nominal_temperature_celsius: 25.0,
+                fixed_resistance_ohms: 10_000.0,
+                adc_max_code: 4095,
+                topology: DividerTopology::NtcToGround,
+            }
+        );
         assert_eq!(family.declared_source(), DeclaredSource::Model);
         assert!(family.has_model());
-        assert!(family.members()[0].observation_domain().is_some());
-        assert!(
-            validated
-                .generate(&GenerateOptions::transfers_only())
-                .unwrap()
-                .contains("pub const NTC_PROBE_WIDE:")
+        assert_eq!(
+            family.members()[0].observation_domain(),
+            from_toml.families()[0].members()[0].observation_domain()
+        );
+        let opts = GenerateOptions::transfers_only();
+        assert_eq!(
+            from_toml.generate(&opts).unwrap(),
+            from_spec.generate(&opts).unwrap()
         );
     }
 
@@ -2500,7 +2639,7 @@ applicability = { model_input = [100.0, 22000.0] }
             .and_then(|()| colliding.validate().err())
             .unwrap()
             .to_string();
-        assert!(error.contains("both expand to `als_gain_div4`"), "{error}");
+        assert!(error.contains("both resolve to `als_gain_div4`"), "{error}");
 
         let mut blank = DefinitionsFile::default();
         let error = blank
@@ -2572,6 +2711,81 @@ applicability = { model_input = [100.0, 22000.0] }
         validated.insert_family(formula_family_spec()).unwrap();
         assert_eq!(validated.families().len(), 1);
         assert_eq!(validated.emission_manifest().entries().len(), 1);
+    }
+
+    #[test]
+    fn replacement_overlay_provenance_survives_insert_family_revalidation() {
+        let mut validated = DefinitionsFile::from_toml_str(family_toml())
+            .unwrap()
+            .validate()
+            .unwrap();
+        let emitted_name = "als_gain_div4_integration_time_ms_100";
+        let replacement =
+            SourceProvenance::new("replacement source").with_locator("replacement table");
+        validated
+            .set_source(
+                emitted_name,
+                TransferSource::evaluated_truth(1, (1..=10).map(f64::from).collect())
+                    .with_provenance(replacement.clone()),
+            )
+            .unwrap();
+
+        validated
+            .insert_family(auxiliary_formula_family_spec("secondary"))
+            .unwrap();
+
+        let member = validated
+            .families()
+            .iter()
+            .flat_map(ValidatedFamily::members)
+            .find(|member| member.emitted_name() == emitted_name)
+            .unwrap();
+        assert_eq!(member.provenance(), &replacement);
+        let report = validated
+            .generate_report(&GenerateOptions::transfers_only())
+            .unwrap()
+            .report;
+        let transfer = report
+            .transfers
+            .iter()
+            .find(|transfer| transfer.table_name == emitted_name)
+            .unwrap();
+        assert_eq!(transfer.provenance.as_ref(), Some(&replacement));
+    }
+
+    #[test]
+    fn inherited_overlay_provenance_survives_insert_family_revalidation() {
+        let mut validated = DefinitionsFile::from_toml_str(family_toml())
+            .unwrap()
+            .validate()
+            .unwrap();
+        let emitted_name = "als_gain_div4_integration_time_ms_100";
+        validated
+            .set_source(
+                emitted_name,
+                TransferSource::evaluated_truth(1, (1..=10).map(f64::from).collect())
+                    .with_provenance(SourceProvenance::new("temporary replacement")),
+            )
+            .unwrap();
+        validated
+            .set_source(
+                emitted_name,
+                TransferSource::evaluated_truth(1, (1..=10).map(f64::from).collect())
+                    .inherit_provenance(),
+            )
+            .unwrap();
+
+        validated
+            .insert_family(auxiliary_formula_family_spec("secondary"))
+            .unwrap();
+
+        let member = validated
+            .families()
+            .iter()
+            .flat_map(ValidatedFamily::members)
+            .find(|member| member.emitted_name() == emitted_name)
+            .unwrap();
+        assert_eq!(member.provenance().identity, "test fixture");
     }
 
     #[test]

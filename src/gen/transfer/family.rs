@@ -673,7 +673,7 @@ pub enum GapStatus {
 }
 
 /// Family identity retained through expansion so generation reports do not
-/// reconstruct members by matching expanded names.
+/// reconstruct members by matching resolved emitted names.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct FamilyMemberOrigin {
     pub family: String,
@@ -716,7 +716,7 @@ impl GapDef {
 pub(crate) fn expand_families(
     families: &BTreeMap<String, TransferFamilyDef>,
 ) -> Result<BTreeMap<String, ResolvedTransfer>, String> {
-    let mut out = BTreeMap::new();
+    let mut out: BTreeMap<String, ResolvedTransfer> = BTreeMap::new();
     for (family_name, family) in families {
         validate_family(family_name, family)?;
 
@@ -734,13 +734,25 @@ pub(crate) fn expand_families(
                     selectors: member.selectors.clone(),
                 }),
             };
-            if let Some(_previous) = out.insert(member_name.clone(), resolved) {
+            if let Some(previous) = out.get(&member_name) {
+                let previous_origin = previous
+                    .origin
+                    .as_ref()
+                    .expect("emitted family members retain their origin");
+                let origin = resolved
+                    .origin
+                    .as_ref()
+                    .expect("emitted family members retain their origin");
                 return Err(format!(
-                    "transfer family `{family_name}`: duplicate expanded name `{member_name}` \
-                     from selectors {}",
-                    format_selectors(&member.selectors)
+                    "resolved emitted name `{member_name}` collides between transfer family `{}` \
+                     selectors {} and transfer family `{}` selectors {}",
+                    previous_origin.family,
+                    format_selectors(&previous_origin.selectors),
+                    origin.family,
+                    format_selectors(&origin.selectors)
                 ));
             }
+            out.insert(member_name, resolved);
             generated += 1;
         }
         if generated == 0 {
@@ -836,7 +848,7 @@ fn validate_family(family_name: &str, family: &TransferFamilyDef) -> Result<(), 
             {
                 return Err(format!(
                     "transfer family `{family_name}`: selector maps {previous} and {} \
-                     both expand to `{member_name}`",
+                     both resolve to `{member_name}`",
                     format_selectors(&member.selectors)
                 ));
             }
@@ -1884,7 +1896,7 @@ applicability = { observation = [1, 10] }
         let mut families = BTreeMap::new();
         families.insert("als".into(), formula_family(vec![string_one, int_one]));
         let error = expand_families(&families).unwrap_err();
-        assert!(error.contains("both expand to `als_a_1`"));
+        assert!(error.contains("both resolve to `als_a_1`"));
         assert!(error.contains("a=\"1\""));
         assert!(error.contains("a=1"));
     }
@@ -3381,7 +3393,47 @@ provenance = { locator = "§4.2 forbidden matrix" }
             formula_family(vec![first, second]),
         )]))
         .unwrap_err();
-        assert!(error.contains("both expand to `shared_stem`"), "{error}");
+        assert!(error.contains("both resolve to `shared_stem`"), "{error}");
+    }
+
+    #[test]
+    fn cross_family_explicit_and_derived_stems_report_both_origins() {
+        let derived = emit_member("div4", 100);
+        let mut explicit = emit_member("x1", 50);
+        explicit.emitted_name = Some("als_gain_div4_integration_time_ms_100".into());
+
+        let error = expand_families(&BTreeMap::from([
+            ("als".into(), formula_family(vec![derived])),
+            ("legacy".into(), formula_family(vec![explicit])),
+        ]))
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            "resolved emitted name `als_gain_div4_integration_time_ms_100` collides between \
+             transfer family `als` selectors {gain=\"div4\", integration_time_ms=100} and \
+             transfer family `legacy` selectors {gain=\"x1\", integration_time_ms=50}"
+        );
+    }
+
+    #[test]
+    fn cross_family_derived_stems_report_both_origins() {
+        let mut first = emit_member("unused", 100);
+        first.selectors = BTreeMap::from([("b".into(), SelectorValue::String("c_d".into()))]);
+        let mut second = emit_member("unused", 100);
+        second.selectors = BTreeMap::from([("c".into(), SelectorValue::String("d".into()))]);
+
+        let error = expand_families(&BTreeMap::from([
+            ("a".into(), formula_family(vec![first])),
+            ("a_b".into(), formula_family(vec![second])),
+        ]))
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            "resolved emitted name `a_b_c_d` collides between transfer family `a` selectors \
+             {b=\"c_d\"} and transfer family `a_b` selectors {c=\"d\"}"
+        );
     }
 
     #[test]

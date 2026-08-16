@@ -416,15 +416,19 @@ citation, not a member override. A standalone guard citation likewise resolves
 against the declared transfer citation before any generation-source overlay,
 so replacing or clearing source provenance does not rewrite or remove the
 guard-classification citation. `ValidatedFamily` also exposes units, output
-scale, shared source kind, formula or points inspection, aggregate budgets,
-and per-member resolved observation domain and emitted identity. Construct a
+scale, aggregate budgets, and its exact validated `FamilySource` through
+`ValidatedFamily::source`, including scaled-polynomial coefficients or every
+NTC Beta-divider parameter. The declared-source, formula, points, and
+model-presence accessors remain convenient projections. Members expose their
+resolved observation domain and emitted identity. Construct a
 family without TOML through `FamilySpec` / `FamilySource` and `insert_family`;
 that path uses the same validation and generation pipeline, including
 provenance. An optional member `emitted_name` keeps the generated stem stable
-when selector display spelling changes. `emission_manifest` maps family plus
-typed selectors to the table stem, symbol, and companion metadata names
-before fitting. Generated rustdoc for family members names the family and the
-exact selector map.
+when selector display spelling changes. An emitted-name collision identifies
+both origin families and their exact typed selector maps. `emission_manifest`
+maps family plus typed selectors to the table stem, symbol, and companion
+metadata names before fitting. Generated rustdoc for family members names the
+family and the exact selector map.
 
 Inspect `ValidatedFamily::provenance`,
 `ValidatedFamily::observation_guard_provenance`, and the citation-free

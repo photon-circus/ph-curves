@@ -391,7 +391,7 @@ impl DefinitionsFile {
             }
             if self.transfers.contains_key(name) {
                 return Err(format!(
-                    "expanded family member `{name}` collides with a standalone [transfers] entry"
+                    "emitted family member `{name}` collides with a standalone [transfers] entry"
                 ));
             }
         }

@@ -23,8 +23,8 @@ plugin ABI: README and `docs/design/gen-build-api.md` keep that as a non-goal.
 2. **Validated** — `DefinitionsFile::validate` runs family/gap/identity and
    selector-universe completeness checks without fitting or emitting Rust.
    Every member, including `unnecessary`, `unsupported`, and `forbidden`, is
-   inspectable, as is every family-scoped gap. Expanded names are reserved
-   only for `emit`. Successful validation yields
+   inspectable, as is every family-scoped gap. Explicit and derived emitted
+   names are reserved only for `emit`. Successful validation yields
    `FamilyCompleteness::Complete`. Document-level `[gaps]` remain a separate
    named map and do not occupy family identities.
 3. **Generation sources** — TOML formula/points/model, or a `TransferSource`
@@ -44,17 +44,21 @@ plugin ABI: README and `docs/design/gen-build-api.md` keep that as a non-goal.
    Standalone overlays replace their declared source and may define a
    different observation domain.
 
-`ValidatedFamily` carries the shared source kind, formula or points
-inspection, units, output scale, aggregate budgets, citation-free policy, and
-selector universe. `FamilySpec` / `FamilySource` construct the same
+`ValidatedFamily::source` exposes the exact validated `FamilySource`, including
+the scaled-polynomial coefficients or all NTC Beta-divider parameters, along
+with units, output scale, aggregate budgets, citation-free policy, and selector
+universe. The declared-source, formula, points, and model-presence accessors
+remain compatibility projections. `FamilySpec` / `FamilySource` construct the same
 `TransferFamilyDef` graph programmatically; TOML and the builder converge on
 one validation and generation pipeline. Optional member `emitted_name` is an
 explicit table-name stem; the default remains the deterministic
 family-plus-selector expansion. `ValidatedDefinitions::emission_manifest`
 lists every emit member exactly once as family + typed selectors → symbol +
-companion names. Generated rustdoc for family members includes the family
-name and the exact selector map. Selector universe, family-scoped gaps, typed
-identities, and completeness remain on `ValidatedFamily`
+companion names. Emitted-name collision diagnostics identify both origin
+families and their exact typed selector maps. Generated rustdoc for family
+members includes the family name and the exact selector map. Selector universe,
+family-scoped gaps, typed identities, and completeness remain on
+`ValidatedFamily`
 ([#40](https://github.com/photon-circus/ph-curves/issues/40)).
 
 ## Public surface
@@ -62,14 +66,14 @@ identities, and completeness remain on `ValidatedFamily`
 Host tools inspect through nameable types: `ValidatedDefinitions`,
 `ValidatedFamily`, `ValidatedMember`, `ValidatedFamilyGap`,
 `SelectorUniverse`, its lazy `SelectorIdentities` iterator,
-`FamilyCompleteness`, `DeclaredSource`, `SourceProvenance`,
+`FamilyCompleteness`, `FamilySource`, `DeclaredSource`, `SourceProvenance`,
 `GenerationPolicy`, `ObservationGuardPolicy`, `EmissionManifest`,
 `TransferFamilyDef` accessors, `DefinitionsFile::curves` / `transfers` /
 `transfer_families` / `gaps`. `ValidatedFamily::gaps` is the family-scoped
 selector list; `ValidatedDefinitions::gaps` is the document-level named map.
-Built-in `ModelDef` remains crate-private. Programmatic NTC families use
-`FamilySource::ntc_beta_divider` and `DividerTopology` without exposing that
-catalog type.
+Built-in `ModelDef` remains crate-private. Both programmatic construction and
+validated inspection use the public `FamilySource::NtcBetaDivider` variant and
+`DividerTopology`, without exposing that catalog type.
 
 `SelectorUniverse::identity_count` is the explicit-list length or checked
 Cartesian axis-length product. Family validation rejects a Cartesian product

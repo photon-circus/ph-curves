@@ -182,8 +182,9 @@ including selector keys (`als_gain_div4_integration_time_ms_100`). An optional
 member `emitted_name` overrides that stem without changing selector identity,
 so a display-token rename does not force a symbol rename. Explicit and derived
 stems share one emit-member collision set; if two distinct maps would emit the
-same name, generation fails and prints both maps. Description-only members may
-declare a stem but do not occupy that set and are not generated.
+same name, generation fails and identifies both origin families and their exact
+typed selector maps. Description-only members may declare a stem but do not
+occupy that set and are not generated.
 
 Validated host IR exposes the checked count through
 `SelectorUniverse::identity_count`. `SelectorUniverse::identities` is lazy:

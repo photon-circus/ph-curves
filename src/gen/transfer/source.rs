@@ -345,10 +345,12 @@ impl TransferSpec {
     }
 }
 
-/// Shared family source constructed without TOML.
+/// Exact shared source for a transfer family.
 ///
-/// Built-in model parameters are supplied through these constructors. The
-/// crate-private model catalog type is not part of the public IR.
+/// Construct this programmatically through the variant helpers, or inspect it
+/// after validation through [`crate::gen::ValidatedFamily::source`]. Built-in
+/// model parameters remain available here without exposing the crate-private
+/// model catalog type.
 #[derive(Clone, Debug)]
 pub enum FamilySource {
     /// A formula over the observation-domain variable `x`.
@@ -375,6 +377,52 @@ pub enum FamilySource {
         /// Divider wiring.
         topology: DividerTopology,
     },
+}
+
+impl PartialEq for FamilySource {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Formula(left), Self::Formula(right)) => left == right,
+            (Self::Points(left), Self::Points(right)) => {
+                left.len() == right.len()
+                    && left.iter().zip(right).all(|(left, right)| {
+                        left.input == right.input && left.output == right.output
+                    })
+            }
+            (
+                Self::ScaledPolynomial { coefficients: left },
+                Self::ScaledPolynomial {
+                    coefficients: right,
+                },
+            ) => left == right,
+            (
+                Self::NtcBetaDivider {
+                    nominal_resistance_ohms: left_nominal_resistance_ohms,
+                    beta_kelvin: left_beta_kelvin,
+                    nominal_temperature_celsius: left_nominal_temperature_celsius,
+                    fixed_resistance_ohms: left_fixed_resistance_ohms,
+                    adc_max_code: left_adc_max_code,
+                    topology: left_topology,
+                },
+                Self::NtcBetaDivider {
+                    nominal_resistance_ohms: right_nominal_resistance_ohms,
+                    beta_kelvin: right_beta_kelvin,
+                    nominal_temperature_celsius: right_nominal_temperature_celsius,
+                    fixed_resistance_ohms: right_fixed_resistance_ohms,
+                    adc_max_code: right_adc_max_code,
+                    topology: right_topology,
+                },
+            ) => {
+                left_nominal_resistance_ohms == right_nominal_resistance_ohms
+                    && left_beta_kelvin == right_beta_kelvin
+                    && left_nominal_temperature_celsius == right_nominal_temperature_celsius
+                    && left_fixed_resistance_ohms == right_fixed_resistance_ohms
+                    && left_adc_max_code == right_adc_max_code
+                    && left_topology == right_topology
+            }
+            _ => false,
+        }
+    }
 }
 
 impl FamilySource {
@@ -409,6 +457,38 @@ impl FamilySource {
             fixed_resistance_ohms,
             adc_max_code,
             topology,
+        }
+    }
+
+    pub(crate) fn from_family(family: &TransferFamilyDef) -> Option<Self> {
+        match (&family.formula, &family.points, &family.model) {
+            (Some(formula), None, None) => Some(Self::Formula(formula.clone())),
+            (None, Some(points), None) => Some(Self::Points(points.clone())),
+            (None, None, Some(ModelDef::ScaledPolynomial { coefficients, .. })) => {
+                Some(Self::ScaledPolynomial {
+                    coefficients: coefficients.clone(),
+                })
+            }
+            (
+                None,
+                None,
+                Some(ModelDef::NtcBetaDivider {
+                    nominal_resistance_ohms,
+                    beta_kelvin,
+                    nominal_temperature_celsius,
+                    fixed_resistance_ohms,
+                    adc_max_code,
+                    topology,
+                }),
+            ) => Some(Self::NtcBetaDivider {
+                nominal_resistance_ohms: *nominal_resistance_ohms,
+                beta_kelvin: *beta_kelvin,
+                nominal_temperature_celsius: *nominal_temperature_celsius,
+                fixed_resistance_ohms: *fixed_resistance_ohms,
+                adc_max_code: *adc_max_code,
+                topology: *topology,
+            }),
+            _ => None,
         }
     }
 }

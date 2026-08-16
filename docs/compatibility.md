@@ -287,14 +287,16 @@ companion constant and are copied into the host report when present.
 
 ## Host family IR, programmatic construction, and emitted identity
 
-`ValidatedFamily` / `ValidatedMember` now expose units, shared source kind,
-resolved observation domain, and resolved emitted identity so a caller does
-not need to retain the pre-validation `DefinitionsFile`. `FamilySpec` /
-`FamilySource` and `insert_family` are additive `gen-lib` APIs equivalent to
-TOML family construction. Optional member `emitted_name` is an opt-in key on
-the unreleased `[transfer_families]` publish shape; omitted, the stem stays
-the derived family-plus-selector expansion. `EmissionManifest` and report
-companion-symbol fields are host-only. None of these types enter the
-default-feature runtime path. Generated family-member rustdoc grows two
-comment lines (family name and selector map); standalone transfers are
-unchanged.
+`ValidatedFamily` / `ValidatedMember` now expose units, the exact validated
+`FamilySource` through `ValidatedFamily::source`, resolved observation domain,
+and resolved emitted identity so a caller does not need to retain the
+pre-validation `DefinitionsFile`. Exact
+source inspection includes formula text, points, scaled-polynomial
+coefficients, or all NTC Beta-divider parameters; `ModelDef` remains private.
+`FamilySpec` / `FamilySource` and `insert_family` are additive `gen-lib` APIs
+equivalent to TOML family construction. Optional member `emitted_name` is an
+opt-in key on the unreleased `[transfer_families]` publish shape; omitted, the
+stem stays the derived family-plus-selector expansion. `EmissionManifest` and
+report companion-symbol fields are host-only. None of these types enter the
+default-feature runtime path. Generated family-member rustdoc grows two comment
+lines (family name and selector map); standalone transfers are unchanged.

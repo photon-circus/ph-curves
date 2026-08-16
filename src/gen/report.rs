@@ -115,7 +115,7 @@ pub struct FamilyMemberReport {
     pub provenance: SourceProvenance,
     /// Member-level citation override exactly as declared.
     pub provenance_override: Option<SourceProvenanceOverride>,
-    /// Generated table name for an emitted member; absent otherwise.
+    /// Resolved emitted table name (explicit or selector-derived); absent otherwise.
     pub table_name: Option<String>,
     /// Generated Rust constant name for an emitted member; absent otherwise.
     pub symbol: Option<String>,
@@ -168,7 +168,10 @@ pub struct TransferReport {
     pub family: Option<String>,
     /// Selector identity of a family member. Empty for standalone transfers.
     pub selectors: BTreeMap<String, SelectorValue>,
-    /// Definitions-table name used for codegen (expanded name for members).
+    /// Resolved table name used for codegen.
+    ///
+    /// For a family member, this is its explicit `emitted_name` when present,
+    /// otherwise the deterministic family-plus-selector name.
     pub table_name: String,
     /// Emitted Rust constant name (`to_const_name` of [`Self::table_name`]).
     pub symbol: String,
