@@ -12,7 +12,7 @@ Stabilize answers “is the signal quiet?” Applications still need Schmitt/hys
 | ------------- | ----------- |
 | `TemporalFilter` / `FilterOutput<T>` | Not forced — wrong shape for latched bools / edges |
 | `StabilityDetector` | Precedent: caller-driven `update` / `reset`, small enum output |
-| `TemporalSample` | Reused by `Hysteresis<T>` for `u16` / `i32` samples |
+| `TemporalSample` | Reused by `Hysteresis<T>` for `u16` / `i32` / `u32` samples |
 | Transfer / Affine | Optional upstream; raw digital inputs can feed `Debounce` directly |
 | Explicit deferral of hysteretic decisions | Satisfied by this stabilize-family companion |
 

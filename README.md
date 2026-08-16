@@ -397,6 +397,11 @@ if let Some(filtered_adc) = median.update(adc_code).ready() {
 }
 ```
 
+Sample type `T` is `u16`, `i32`, or `u32`. `MovingAverage` caps `N` so the
+`i64` running sum cannot overflow; for `u32` that ceiling is
+`floor(i64::MAX / u32::MAX) = 2_147_483_648`, which is smaller than 32-bit
+`usize::MAX` and is not a practical window — storage is `[T; N]`.
+
 Available primitives:
 
 - `MovingAverage<T, N>`: `O(1)` exact fixed-window mean with explicit warm-up.

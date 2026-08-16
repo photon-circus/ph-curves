@@ -18,9 +18,11 @@
 /// is representable. The single unrepresentable case is
 /// `numerator == i64::MIN` with `denominator.unsigned_abs() == 1`, where the
 /// exact quotient is `2^63` and does not fit `i64`. No call site in this crate
-/// can reach it: transfer and stabilization numerators are bounded by products
-/// of `u16` and `i32` operands, far below `i64::MIN`. Release builds return a
-/// wrapped value rather than aborting on the audio- and control-path callers.
+/// can reach it: transfer numerators are products of `u16` and `i32`
+/// operands, and the widest stabilization product is `u32::MAX * u16::MAX`
+/// from the exponential smoother, still far below `i64::MIN`. Release builds
+/// return a wrapped value rather than aborting on the audio- and control-path
+/// callers.
 pub(crate) const fn div_nearest_ties_away(numerator: i64, denominator: i64) -> i64 {
     debug_assert!(denominator != 0);
 

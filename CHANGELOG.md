@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `TemporalSample` for `u32`, so moving average, median, exponential smoother,
+  stability detection, and hysteresis accept already-converted unsigned
+  measurements without a downcast. The moving-average window cap is
+  `floor(i64::MAX / u32::MAX) = 2_147_483_648`. Unlike `u16` and `i32`, that
+  bound is smaller than 32-bit `usize::MAX`, so the existing 32-bit shortcut
+  is not used — it would admit windows whose running sum overflows `i64`. The
+  cap is accumulator safety, not a practical size: storage is still `[T; N]`.
 - Issue forms for bug reports and feature requests, and a pull request
   template. Blank issues are disabled so the chooser always renders, which is
   what puts the private disclosure route in front of someone about to paste a

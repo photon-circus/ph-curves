@@ -15,7 +15,20 @@ mod sealed {
 
 /// Integer sample type supported by temporal stabilization primitives.
 ///
-/// This trait is sealed and currently implemented for `u16` and `i32`.
+/// This trait is sealed and implemented for `u16`, `i32`, and `u32`. Callers
+/// cannot add implementations.
+///
+/// [`MovingAverage`] keeps an `i64` running sum, so each type declares the
+/// largest `N` for which `N` copies of its widest sample still fit. For `u16`
+/// and `i32` that bound is at least `usize::MAX` on 32-bit targets, so those
+/// implementations cap at `usize::MAX` there. For `u32` the bound is
+/// `floor(i64::MAX / u32::MAX) = 2_147_483_648`, which is *smaller* than
+/// 32-bit `usize::MAX`; reusing that shortcut would admit windows whose sum
+/// overflows `i64`.
+///
+/// The bound is an accumulator-safety ceiling, not a recommended window.
+/// Storage is `[T; N]` plus the `i64` sum — `2_147_483_648` `u32` samples
+/// occupy 8 GiB. Firmware chooses `N` from available RAM.
 pub trait TemporalSample: sealed::Sealed + Copy + Ord {
     /// Zero value used to initialize fixed storage.
     #[doc(hidden)]
@@ -72,6 +85,24 @@ impl TemporalSample for i32 {
     }
 }
 
+impl sealed::Sealed for u32 {}
+
+impl TemporalSample for u32 {
+    const ZERO: Self = 0;
+    // Unlike `u16` / `i32`, this is smaller than 32-bit `usize::MAX`, so the
+    // `usize::BITS <= 32` shortcut used by those impls would overflow `i64`.
+    const MAX_WINDOW: usize = (i64::MAX / u32::MAX as i64) as usize;
+
+    fn to_i64(self) -> i64 {
+        i64::from(self)
+    }
+
+    fn from_i64(value: i64) -> Self {
+        debug_assert!((0..=i64::from(u32::MAX)).contains(&value));
+        value as u32
+    }
+}
+
 /// Output from a temporal filter.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum FilterOutput<T> {
@@ -108,6 +139,11 @@ pub trait TemporalFilter<T> {
 ///
 /// Updates are `O(1)` using a checked-range `i64` running sum. Output begins
 /// only after all `N` samples have been supplied.
+///
+/// The per-type window cap on [`TemporalSample`] is an accumulator-safety
+/// ceiling so `N` copies of the widest sample still fit in `i64`. It is not a
+/// practical size: storage is `[T; N]` plus that sum, and firmware chooses `N`
+/// from available RAM.
 #[derive(Clone, Debug)]
 pub struct MovingAverage<T: TemporalSample, const N: usize> {
     samples: [T; N],
@@ -121,8 +157,9 @@ impl<T: TemporalSample, const N: usize> MovingAverage<T, N> {
     ///
     /// # Panics
     ///
-    /// Panics for a zero-sized window or a window too large for the `i64`
-    /// running-sum guarantee of `T`.
+    /// Panics for a zero-sized window or a window larger than the
+    /// accumulator-safety ceiling of `T` (see [`TemporalSample`]). That ceiling
+    /// is not a recommended window size; `N` is fixed storage.
     pub const fn new() -> Self {
         assert!(N > 0);
         assert!(N <= T::MAX_WINDOW);
@@ -492,6 +529,23 @@ impl Hysteresis<u16> {
     ///
     /// Panics if `low > high`.
     pub const fn new(low: u16, high: u16) -> Self {
+        assert!(low <= high);
+        Self {
+            low,
+            high,
+            latched: false,
+            initial: false,
+        }
+    }
+}
+
+impl Hysteresis<u32> {
+    /// Construct a hysteresis latch that starts off.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `low > high`.
+    pub const fn new(low: u32, high: u32) -> Self {
         assert!(low <= high);
         Self {
             low,
@@ -909,5 +963,117 @@ mod tests {
         }
         assert_eq!(edges, 2);
         assert_eq!(deb.state(), Some(false));
+    }
+
+    #[test]
+    fn u32_moving_average_warms_up_rolls_and_resets() {
+        let mut filter = MovingAverage::<u32, 3>::new();
+        assert!(filter.is_empty());
+        assert_eq!(
+            filter.update(3),
+            FilterOutput::WarmingUp {
+                samples: 1,
+                required: 3
+            }
+        );
+        assert_eq!(filter.len(), 1);
+        assert_eq!(filter.update(6).ready(), None);
+        assert_eq!(filter.update(9), FilterOutput::Ready(6));
+        assert_eq!(filter.len(), 3);
+        assert_eq!(filter.update(12), FilterOutput::Ready(9));
+        filter.reset();
+        assert!(filter.is_empty());
+        assert_eq!(filter.len(), 0);
+        assert!(filter.update(30).ready().is_none());
+    }
+
+    #[test]
+    fn u32_moving_average_handles_zero_max_and_ties() {
+        let mut filter = MovingAverage::<u32, 2>::new();
+        filter.update(0);
+        assert_eq!(filter.update(u32::MAX), FilterOutput::Ready(2_147_483_648));
+
+        let mut both_max = MovingAverage::<u32, 2>::new();
+        both_max.update(u32::MAX);
+        assert_eq!(both_max.update(u32::MAX), FilterOutput::Ready(u32::MAX));
+
+        let mut zeros = MovingAverage::<u32, 2>::new();
+        zeros.update(0);
+        assert_eq!(zeros.update(0), FilterOutput::Ready(0));
+    }
+
+    #[test]
+    fn u32_moving_average_window_bound_is_accumulator_limited() {
+        const MAX: usize = <u32 as TemporalSample>::MAX_WINDOW;
+        assert_eq!(MAX, 2_147_483_648);
+        assert_eq!(MAX as i64, i64::MAX / i64::from(u32::MAX));
+        assert!((MAX as i64).checked_mul(i64::from(u32::MAX)).is_some());
+        assert!(
+            ((MAX as i64) + 1)
+                .checked_mul(i64::from(u32::MAX))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn u32_median_covers_full_unsigned_width() {
+        let mut filter = MedianFilter::<u32, 3>::new();
+        assert!(filter.update(0).ready().is_none());
+        assert!(filter.update(u32::MAX).ready().is_none());
+        assert_eq!(filter.update(1), FilterOutput::Ready(1));
+        assert_eq!(filter.update(u32::MAX), FilterOutput::Ready(u32::MAX));
+    }
+
+    #[test]
+    fn u32_exponential_smoother_extreme_transitions() {
+        let mut up = ExponentialSmoother::<u32>::new(u16::MAX);
+        assert_eq!(up.update(0), FilterOutput::Ready(0));
+        assert_eq!(up.update(u32::MAX), FilterOutput::Ready(u32::MAX));
+
+        let mut down = ExponentialSmoother::<u32>::new(u16::MAX);
+        assert_eq!(down.update(u32::MAX), FilterOutput::Ready(u32::MAX));
+        assert_eq!(down.update(0), FilterOutput::Ready(0));
+    }
+
+    #[test]
+    fn u32_detector_span_covers_full_unsigned_range() {
+        let mut detector = StabilityDetector::<u32, 2>::new(u64::MAX);
+        detector.update(0);
+        assert_eq!(
+            detector.update(u32::MAX),
+            Stability::Stable {
+                minimum: 0,
+                maximum: u32::MAX,
+                span: u64::from(u32::MAX)
+            }
+        );
+    }
+
+    #[test]
+    fn u32_hysteresis_latches_at_unsigned_boundaries() {
+        let mut hyst = Hysteresis::<u32>::new(0, u32::MAX);
+        assert!(!hyst.update(1));
+        assert!(hyst.update(u32::MAX));
+        assert!(hyst.update(1));
+        assert!(!hyst.update(0));
+        assert!(!hyst.update(1));
+    }
+
+    #[test]
+    fn u32_hysteresis_equal_thresholds_at_boundaries() {
+        let mut at_zero = Hysteresis::<u32>::new(0, 0);
+        assert!(at_zero.update(0));
+
+        let mut at_max = Hysteresis::<u32>::new(u32::MAX, u32::MAX);
+        assert!(!at_max.update(u32::MAX - 1));
+        assert!(at_max.update(u32::MAX));
+        assert!(at_max.update(u32::MAX));
+        assert!(!at_max.update(u32::MAX - 1));
+    }
+
+    #[test]
+    fn u32_hysteresis_rejects_inverted_band() {
+        assert!(std::panic::catch_unwind(|| Hysteresis::<u32>::new(2, 1)).is_err());
+        assert!(std::panic::catch_unwind(|| Hysteresis::<u32>::new(u32::MAX, 0)).is_err());
     }
 }
