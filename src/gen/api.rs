@@ -250,16 +250,43 @@ mod tests {
     }
 
     #[test]
-    fn unknown_family_schema_returns_toml_error_not_header_only() {
-        let toml = "[transfer_families]\n[gaps]\n";
+    fn unknown_table_returns_toml_error_not_header_only() {
+        let toml = "[invented]\nfoo = 1\n";
         let error = generate_from_str(toml, &GenerateOptions::default()).unwrap_err();
 
         assert!(matches!(error, Error::Toml(_)));
         let message = error.to_string();
         assert!(
-            message.contains("unknown field `transfer_families`")
-                || message.contains("unknown field `gaps`"),
+            message.contains("unknown field `invented`"),
             "expected a named unknown top-level table, got: {message}"
         );
+    }
+
+    #[test]
+    fn malformed_description_only_member_fails_generate() {
+        let toml = r#"
+[transfer_families.als]
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1000
+max_interpolation_error = 50
+formula = "x"
+domain = [1, 10]
+
+[[transfer_families.als.members]]
+selectors = { gain = "div4", integration_time_ms = 100 }
+scale = 268800
+status = "emit"
+applicability = { model_input = [100.0, 22000.0] }
+
+[[transfer_families.als.members]]
+selectors = { gain = "x1", integration_time_ms = 100 }
+scale = 0
+status = "none"
+applicability = { model_input = [100.0, 22000.0] }
+"#;
+        let error = generate_from_str(toml, &GenerateOptions::default()).unwrap_err();
+        assert!(matches!(error, Error::Validation(_)));
+        assert!(error.to_string().contains("scale must be positive"));
     }
 }

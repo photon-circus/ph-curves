@@ -280,6 +280,38 @@ Point inputs must be strictly increasing and outputs must be monotonic.
 Endpoints define the valid domain; unlike normalized easing curves, physical
 points do not need to start at zero or end at full scale.
 
+Discrete selector combinations that share one source belong in a transfer
+family. Selectors are never interpolated. Only `status = "emit"` members are
+generated; `none` and `do_not_use` members stay on the description.
+`[gaps]` records channels the sources leave undefined:
+
+```toml
+[transfer_families.als]
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1000
+max_interpolation_error = 50
+formula = "x"
+domain = [1, 10]
+interpolate_selectors = false
+
+[[transfer_families.als.members]]
+selectors = { gain = "div4", integration_time_ms = 100 }
+scale = 268800
+status = "emit"
+applicability = { model_input = [100.0, 22000.0] }
+
+[gaps.white_channel]
+status = "undefined"
+reason = "counts only; no conversion"
+```
+
+Families cannot share a document with `[curves]` (the dense LUT path).
+Per-member `scale` is required and inspectable; applying it to host truth is
+a later model. Generated output is still independent
+`PiecewiseLinearTransfer` constants. Inspect parsed families and gaps through
+`DefinitionsFile::transfer_families` and `gaps` on the host `gen-lib` API.
+
 If a model needs conditionals, multiple independent inputs, dynamic
 calibration, temperature/load compensation, or domain-specific state, compute
 calibration points in a dedicated host tool/crate and feed those points to the

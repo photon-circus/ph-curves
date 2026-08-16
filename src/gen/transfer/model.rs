@@ -8,7 +8,7 @@ use std::prelude::v1::*;
 
 use serde::Deserialize;
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ModelDef {
     NtcBetaDivider {

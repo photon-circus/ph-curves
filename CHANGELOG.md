@@ -15,6 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   vulnerability into a public issue. The bug form asks which surface is
   involved — runtime, `gen-lib`, or `gen-cli` — because the `no_std` runtime
   and the host generator fail in unrelated ways.
+- Host-only `[transfer_families]` and `[gaps]` tables. A family shares one
+  formula, points, or model source across explicit selector members; only
+  `status = "emit"` members become independent `PiecewiseLinearTransfer`
+  constants. Gaps record `status = "undefined"` with a non-blank reason and
+  are not generated. `DefinitionsFile::transfer_families` and `gaps` are
+  read-only inspection views. Selectors are never interpolated, unknown
+  nested family/member/applicability/gap fields are rejected, and every
+  member is validated before non-emitted statuses are filtered.
 
 ### Changed
 
@@ -30,6 +38,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   before 0.2.1 — but the tagline is the first thing a reader sees on both
   GitHub and crates.io, so the two should not disagree about what the crate
   does.
+- `[transfer_families]` and `[gaps]` are now known top-level definition
+  tables. Nested unknown fields on those types, and on family members and
+  applicability, are rejected. Standalone curve and transfer definitions
+  still ignore nested unknown fields.
 
 ### Fixed
 
@@ -38,12 +50,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   compiled `src/gen`, so a broken intra-doc link in the host generator could
   not fail the gate.
 - The host generator now rejects unknown top-level definition tables instead
-  of succeeding with header-only output. A misspelled `[tranfsers…]` table, or
-  a newer document using tables such as `[transfer_families]` and `[gaps]`,
+  of succeeding with header-only output. A misspelled `[tranfsers…]` table
   previously parsed as empty `curves`/`transfers` maps and looked like a
   compatible `build.rs` run while omitting every expected symbol. Parse now
-  returns `Error::Toml` and names the unrecognized field. Nested unknown
-  fields are unchanged; that validation belongs to the family/member schema.
+  returns `Error::Toml` and names the unrecognized field.
 
 ## [0.2.1] - 2026-08-10
 

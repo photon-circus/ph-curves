@@ -7,6 +7,7 @@ use std::format;
 use std::prelude::v1::*;
 
 mod adaptive;
+pub(crate) mod family;
 mod model;
 mod points;
 
@@ -14,6 +15,11 @@ use crate::MonotonicDirection;
 use serde::Deserialize;
 
 use super::formula;
+
+pub use family::{
+    ApplicabilityDef, FamilyMemberDef, GapDef, GapStatus, MemberStatus, SelectorValue,
+    TransferFamilyDef,
+};
 
 const ABSOLUTE_MAX_KNOTS: usize = 4096;
 
@@ -33,7 +39,7 @@ impl BoundaryDef {
     }
 }
 
-fn default_boundary() -> BoundaryDef {
+pub(crate) fn default_boundary() -> BoundaryDef {
     BoundaryDef::Error
 }
 
@@ -47,7 +53,7 @@ pub struct PhysicalPoint {
     pub output: f64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct TransferDef {
     pub input_unit: String,
     pub output_unit: String,
