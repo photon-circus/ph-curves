@@ -18,16 +18,34 @@ fn assert_matches_oracle<const N: usize>(
     numerator: u32,
     denominator: u32,
 ) {
+    assert_eq!(
+        metadata.requested_max_error,
+        support::MAX_INTERPOLATION_ERROR
+    );
+    assert!(metadata.achieved_max_error <= metadata.requested_max_error);
+
+    let mut measured_max_error = f64::NEG_INFINITY;
+    let mut measured_worst_input = metadata.domain_min;
     for code in metadata.domain_min..=metadata.domain_max {
         let converted = transfer.convert(code).expect("in-domain code converts");
         let expected = support::oracle_scaled(code, numerator, denominator);
         let error = (f64::from(converted) - expected).abs();
         assert!(
-            error <= f64::from(metadata.achieved_max_error),
-            "code {code}: convert={converted} oracle={expected} error={error} bound={}",
-            metadata.achieved_max_error
+            error <= f64::from(support::MAX_INTERPOLATION_ERROR),
+            "code {code}: convert={converted} oracle={expected} error={error} requested_bound={}",
+            support::MAX_INTERPOLATION_ERROR
         );
+        if error > measured_max_error {
+            measured_max_error = error;
+            measured_worst_input = code;
+        }
     }
+    assert_eq!(
+        measured_max_error.ceil() as u32,
+        metadata.achieved_max_error,
+        "generated achieved-error metadata must match the independent exhaustive measurement"
+    );
+    assert_eq!(measured_worst_input, metadata.worst_case_input);
 }
 
 #[test]

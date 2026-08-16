@@ -10,6 +10,9 @@ pub const COEFFICIENTS: [f64; 3] = [0.0, 1.0, 1.0e-4];
 /// Family `output_scale`.
 pub const OUTPUT_SCALE: u32 = 1000;
 
+/// Independently declared maximum interpolation error in output quanta.
+pub const MAX_INTERPOLATION_ERROR: u32 = 1;
+
 /// Low-range `input_transform` (`numerator`, `denominator`).
 pub const LOW_TRANSFORM: (u32, u32) = (2_000, 1_000_000);
 

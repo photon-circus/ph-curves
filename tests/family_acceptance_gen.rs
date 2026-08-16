@@ -31,6 +31,14 @@ fn identity(range: &str, coupling: &str) -> BTreeMap<String, SelectorValue> {
     ])
 }
 
+fn expected_emits() -> [(&'static str, &'static str, &'static str, &'static str); 3] {
+    [
+        ("FRONT_END_HIGH_DC", "front_end_high_dc", "high", "dc"),
+        ("FRONT_END_LOW_DC", "front_end_low_dc", "low", "dc"),
+        ("FRONT_END_MID_DC", "front_end_mid_dc", "mid", "dc"),
+    ]
+}
+
 fn mapped_member(
     range: &str,
     coupling: &str,
@@ -64,7 +72,7 @@ fn front_end_spec() -> FamilySpec {
         "adc_code",
         "millivolt",
         support::OUTPUT_SCALE,
-        1,
+        support::MAX_INTERPOLATION_ERROR,
         FamilySource::scaled_polynomial(support::COEFFICIENTS.to_vec()),
         SourceProvenance::new("synthetic multi-range ADC note").with_locator("Table 1"),
     )
@@ -165,6 +173,26 @@ where
         .collect()
 }
 
+fn generated_transfer_artifact<'a>(source: &'a str, symbol: &str) -> &'a str {
+    let needle = format!("static {symbol}_INPUTS:");
+    let anchor = source
+        .find(&needle)
+        .unwrap_or_else(|| panic!("missing generated inputs for {symbol}"));
+    let start = source[..anchor]
+        .rfind("#[rustfmt::skip]\n")
+        .expect("generated inputs have a rustfmt attribute");
+    let after_anchor = anchor + needle.len();
+    let end = source[after_anchor..]
+        .find("_INPUTS:")
+        .map_or(source.len(), |offset| {
+            let next_anchor = after_anchor + offset;
+            source[..next_anchor]
+                .rfind("#[rustfmt::skip]\n")
+                .expect("next generated inputs have a rustfmt attribute")
+        });
+    source[start..end].trim_end()
+}
+
 fn convert_from_knots(inputs: &[u16], outputs: &[i32], code: u16) -> i32 {
     match inputs.binary_search(&code) {
         Ok(index) => outputs[index],
@@ -203,7 +231,16 @@ fn every_expected_selector_identity_is_occupied_exactly_once() {
         );
     }
 
-    let expected: BTreeSet<_> = family.selector_universe().identities().collect();
+    let expected = BTreeSet::from([
+        identity("low", "dc"),
+        identity("mid", "dc"),
+        identity("high", "dc"),
+        identity("low", "ac"),
+        identity("mid", "ac"),
+        identity("high", "ac"),
+    ]);
+    let enumerated: BTreeSet<_> = family.selector_universe().identities().collect();
+    assert_eq!(enumerated, expected);
     assert_eq!(occupied, expected);
     assert_eq!(expected.len(), 6);
 
@@ -255,9 +292,39 @@ fn toml_and_programmatic_construction_converge() {
         assert_eq!(left.provenance(), right.provenance());
     }
 
-    let spec_source = from_spec
-        .generate(&GenerateOptions::transfers_only())
+    assert_eq!(from_toml.emission_manifest(), from_spec.emission_manifest());
+
+    let options = GenerateOptions::transfers_only();
+    let toml_result = from_toml
+        .generate_report(&options)
+        .expect("TOML family generates");
+    let spec_result = from_spec
+        .generate_report(&options)
         .expect("programmatic family generates");
+    let toml_family_report = toml_result
+        .report
+        .families
+        .iter()
+        .find(|family| family.name == "front_end")
+        .expect("TOML family report exists");
+    assert_eq!(toml_family_report, &spec_result.report.families[0]);
+    let toml_transfer_reports: Vec<_> = toml_result
+        .report
+        .transfers
+        .iter()
+        .filter(|transfer| transfer.family.as_deref() == Some("front_end"))
+        .collect();
+    let spec_transfer_reports: Vec<_> = spec_result.report.transfers.iter().collect();
+    assert_eq!(toml_transfer_reports, spec_transfer_reports);
+    for (symbol, _, _, _) in expected_emits() {
+        assert_eq!(
+            generated_transfer_artifact(&toml_result.source, symbol),
+            generated_transfer_artifact(&spec_result.source, symbol),
+            "TOML and FamilySpec must emit byte-identical artifacts for {symbol}"
+        );
+    }
+
+    let spec_source = &spec_result.source;
     assert!(spec_source.contains("PiecewiseLinearTransfer"));
     assert!(!spec_source.contains("CurveLut"));
     assert!(!spec_source.contains("f32"));
@@ -305,6 +372,15 @@ fn evaluated_truth_overlay_matches_independent_oracle() {
         .expect("overlay member is reported");
     assert_eq!(overlay.generation_path, GenerationPath::EvaluatedTruth);
     assert_eq!(
+        overlay.requested_max_error,
+        support::MAX_INTERPOLATION_ERROR
+    );
+    assert_eq!(
+        overlay.policy.max_interpolation_error,
+        support::MAX_INTERPOLATION_ERROR
+    );
+    assert!(overlay.achieved_max_error <= overlay.requested_max_error);
+    assert_eq!(
         overlay
             .provenance
             .as_ref()
@@ -318,30 +394,46 @@ fn evaluated_truth_overlay_matches_independent_oracle() {
 
     let inputs = parse_int_array::<u16>(&result.source, "FRONT_END_LOW_DC_INPUTS");
     let outputs = parse_int_array::<i32>(&result.source, "FRONT_END_LOW_DC_OUTPUTS");
+    let mut measured_max_error = f64::NEG_INFINITY;
+    let mut measured_worst_input = overlay.domain_min;
     for code in overlay.domain_min..=overlay.domain_max {
         let converted = convert_from_knots(&inputs, &outputs, code);
         let expected =
             support::oracle_scaled(code, support::LOW_TRANSFORM.0, support::LOW_TRANSFORM.1);
         let error = (f64::from(converted) - expected).abs();
         assert!(
-            error <= f64::from(overlay.achieved_max_error),
-            "overlay code {code}: convert={converted} oracle={expected} error={error} bound={}",
-            overlay.achieved_max_error
+            error <= f64::from(support::MAX_INTERPOLATION_ERROR),
+            "overlay code {code}: convert={converted} oracle={expected} error={error} requested_bound={}",
+            support::MAX_INTERPOLATION_ERROR
         );
+        if error > measured_max_error {
+            measured_max_error = error;
+            measured_worst_input = code;
+        }
     }
+    assert_eq!(
+        measured_max_error.ceil() as u32,
+        overlay.achieved_max_error,
+        "overlay achieved-error report must match the independent exhaustive measurement"
+    );
+    assert_eq!(measured_worst_input, overlay.worst_case_input);
 }
 
 #[test]
 fn removing_an_expected_identity_fails_completeness() {
-    let toml = ASSET.replace(
-        r#"[[transfer_families.front_end.gaps]]
+    const MID_AC_GAP: &str = r#"[[transfer_families.front_end.gaps]]
 selectors = { range = "mid", coupling = "ac" }
 status = "undefined"
 reason = "AC coupling on the mid range is not characterized"
 provenance = { locator = "Table 1, omitted row" }
-"#,
-        "",
+"#;
+    let normalized = ASSET.replace("\r\n", "\n");
+    assert_eq!(
+        normalized.matches(MID_AC_GAP).count(),
+        1,
+        "fixture must contain exactly one mid/ac gap block"
     );
+    let toml = normalized.replacen(MID_AC_GAP, "", 1);
     let error = DefinitionsFile::from_toml_str(&toml)
         .expect("mutated document still parses")
         .validate()
@@ -432,7 +524,10 @@ fn host_report_maps_symbols_to_family_selectors_provenance_and_policy() {
     assert_eq!(family.totals.member_count, 3);
     assert_eq!(family.totals.knot_count, 6);
     assert_eq!(family.totals.table_bytes, 6 * TABLE_BYTES_PER_KNOT);
-    assert_eq!(family.policy.max_interpolation_error, 1);
+    assert_eq!(
+        family.policy.max_interpolation_error,
+        support::MAX_INTERPOLATION_ERROR
+    );
     assert_eq!(family.policy.max_knots, 32);
     assert_eq!(family.policy.below, BoundaryDef::Error);
     assert_eq!(family.policy.above, BoundaryDef::Clamp);
@@ -459,23 +554,34 @@ fn host_report_maps_symbols_to_family_selectors_provenance_and_policy() {
     assert_eq!(family.gaps.len(), 1);
     assert_eq!(family.gaps[0].selectors, identity("mid", "ac"));
 
-    for (symbol, metadata, table) in [
-        (
-            "FRONT_END_LOW_DC",
-            FRONT_END_LOW_DC_METADATA,
-            "front_end_low_dc",
-        ),
-        (
-            "FRONT_END_MID_DC",
-            FRONT_END_MID_DC_METADATA,
-            "front_end_mid_dc",
-        ),
-        (
-            "FRONT_END_HIGH_DC",
-            FRONT_END_HIGH_DC_METADATA,
-            "front_end_high_dc",
-        ),
-    ] {
+    for (symbol, table, range, coupling) in expected_emits() {
+        let metadata = match symbol {
+            "FRONT_END_HIGH_DC" => FRONT_END_HIGH_DC_METADATA,
+            "FRONT_END_LOW_DC" => FRONT_END_LOW_DC_METADATA,
+            "FRONT_END_MID_DC" => FRONT_END_MID_DC_METADATA,
+            _ => unreachable!("expected_emits contains only fixture symbols"),
+        };
+        let expected_selectors = identity(range, coupling);
+        let member = family
+            .members
+            .iter()
+            .find(|member| member.symbol.as_deref() == Some(symbol))
+            .unwrap_or_else(|| panic!("{symbol} family member reported"));
+        assert_eq!(member.selectors, expected_selectors);
+        assert_eq!(member.table_name.as_deref(), Some(table));
+        let metadata_symbol = format!("{symbol}_METADATA");
+        let observation_guard_symbol = format!("{symbol}_OBSERVATION_GUARD");
+        assert_eq!(
+            member.metadata_symbol.as_deref(),
+            Some(metadata_symbol.as_str())
+        );
+        assert_eq!(
+            member.observation_guard_symbol.as_deref(),
+            Some(observation_guard_symbol.as_str())
+        );
+        assert_eq!(&member.provenance, &family.provenance);
+        assert!(member.provenance_override.is_none());
+
         let transfer = result
             .report
             .transfers
@@ -483,6 +589,7 @@ fn host_report_maps_symbols_to_family_selectors_provenance_and_policy() {
             .find(|entry| entry.symbol == symbol)
             .unwrap_or_else(|| panic!("{symbol} reported"));
         assert_eq!(transfer.family.as_deref(), Some("front_end"));
+        assert_eq!(transfer.selectors, expected_selectors);
         assert_eq!(transfer.table_name, table);
         assert_eq!(transfer.metadata_symbol, format!("{symbol}_METADATA"));
         assert_eq!(
@@ -499,30 +606,39 @@ fn host_report_maps_symbols_to_family_selectors_provenance_and_policy() {
         assert_eq!(transfer.achieved_max_error, metadata.achieved_max_error);
         assert_eq!(transfer.generation_path, GenerationPath::ScaledPolynomial);
         assert_eq!(
-            transfer
-                .provenance
-                .as_ref()
-                .map(|citation| citation.identity.as_str()),
-            Some("synthetic multi-range ADC note")
+            transfer.provenance.as_ref(),
+            Some(&member.provenance),
+            "{symbol} must retain its complete effective source citation"
         );
-        assert_eq!(transfer.policy.max_interpolation_error, 1);
+        assert_eq!(&transfer.policy, &family.policy);
+        assert_eq!(
+            transfer.observation_guard,
+            Some(ObservationGuardMetadata {
+                code: 65_535,
+                behavior: ObservationGuardBehavior::Error,
+            })
+        );
+        assert_eq!(
+            transfer.observation_guard_provenance.as_ref(),
+            family.observation_guard_provenance.as_ref()
+        );
+        let artifact = generated_transfer_artifact(&result.source, symbol);
+        assert!(artifact.contains(&format!(
+            r#"Selectors: "coupling" = "{coupling}", "range" = "{range}""#
+        )));
+        assert!(artifact.contains(r#"Family: "front\_end""#));
+        assert!(artifact.contains(
+            r#"Source provenance: identity "synthetic multi-range ADC note"; locator "Table 1"."#
+        ));
+        assert!(artifact.contains(
+            "Generation policy: requested interpolation error <= 1; max_knots = 32; below = error; above = clamp."
+        ));
         assert!(
-            result
-                .source
-                .contains(&format!("pub const {symbol}: PiecewiseLinearTransfer"))
+            artifact.contains(&format!("pub const {symbol}: PiecewiseLinearTransfer")),
+            "{symbol} rustdoc and emitted constant must share one artifact"
         );
     }
 
-    assert!(result.source.contains(r#"Family: "front\_end""#));
-    assert!(
-        result
-            .source
-            .contains(r#"Selectors: "coupling" = "dc", "range" = "low""#)
-    );
-    assert!(result.source.contains("Generation policy: requested interpolation error <= 1; max_knots = 32; below = error; above = clamp."));
-    assert!(result.source.contains(
-        r#"Source provenance: identity "synthetic multi-range ADC note"; locator "Table 1"."#
-    ));
     assert!(result.source.contains("pub const LINEAR"));
     assert!(result.source.contains("CurveLut"));
     assert!(result.source.contains("PiecewiseLinearTransfer"));
@@ -542,13 +658,17 @@ fn host_report_maps_symbols_to_family_selectors_provenance_and_policy() {
 fn emission_manifest_lists_each_emit_member_once() {
     let validated = load_asset().validate().expect("asset validates");
     let manifest = validated.emission_manifest();
-    let symbols: Vec<_> = manifest
-        .entries()
-        .iter()
-        .map(|entry| entry.symbol.as_str())
-        .collect();
-    assert_eq!(
-        symbols,
-        ["FRONT_END_HIGH_DC", "FRONT_END_LOW_DC", "FRONT_END_MID_DC"]
-    );
+    assert_eq!(manifest.entries().len(), expected_emits().len());
+    for (entry, (symbol, table, range, coupling)) in manifest.entries().iter().zip(expected_emits())
+    {
+        assert_eq!(entry.family, "front_end");
+        assert_eq!(entry.selectors, identity(range, coupling));
+        assert_eq!(entry.table_name, table);
+        assert_eq!(entry.symbol, symbol);
+        assert_eq!(entry.metadata_symbol, format!("{symbol}_METADATA"));
+        assert_eq!(
+            entry.observation_guard_symbol,
+            format!("{symbol}_OBSERVATION_GUARD")
+        );
+    }
 }
