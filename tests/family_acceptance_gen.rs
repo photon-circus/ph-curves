@@ -506,7 +506,6 @@ fn host_report_maps_symbols_to_family_selectors_provenance_and_policy() {
             Some("synthetic multi-range ADC note")
         );
         assert_eq!(transfer.policy.max_interpolation_error, 1);
-        assert!(result.source.contains(&format!(r#"Family: "front\_end""#)));
         assert!(
             result
                 .source
@@ -514,6 +513,7 @@ fn host_report_maps_symbols_to_family_selectors_provenance_and_policy() {
         );
     }
 
+    assert!(result.source.contains(r#"Family: "front\_end""#));
     assert!(
         result
             .source
