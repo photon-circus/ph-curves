@@ -171,21 +171,21 @@ pub(crate) fn enforce_family_budgets(
             .find(|entry| entry.name == *name)
             .map(|entry| entry.totals)
             .unwrap_or_default();
-        if let Some(limit) = family.max_total_knots {
-            if totals.knot_count > limit {
-                return Err(format!(
-                    "transfer family `{name}`: max_total_knots={limit} exceeded: {} knots across {} emitted members",
-                    totals.knot_count, totals.member_count
-                ));
-            }
+        if let Some(limit) = family.max_total_knots
+            && totals.knot_count > limit
+        {
+            return Err(format!(
+                "transfer family `{name}`: max_total_knots={limit} exceeded: {} knots across {} emitted members",
+                totals.knot_count, totals.member_count
+            ));
         }
-        if let Some(limit) = family.max_table_bytes {
-            if totals.table_bytes > limit {
-                return Err(format!(
-                    "transfer family `{name}`: max_table_bytes={limit} exceeded: {} bytes array payload across {} emitted members",
-                    totals.table_bytes, totals.member_count
-                ));
-            }
+        if let Some(limit) = family.max_table_bytes
+            && totals.table_bytes > limit
+        {
+            return Err(format!(
+                "transfer family `{name}`: max_table_bytes={limit} exceeded: {} bytes array payload across {} emitted members",
+                totals.table_bytes, totals.member_count
+            ));
         }
     }
     Ok(())
