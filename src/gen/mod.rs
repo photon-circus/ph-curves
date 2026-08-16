@@ -4,6 +4,17 @@
 //! Firmware crates should keep the default feature set and `include!`
 //! generated source without enabling this module.
 //!
+//! Host tools that own device evaluation inspect the validated transfer graph
+//! (`DefinitionsFile::validate`) and may overlay [`TransferSource`] values or
+//! construct families with [`FamilySpec`]. That is a public IR, not a plugin
+//! ABI: ph-curves does not load or call device-specific model code.
+//! `generate_report` returns the same source as `generate` plus a
+//! [`GenerationReport`] of per-transfer metrics, structured provenance/policy,
+//! the complete family member/gap graph, named document gaps, and emitted-only
+//! resource totals; optional family `max_total_knots` / `max_table_bytes`
+//! budgets fail closed on both APIs. [`ValidatedDefinitions::emission_manifest`]
+//! is the pre-fit family/selector-to-symbol map.
+//!
 //! This module is the crate's only `std` consumer. The crate root is
 //! unconditionally `#![no_std]` and does not `extern crate std`. Each file
 //! under `src/gen` links `std` with a module-local `extern crate std`, imports
@@ -37,11 +48,31 @@ pub(crate) mod builtin;
 pub(crate) mod codegen;
 pub(crate) mod curve;
 pub(crate) mod formula;
+mod ir;
 pub(crate) mod points;
+mod report;
+pub(crate) mod rustdoc;
 pub(crate) mod transfer;
 
 pub use api::{
-    Error, GenerateOptions, ValueType, generate, generate_from_str, generate_from_toml,
-    generate_to_path,
+    Error, GenerateOptions, ValueType, generate, generate_from_str, generate_from_str_report,
+    generate_from_toml, generate_from_toml_report, generate_report, generate_to_path,
 };
-pub use curve::DefinitionsFile;
+pub use curve::{CurveDef, DefinitionsFile};
+pub use ir::{
+    EmissionEntry, EmissionManifest, ValidatedDefinitions, ValidatedFamily, ValidatedFamilyGap,
+    ValidatedMember,
+};
+pub use report::{
+    FamilyGapReport, FamilyMemberReport, FamilyReport, GapReport, GenerationPath, GenerationReport,
+    GenerationResult, ResourceTotals, TABLE_BYTES_PER_KNOT, TransferReport,
+};
+pub use transfer::{
+    ApplicabilityDef, BoundaryDef, DeclaredSource, DividerTopology, EvaluatedTruth,
+    FamilyCompleteness, FamilyGapDef, FamilyMemberDef, FamilySource, FamilySpec, GapDef, GapStatus,
+    GenerationPolicy, InputTransform, MemberStatus, ObservationGuardBehaviorDef,
+    ObservationGuardDef, ObservationGuardPolicy, PhysicalPoint, SelectorIdentities,
+    SelectorUniverse, SelectorValue, SourceProvenance, SourceProvenanceDisposition,
+    SourceProvenanceField, SourceProvenanceOverride, TransferDef, TransferFamilyDef,
+    TransferSource, TransferSourceOverlay, TransferSpec,
+};

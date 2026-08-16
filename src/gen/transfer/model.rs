@@ -6,10 +6,15 @@ extern crate std;
 use std::format;
 use std::prelude::v1::*;
 
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 
-#[derive(Debug, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+/// Denominator for the rational model-input scale: `u = count * scale / 1e6`.
+///
+/// `scale` is stored as an integer so `u16 * u32` stays below `2^48` and is
+/// therefore exact in `f64` before this division.
+pub(crate) const MODEL_INPUT_SCALE_DENOMINATOR: u64 = 1_000_000;
+
+#[derive(Clone, Debug)]
 pub enum ModelDef {
     NtcBetaDivider {
         nominal_resistance_ohms: f64,
@@ -19,13 +24,133 @@ pub enum ModelDef {
         adc_max_code: u16,
         topology: DividerTopology,
     },
+    /// `y = c0 + c1*u + c2*u^2 + ...` with `u = count * scale / denominator`.
+    ///
+    /// Standalone TOML supplies `scale` and uses denominator `1e6`. Family
+    /// TOML omits `scale` (defaults to `None`); expansion fills numerator and
+    /// denominator from the member `input_transform`.
+    ScaledPolynomial {
+        coefficients: Vec<f64>,
+        scale: Option<u32>,
+        denominator: u32,
+    },
 }
 
-#[derive(Copy, Clone, Debug, Deserialize)]
+// Preserve the documented permissive parser for existing NTC models while
+// keeping the new scaled-polynomial vocabulary fail-closed.
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum ModelDefWire {
+    NtcBetaDivider {
+        nominal_resistance_ohms: f64,
+        beta_kelvin: f64,
+        nominal_temperature_celsius: f64,
+        fixed_resistance_ohms: f64,
+        adc_max_code: u16,
+        topology: DividerTopology,
+    },
+    ScaledPolynomial(ScaledPolynomialWire),
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScaledPolynomialWire {
+    coefficients: Vec<f64>,
+    #[serde(default)]
+    scale: Option<u32>,
+}
+
+impl<'de> Deserialize<'de> for ModelDef {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(match ModelDefWire::deserialize(deserializer)? {
+            ModelDefWire::NtcBetaDivider {
+                nominal_resistance_ohms,
+                beta_kelvin,
+                nominal_temperature_celsius,
+                fixed_resistance_ohms,
+                adc_max_code,
+                topology,
+            } => Self::NtcBetaDivider {
+                nominal_resistance_ohms,
+                beta_kelvin,
+                nominal_temperature_celsius,
+                fixed_resistance_ohms,
+                adc_max_code,
+                topology,
+            },
+            ModelDefWire::ScaledPolynomial(ScaledPolynomialWire {
+                coefficients,
+                scale,
+            }) => Self::ScaledPolynomial {
+                coefficients,
+                scale,
+                denominator: MODEL_INPUT_SCALE_DENOMINATOR as u32,
+            },
+        })
+    }
+}
+
+/// Voltage-divider wiring for a host NTC Beta-divider model.
+#[derive(Copy, Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum DividerTopology {
+    /// NTC from the ADC node to ground; fixed resistor to supply.
     NtcToGround,
+    /// NTC from the ADC node to supply; fixed resistor to ground.
     NtcToSupply,
+}
+
+/// Model input `u` from an observation code using exact integer-product scale.
+///
+/// Computes `(count as u64 * numerator as u64) as f64 / denominator`. The
+/// product is less than `2^48`, so it is exact in `f64` before the divide.
+/// Pre-rounding `numerator / denominator` then multiplying by `count` is the
+/// off-by-one this exists to prevent.
+pub(crate) fn scaled_input(count: u16, numerator: u32, denominator: u32) -> f64 {
+    let product = u64::from(count) * u64::from(numerator);
+    (product as f64) / f64::from(denominator)
+}
+
+/// Inclusive observation-domain window covering `model_input` at `numerator / denominator`.
+///
+/// Uses the same `u(count)` as evaluation: smallest code with `u >= min`,
+/// largest with `u <= max`. `u16::MAX` is included when it falls inside the
+/// window. Fewer than two codes is an error.
+pub(crate) fn observation_domain(
+    numerator: u32,
+    denominator: u32,
+    model_input: [f64; 2],
+) -> Result<[u16; 2], String> {
+    if numerator == 0 {
+        return Err("input_transform.numerator must be positive".into());
+    }
+    if denominator == 0 {
+        return Err("input_transform.denominator must be nonzero".into());
+    }
+    let [min, max] = model_input;
+    if !min.is_finite() || !max.is_finite() || min >= max {
+        return Err(
+            "applicability.model_input must be two strictly increasing finite values".into(),
+        );
+    }
+
+    let mut first = None;
+    let mut last = None;
+    for code in 0..=u16::MAX {
+        let u = scaled_input(code, numerator, denominator);
+        if u >= min && u <= max {
+            if first.is_none() {
+                first = Some(code);
+            }
+            last = Some(code);
+        } else if first.is_some() && u > max {
+            break;
+        }
+    }
+    match (first, last) {
+        (Some(lo), Some(hi)) if lo < hi => Ok([lo, hi]),
+        _ => Err("applicability window contains fewer than two observation codes".into()),
+    }
 }
 
 pub fn evaluate(
@@ -116,7 +241,85 @@ pub fn evaluate(
             );
             Ok((minimum, values, description))
         }
+        ModelDef::ScaledPolynomial { .. } => Err(format!(
+            "transfer `{name}`: scaled_polynomial is not an output_range model; use domain"
+        )),
     }
+}
+
+/// Evaluate `y = poly(u)` on an inclusive observation domain.
+///
+/// Coefficients are `[c0, c1, c2, ...]` for `y = c0 + c1*u + c2*u^2 + ...`,
+/// evaluated with Horner from the high-degree end. `u16::MAX` is a legal
+/// domain endpoint. Observation-guard (saturation) policy is enforced by the
+/// generated transfer, not by this evaluator.
+pub fn evaluate_scaled_polynomial(
+    name: &str,
+    coefficients: &[f64],
+    scale: u32,
+    denominator: u32,
+    domain: [u16; 2],
+) -> Result<(u16, Vec<f64>, String), String> {
+    validate_coefficients(coefficients).map_err(|error| format!("transfer `{name}`: {error}"))?;
+    if scale == 0 {
+        return Err(format!(
+            "transfer `{name}`: scaled_polynomial scale must be positive"
+        ));
+    }
+    if denominator == 0 {
+        return Err(format!(
+            "transfer `{name}`: scaled_polynomial denominator must be nonzero"
+        ));
+    }
+    let [minimum, maximum] = domain;
+    if minimum >= maximum {
+        return Err(format!(
+            "transfer `{name}`: domain must be strictly increasing"
+        ));
+    }
+
+    let mut values = Vec::with_capacity(usize::from(maximum - minimum) + 1);
+    for code in minimum..=maximum {
+        let u = scaled_input(code, scale, denominator);
+        let y = horner(coefficients, u);
+        if !y.is_finite() {
+            return Err(format!(
+                "transfer `{name}`: scaled_polynomial produced a non-finite value at code {code}"
+            ));
+        }
+        values.push(y);
+    }
+
+    Ok((
+        minimum,
+        values,
+        format!(
+            "scaled polynomial ({} coefficients, scale={scale}/{denominator})",
+            coefficients.len()
+        ),
+    ))
+}
+
+pub(crate) fn validate_coefficients(coefficients: &[f64]) -> Result<(), String> {
+    if coefficients.is_empty() {
+        return Err("scaled_polynomial coefficients must not be empty".into());
+    }
+    for (index, value) in coefficients.iter().enumerate() {
+        if !value.is_finite() {
+            return Err(format!(
+                "scaled_polynomial coefficient {index} must be finite"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn horner(coefficients: &[f64], u: f64) -> f64 {
+    let mut acc = 0.0;
+    for &coefficient in coefficients.iter().rev() {
+        acc = acc * u + coefficient;
+    }
+    acc
 }
 
 fn ntc_temperature(
@@ -136,4 +339,100 @@ fn ntc_temperature(
     let nominal_kelvin = nominal_temperature_celsius + 273.15;
     let kelvin = 1.0 / (1.0 / nominal_kelvin + (resistance / nominal_resistance).ln() / beta);
     kelvin - 273.15
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ntc_model_keeps_ignoring_unknown_fields() {
+        let model: ModelDef = toml::from_str(
+            r#"
+kind = "ntc_beta_divider"
+nominal_resistance_ohms = 10000.0
+beta_kelvin = 3950.0
+nominal_temperature_celsius = 25.0
+fixed_resistance_ohms = 10000.0
+adc_max_code = 4095
+topology = "ntc_to_ground"
+future_calibration_field = "ignored for compatibility"
+"#,
+        )
+        .unwrap();
+        assert!(matches!(model, ModelDef::NtcBetaDivider { .. }));
+    }
+
+    #[test]
+    fn scaled_polynomial_rejects_unknown_fields() {
+        let error = toml::from_str::<ModelDef>(
+            r#"
+kind = "scaled_polynomial"
+coefficients = [0.0, 1.0]
+scale = 33600
+scale_micro_lux_per_count = 33600
+"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("unknown field `scale_micro_lux_per_count`"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn scaled_input_keeps_the_integer_product_exact() {
+        assert_eq!(scaled_input(1875, 33_600, 1_000_000), 63.0);
+        assert!(scaled_input(1874, 33_600, 1_000_000) < 63.0);
+        assert_eq!(scaled_input(5581, 268_800, 1_000_000), 1500.1728);
+    }
+
+    #[test]
+    fn inclusive_lower_bound_includes_the_exact_endpoint_code() {
+        let [lo, _] = observation_domain(33_600, 1_000_000, [63.0, 100.0]).unwrap();
+        assert_eq!(lo, 1875);
+    }
+
+    #[test]
+    fn inclusive_upper_bound_includes_the_exact_endpoint_code() {
+        let [_, hi] = observation_domain(33_600, 1_000_000, [63.0, 100.0]).unwrap();
+        assert!(scaled_input(hi, 33_600, 1_000_000) <= 100.0);
+        assert!(scaled_input(hi.saturating_add(1), 33_600, 1_000_000) > 100.0);
+    }
+
+    #[test]
+    fn explicit_denominator_keeps_exact_rational_endpoints() {
+        let [lo, hi] = observation_domain(2, 1, [4.0, 10.0]).unwrap();
+        assert_eq!(lo, 2);
+        assert_eq!(hi, 5);
+        assert_eq!(scaled_input(lo, 2, 1), 4.0);
+        assert_eq!(scaled_input(hi, 2, 1), 10.0);
+    }
+
+    #[test]
+    fn observation_domain_may_include_u16_max() {
+        let [_, hi] = observation_domain(1_000, 1_000_000, [0.0, 100.0]).unwrap();
+        assert_eq!(hi, u16::MAX);
+    }
+
+    #[test]
+    fn empty_observation_window_fails_closed() {
+        let error = observation_domain(33_600, 1_000_000, [0.0, 0.01]).unwrap_err();
+        assert!(error.contains("fewer than two"), "{error}");
+    }
+
+    #[test]
+    fn zero_denominator_fails_closed() {
+        let error = observation_domain(33_600, 0, [63.0, 100.0]).unwrap_err();
+        assert!(error.contains("denominator must be nonzero"), "{error}");
+    }
+
+    #[test]
+    fn horner_matches_explicit_powers() {
+        let coefficients = [1.0, 2.0, 3.0];
+        let u = 4.0;
+        let expected = 1.0 + 2.0 * u + 3.0 * u * u;
+        assert_eq!(horner(&coefficients, u), expected);
+    }
 }

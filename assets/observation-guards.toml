@@ -1,0 +1,34 @@
+# Executable generator fixture for observation-guard lowering.
+
+[transfers]
+requires = ["observation_guard_v1"]
+
+[transfers.guarded_error]
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+max_knots = 8
+below = "error"
+above = "clamp"
+saturation = { code = 65535, behavior = "error" }
+formula = "x"
+domain = [1, 10]
+
+[transfer_families.guarded_family]
+provenance = { identity = "test fixture" }
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+max_knots = 8
+below = "clamp"
+above = "error"
+saturation = { code = 65535, behavior = "clamp" }
+formula = "11 - x"
+selector_axes = { variant = ["clamp"] }
+
+[[transfer_families.guarded_family.members]]
+selectors = { variant = "clamp" }
+status = "emit"
+applicability = { observation = [1, 10] }
