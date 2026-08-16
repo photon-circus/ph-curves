@@ -6,9 +6,11 @@ use ph_curves::{BoundaryBehavior, MonotonicDirection, ObservationGuardBehavior, 
 static GUARDED_ERROR_INPUTS: [u16; 2] = [1, 10];
 #[rustfmt::skip]
 static GUARDED_ERROR_OUTPUTS: [i32; 2] = [1, 10];
-/// "guarded_error" sparse physical transfer function.
+/// "guarded\_error" sparse physical transfer function.
 ///
-/// Source: "formula y = x".
+/// Source provenance: none declared.
+/// Representation: "formula y = x".
+/// Generation policy: requested interpolation error <= 1; max_knots = 8; below = error; above = clamp.
 /// Domain: 1..=10 "count"; output: "unit" x 1.
 /// Knots: 2 (12 bytes array payload).
 /// Exhaustive numerical error: requested <= 1, achieved 0.000000 output quanta
@@ -52,9 +54,11 @@ pub const GUARDED_ERROR_OBSERVATION_GUARD: Option<ObservationGuardMetadata> = So
 static GUARDED_FAMILY_VARIANT_CLAMP_INPUTS: [u16; 2] = [1, 10];
 #[rustfmt::skip]
 static GUARDED_FAMILY_VARIANT_CLAMP_OUTPUTS: [i32; 2] = [10, 1];
-/// "guarded_family_variant_clamp" sparse physical transfer function.
+/// "guarded\_family\_variant\_clamp" sparse physical transfer function.
 ///
-/// Source: "formula y = 11 - x".
+/// Source provenance: identity "test fixture".
+/// Representation: "formula y = 11 - x".
+/// Generation policy: requested interpolation error <= 1; max_knots = 8; below = clamp; above = error.
 /// Domain: 1..=10 "count"; output: "unit" x 1.
 /// Knots: 2 (12 bytes array payload).
 /// Exhaustive numerical error: requested <= 1, achieved 0.000000 output quanta

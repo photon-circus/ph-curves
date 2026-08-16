@@ -141,8 +141,8 @@ cost of making schema evolution explicit.
 unknown fields on family, shared point entry, shared NTC model, member,
 applicability, input-transform, and gap types are rejected. Standalone curves
 still ignore unknown direct fields. Standalone transfers reject unknown direct
-fields, while nested standalone point values and legacy standalone NTC model
-parameters remain permissive for compatibility.
+fields, while other, unreserved fields nested in standalone point values and
+legacy standalone NTC model parameters remain permissive for compatibility.
 
 The family member schema in this unreleased tree is source-aware: every
 accepted field must change validation, fitting, emission, metadata, or
@@ -150,17 +150,31 @@ documentation, and a field unsupported by the selected source fails closed.
 Mapped `emit`, `unnecessary`, and `forbidden` members require exactly the
 source-specific mapping. `unsupported` is the explicit no-mapping state and
 forbids applicability and input transforms instead of requiring fabricated
-source coordinates.
-That is the publish shape. `[transfer_families]` has not shipped in 0.2.1, so
-this is not a 0.2.x document break. Standalone transfer TOML (`scale` / `1e6`,
-`domain`) is unchanged. The first release that publishes families must include
-this matrix; do not ship accepted-but-inert member fields.
+source coordinates. Every family also declares its expected selector universe
+with exactly one of `selector_axes` (Cartesian product) or
+`expected_selectors` (explicit maps). Each expected identity is occupied by
+exactly one member or family-scoped gap; document-level `[gaps]` do not
+satisfy that occupancy. Cartesian cardinality uses checked multiplication and
+must fit the generator host's `usize`; completeness validation compares that
+count with indexed, duplicate-free occupancy without materializing the
+product. A source-backed family also requires structured
+`provenance.identity`. Members and family-scoped gaps inherit that citation;
+their optional overrides use the same replace/clear rules and are validated
+against the family citation. A selector key literally named `provenance`
+remains part of the typed selector identity. Together, these constraints are
+the intended first-publish shape. `[transfer_families]` has not shipped in
+0.2.1, so this is not a 0.2.x document break. Legacy standalone transfer TOML
+without the new provenance or guard fields is unchanged. The first release
+that publishes
+families must include the capability matrix, required provenance, and declared
+universe; do not ship accepted-but-inert member fields or undeclared selector
+spaces.
 
 No runtime API is involved. The version that ships a TOML tightening is a
 release decision, not part of the behaviour change. A broader whole-document
 `schema_version` field remains a separate schema decision.
 
-## Host TOML: fail-closed standalone observation guards
+## Host TOML: fail-closed standalone guards and provenance
 
 A standalone transfer using `saturation` must opt into the localized
 capability in the already-known transfer section:
@@ -174,32 +188,52 @@ saturation = { code = 65535, behavior = "error" }
 # remaining required transfer fields...
 ```
 
+A standalone transfer using `provenance` must likewise declare
+`"source_provenance_v1"`:
+
+```toml
+[transfers]
+requires = ["source_provenance_v1"]
+
+[transfers.sensor]
+provenance = { identity = "device data sheet", locator = "Table 1" }
+# remaining required transfer fields...
+```
+
+List both capability strings in the same array when both features are present.
+This is deliberately localized: family provenance is part of the new,
+previously unreleased `[transfer_families]` shape and needs no compatibility
+marker; programmatic `TransferSpec` construction has no wire format.
+
 The location and shape are intentional. Released 0.2.x generators model
 `[transfers]` as `BTreeMap<String, TransferDef>` and ignore unknown fields
 inside each transfer. They therefore reject the `requires` array as an invalid
 transfer value before they can silently discard `saturation`. A new unknown
 top-level key would not provide that guarantee because older releases ignored
-unknown top-level keys too. Unknown capability names and malformed capability
-values fail closed. The capability must correspond to at least one direct
-`saturation` guard, and reserved guard keys found inside a model or point value
-are rejected as misplaced. This catches TOML table-scope mistakes without
-tightening unrelated legacy NTC extensions.
+unknown top-level keys too. Released 0.2.1 readers also ignored standalone
+`provenance`, so the source-provenance marker provides the same rejection
+guarantee. Unknown capability names and malformed capability values fail
+closed. Each capability must correspond to at least one direct use of its
+feature. Reserved guard and provenance keys found inside a model or point value
+are rejected as misplaced, even when another direct citation makes the
+capability otherwise appear used. This catches TOML table-scope mistakes
+without tightening unrelated legacy NTC extensions.
 
 A table named `[transfers.requires]` remains a legal legacy transfer name when
-the document has no observation guard; only the array form is the marker.
-Because TOML cannot represent both forms at once, that transfer must be renamed
-before any standalone guard is added. The parser diagnoses this combination
-explicitly.
+the document has neither a standalone observation guard nor source provenance;
+only the array form is the marker. Because TOML cannot represent both forms at
+once, that transfer must be renamed before either capability is added. The
+parser diagnoses this combination explicitly.
 
 The current parser also rejects unknown fields directly on standalone transfer
 definitions, so a misspelled guard cannot disappear. Nested standalone curve
-fields and legacy NTC model parameters retain their previous permissive parsing
-for compatibility. Programmatic `TransferSpec` construction does not need a
-wire-format capability marker.
+fields and unreserved standalone point/legacy NTC model parameters retain their
+previous permissive parsing for compatibility; reserved guard and provenance
+spellings fail closed.
 
 This is a deliberate TOML compatibility tightening and must ship with the same
-next pre-1.0 minor release as the observation-guard runtime API. A broader
-whole-document version policy remains a separate schema decision.
+next pre-1.0 minor release as the observation-guard and provenance host APIs. A
+broader whole-document version policy remains a separate schema decision.
 
 ## Generated namespace: observation-guard companions
 
@@ -230,6 +264,15 @@ and `ValidatedDefinitions::generate_report` are additive `gen-lib` APIs. The
 existing `String`-returning helpers remain and internally run the report
 pipeline, so an aggregate budget cannot be bypassed by calling `generate`.
 No report type is on the default-feature runtime path.
+
+The report mirrors the validated description graph without moving citation
+strings into firmware. Emitted transfers expose effective overlay provenance,
+pre-overlay observation-guard provenance, and citation-free policy. Family
+entries retain the compact selector universe, completeness result, family
+provenance and budgets, all members (including non-emitting statuses), and
+scoped gaps; document-level gaps are separate name-ordered entries. Declared
+member/gap provenance overrides remain distinct from their effective resolved
+citations. Totals and aggregate budgets continue to count emitted tables only.
 
 Optional family keys `max_total_knots` and `max_table_bytes` are part of the
 unreleased `[transfer_families]` publish shape, not a 0.2.1 document break.

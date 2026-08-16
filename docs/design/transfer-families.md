@@ -15,10 +15,12 @@ remain distinguishable from omissions.
 Issue #24 is the generic schema, integrity, inspection, and sparse emission
 slice of [#23](https://github.com/photon-circus/ph-curves/issues/23). Issue
 [#39](https://github.com/photon-circus/ph-curves/issues/39) makes every
-accepted member field source-aware and effectful. The host
-inspection/extension IR is documented in
-[host-transfer-ir.md](host-transfer-ir.md). This slice does not add a
-device-specific model, a runtime family registry, or firmware API.
+accepted member field source-aware and effectful. Issue
+[#40](https://github.com/photon-circus/ph-curves/issues/40) requires a declared
+selector universe and family-scoped gaps so an omitted combination is not
+indistinguishable from an intentional hole. The host inspection/extension IR
+is documented in [host-transfer-ir.md](host-transfer-ir.md). This slice does
+not add a device-specific model, a runtime family registry, or firmware API.
 
 ## Schema
 
@@ -44,6 +46,59 @@ Each family has one shared source (`formula`, `points`, or `model`) and an
 explicit `members` array. Selectors are string or integer maps and are never
 interpolated. `interpolate_selectors` is not a field; leftover copies are
 unknown-field errors.
+
+A source-backed family requires a structured `provenance` table with a
+non-blank `identity` (title or stable identifier). Optional `revision`,
+`locator`, `url`, and `note` fields locate the cited document. URLs are stored
+as opaque strings and are never fetched. Members inherit that citation unless
+they declare a `provenance` override. Set fields replace; optional fields named
+by `clear = ["revision", "locator", "url", "note"]` are removed. Unset fields
+inherit while `identity` is unchanged. Replacing `identity` starts a new
+citation, so unspecified optional fields are cleared instead of being combined
+with fields from the old document. Family-scoped gaps inherit and may override
+the family citation under the same rules; `ValidatedFamilyGap` exposes the
+effective citation and declared override. Global `[gaps]` may declare their
+own citation; without a parent family they still require `identity` when
+`provenance` is present.
+
+Fit budget, knot cap, `below` / `above`, and `saturation` are
+generation/consumer policy inspectable as `GenerationPolicy`, not as part of
+the citation. Member `status` is a separate emission decision exposed through
+`ValidatedMember::status`.
+Observation-guard classification is policy unless `saturation` carries a nested
+`provenance` override that cites a source supporting that classification. A
+family-level guard citation resolves against family provenance before any
+member override is applied. `GenerationPolicy` projects only the guard code and
+behavior; inspect the resolved citation separately through
+`ValidatedFamily::observation_guard_provenance`.
+
+Every family declares its expected selector universe with exactly one of:
+
+- `selector_axes` — named axes whose Cartesian product is expected (`BTreeMap`
+  axis-key order, then each axis's declared value order);
+- `expected_selectors` — an explicit list of selector maps for a non-Cartesian
+  family. Missing product cells are not invented.
+
+Cartesian cardinality is the checked product of the declared axis lengths.
+Validation rejects a product that cannot be represented by the host's
+`usize`; it never allocates the Cartesian product. Explicit universes are
+indexed once for exact identity and per-key type checks instead of being
+rescanned for every member.
+
+Every expected identity is occupied by exactly one member (any status) or one
+family-scoped gap. A missing occupancy is an error; so is a member or
+family-scoped gap outside the universe, a wrong or missing selector key, a
+selector value type that disagrees with a homogeneous axis, or the same typed
+map used as both a member and a gap. Integer `1` and string `"1"` remain
+distinct identities.
+
+Family-scoped gaps are `[[transfer_families.<name>.gaps]]` records with the
+same typed selector map, `status = "undefined"`, a non-blank `reason`, and an
+optional family-relative `provenance` override. A selector key named
+`provenance` inside `selectors` remains an ordinary identity key.
+Document-level `[gaps.<name>]` remain globally named `{ status, reason }`
+records. They do not occupy family selector identities and do not satisfy
+completeness.
 
 Mapped member fields are a capability matrix. A field unsupported by the
 selected source fails validation with a diagnostic that names the family,
@@ -74,11 +129,14 @@ the selector combination has no source mapping and therefore forbids both
 `input_transform` and `applicability`.
 
 Gaps require `status = "undefined"` and a non-blank `reason`. They are not
-generated as transfers.
+generated as transfers. Family-scoped gaps carry a selector identity;
+document-level gaps do not.
 
 Unknown fields on family, shared point entry, shared NTC model, member,
-applicability, input-transform, and gap tables are rejected. Standalone point
-and legacy NTC source values retain their compatibility behavior.
+applicability, input-transform, family-scoped gap, and document-level gap
+tables are rejected. Unreserved fields in standalone point and legacy NTC
+source values retain their compatibility behavior; reserved guard and
+provenance spellings fail closed.
 
 Evaluated-truth and prefitted overlays are observation-space generation
 inputs. They do not re-apply `input_transform` to samples. The member's
@@ -95,21 +153,39 @@ also define their own domain.
    source/member capability matrix for mapped statuses) before filtering
    non-`emit` statuses. An `unsupported` member is instead checked to ensure
    no source mapping was invented.
-3. Expand only `status = "emit"` members into ordinary `TransferDef` values.
+3. Resolve the declared selector universe (`selector_axes` xor
+   `expected_selectors`). Reject empty axes, duplicate typed axis values,
+   empty or duplicate expected maps, and heterogeneous key sets in
+   `expected_selectors`. Reject Cartesian cardinality overflow using checked
+   multiplication.
+4. Check every member and family-scoped gap against that universe (keys,
+   value types, and membership). Duplicate member identities, duplicate
+   family-scoped gap identities, and member/gap occupancy of the same map
+   fail here. Because those checks prove that occupied identities are a
+   duplicate-free subset of the universe, completeness is exactly
+   `occupied_count == checked_universe_cardinality`; validation does not
+   materialize or enumerate a Cartesian product.
+5. Expand only `status = "emit"` members into ordinary `TransferDef` values.
    Scaled-polynomial members receive the member's `input_transform` and an
    observation `domain` converted from `applicability.model_input`. Formula
    members receive `applicability.observation` as `domain`. Points members
    receive the clipped point set. NTC members receive `applicability.physical`
    as `output_range`.
-4. Reject a gap name colliding with a curve, standalone transfer, family, or
-   emitted member.
-5. Run the existing identifier / companion-symbol collision check on the
+6. Reject a document-level gap name colliding with a curve, standalone
+   transfer, family, or emitted member.
+7. Run the existing identifier / companion-symbol collision check on the
    merged transfer set.
 
 Canonical identity is the selector map itself: keys, value types, and values.
 Value-only concatenation is not an identity. Generated names include selector
 keys (`als_gain_div4_integration_time_ms_100`). If two distinct maps would
 emit the same name, generation fails and prints both maps.
+
+Validated host IR exposes the checked count through
+`SelectorUniverse::identity_count`. `SelectorUniverse::identities` is lazy:
+it yields one owned selector map at a time in the documented order and stores
+only axis references and positions, so inspecting a prefix never allocates the
+full product.
 
 ## Emission
 
@@ -123,10 +199,17 @@ emitted transfer records resolved family/member identity (empty for
 standalones), the Rust symbol, observation domain and physical range,
 requested and achieved interpolation error, worst-case input, knot count,
 array-payload bytes, the fitting path actually used (overlays replace the
-declared TOML source), and observation-guard metadata when present.
-Transfers are ordered by table name; families by family name. Document
-totals include every emitted transfer and exclude curve LUT bytes.
-Description-only members are absent from the report.
+declared TOML source), observation-guard metadata, citation-free generation
+policy, effective source provenance, and the independently resolved
+pre-overlay guard citation. Family records retain the family citation, guard
+citation, policy, compact selector universe/completeness, aggregate-budget
+declarations, every member (including description-only statuses), and scoped
+gaps. Member and gap records keep effective provenance separate from the
+declared override; emitted members map to their table and symbol. Named
+document-level gaps are reported independently. Transfers are ordered by table
+name, families and document gaps by name, and family members/scoped gaps by
+declaration order. Totals include every emitted transfer, exclude curve LUT
+bytes, and never count description-only members or gaps.
 
 ## Keep-outs
 
@@ -135,3 +218,4 @@ Description-only members are absent from the report.
 - `kind = "veml7700"` or any device lifecycle API
 - Selector interpolation
 - A runtime family registry
+- Fetching provenance URLs or parsing vendor-specific source documents

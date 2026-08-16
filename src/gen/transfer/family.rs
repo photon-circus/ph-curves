@@ -3,17 +3,19 @@
 // Host-only: module-local std link (crate root stays `#![no_std]`).
 extern crate std;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::format;
 use std::ops::Deref;
 use std::prelude::v1::*;
+use std::vec;
 
 use serde::Deserialize;
 use serde::de::{self, Deserializer, Visitor};
 
 use super::model::ModelDef;
 use super::{
-    BoundaryDef, ObservationGuardDef, PhysicalPoint, TransferDef, default_boundary,
+    BoundaryDef, GenerationPolicy, ObservationGuardDef, PhysicalPoint, SourceProvenance,
+    SourceProvenanceOverride, TransferDef, default_boundary, resolve_guard_provenance,
     validate_observation_guard,
 };
 
@@ -45,11 +47,14 @@ pub enum DeclaredSource {
 /// through accessors so the NTC model catalog is not part of the public IR.
 /// Dependents obtain the map via `DefinitionsFile::transfer_families`.
 ///
-/// Selectors are never interpolated. Family-level `domain` and `output_range`
-/// are rejected as unknown; members declare those coordinates through
-/// `applicability`. `input_transform` is per-member only. A family-level
-/// `scale` field is rejected as unknown so a shared-model scale cannot be
-/// silently overwritten.
+/// Selectors are never interpolated. Every family declares its expected
+/// selector universe with exactly one of `selector_axes` (Cartesian product)
+/// or `expected_selectors` (explicit maps). Each expected identity is occupied
+/// by exactly one member or family-scoped gap. Family-level `domain` and
+/// `output_range` are rejected as unknown; members declare those coordinates
+/// through `applicability`. `input_transform` is per-member only. A
+/// family-level `scale` field is rejected as unknown so a shared-model scale
+/// cannot be silently overwritten.
 ///
 /// Family knot default is 64 with hard cap 256: this is family-only policy so
 /// discrete members cannot become dense ADC tables. Standalone transfers keep
@@ -87,11 +92,33 @@ pub struct TransferFamilyDef {
     /// Explicit observation-code guard copied onto emitted members (TOML `saturation`).
     #[serde(default, rename = "saturation")]
     pub(crate) observation_guard: Option<ObservationGuardDef>,
+    /// Shared source citation. Required for a source-backed family.
+    #[serde(default)]
+    pub provenance: Option<SourceProvenance>,
     pub(crate) points: Option<Vec<PhysicalPoint>>,
     pub(crate) formula: Option<String>,
     pub(crate) model: Option<ModelDef>,
+    /// Named selector axes whose Cartesian product is the expected universe.
+    ///
+    /// Mutually exclusive with [`Self::expected_selectors`]. Exactly one of
+    /// the two must be set. The checked product of axis lengths must fit the
+    /// generator host's `usize`.
+    #[serde(default)]
+    pub selector_axes: Option<BTreeMap<String, Vec<SelectorValue>>>,
+    /// Explicit expected selector maps for a non-Cartesian family.
+    ///
+    /// Mutually exclusive with [`Self::selector_axes`]. Missing product cells
+    /// are not invented.
+    #[serde(default)]
+    pub expected_selectors: Option<Vec<BTreeMap<String, SelectorValue>>>,
     /// Explicit selector combinations. Never synthesized.
     pub members: Vec<FamilyMemberDef>,
+    /// Family-scoped gaps occupying expected selector identities.
+    ///
+    /// Distinct from document-level `[gaps]`, which are globally named and do
+    /// not satisfy family completeness.
+    #[serde(default)]
+    pub gaps: Vec<FamilyGapDef>,
 }
 
 impl TransferFamilyDef {
@@ -106,8 +133,24 @@ impl TransferFamilyDef {
     }
 
     /// Explicit observation-code guard copied onto emitted members (TOML `saturation`).
-    pub fn observation_guard(&self) -> Option<ObservationGuardDef> {
-        self.observation_guard
+    pub fn observation_guard(&self) -> Option<&ObservationGuardDef> {
+        self.observation_guard.as_ref()
+    }
+
+    /// Shared source citation, when declared. Validation requires this on a family.
+    pub fn provenance(&self) -> Option<&SourceProvenance> {
+        self.provenance.as_ref()
+    }
+
+    /// Fit budget, boundaries, and observation-guard classification.
+    pub fn policy(&self) -> GenerationPolicy {
+        GenerationPolicy::new(
+            self.max_interpolation_error,
+            self.max_knots,
+            self.below,
+            self.above,
+            self.observation_guard.as_ref(),
+        )
     }
 
     /// Shared formula text, when the family source is a formula.
@@ -181,6 +224,9 @@ pub struct FamilyMemberDef {
     /// and must leave every coordinate unset.
     #[serde(default)]
     pub applicability: ApplicabilityDef,
+    /// Optional citation override. Unset fields inherit the family citation.
+    #[serde(default)]
+    pub provenance: Option<SourceProvenanceOverride>,
 }
 
 /// Where this member's mapping is source-backed.
@@ -289,6 +335,306 @@ impl SelectorValue {
             Self::String(value) => value.clone(),
         }
     }
+
+    fn type_name(&self) -> &'static str {
+        match self {
+            Self::Integer(_) => "integer",
+            Self::String(_) => "string",
+        }
+    }
+}
+
+/// Declared expected selector identities for one family.
+///
+/// Cartesian axes expand to their product. Explicit maps are the universe as
+/// written; missing product cells are not invented.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SelectorUniverse {
+    /// Named axes whose Cartesian product is expected. Validated products have
+    /// a cardinality representable by `usize`.
+    Cartesian {
+        /// Axis name → allowed typed values in declaration order.
+        axes: BTreeMap<String, Vec<SelectorValue>>,
+    },
+    /// Explicit expected selector maps for a non-Cartesian family.
+    Explicit {
+        /// Expected identities in declaration order.
+        identities: Vec<BTreeMap<String, SelectorValue>>,
+    },
+}
+
+impl SelectorUniverse {
+    /// Lazily enumerate every expected selector identity.
+    ///
+    /// Cartesian identities follow `BTreeMap` axis-key order, then each axis's
+    /// declared value order, with the last axis changing fastest. Explicit
+    /// identities keep declaration order. Constructing the iterator uses
+    /// memory proportional to the number of axes; it never materializes the
+    /// Cartesian product.
+    pub fn identities(&self) -> SelectorIdentities<'_> {
+        SelectorIdentities::new(self)
+    }
+
+    /// Checked number of expected identities.
+    ///
+    /// Explicit universes always return their list length. Cartesian
+    /// universes return the checked product of their axis lengths, or `None`
+    /// when that product cannot be represented by `usize`. Family validation
+    /// rejects the overflow case, so a universe obtained from a validated
+    /// family always returns `Some`.
+    pub fn identity_count(&self) -> Option<usize> {
+        match self {
+            Self::Cartesian { axes } => {
+                if axes.values().any(Vec::is_empty) {
+                    return Some(0);
+                }
+                axes.values()
+                    .try_fold(1usize, |count, values| count.checked_mul(values.len()))
+            }
+            Self::Explicit { identities } => Some(identities.len()),
+        }
+    }
+}
+
+/// Lazy iterator over a selector universe's expected identities.
+///
+/// The iterator owns only axis positions and produces one selector map at a
+/// time. In particular, obtaining or partially consuming it cannot allocate
+/// the full Cartesian product.
+#[must_use = "iterators are lazy and do nothing unless consumed"]
+pub struct SelectorIdentities<'a> {
+    inner: SelectorIdentitiesInner<'a>,
+}
+
+enum SelectorIdentitiesInner<'a> {
+    Cartesian(CartesianIdentities<'a>),
+    Explicit(std::slice::Iter<'a, BTreeMap<String, SelectorValue>>),
+}
+
+impl<'a> SelectorIdentities<'a> {
+    fn new(universe: &'a SelectorUniverse) -> Self {
+        let inner = match universe {
+            SelectorUniverse::Cartesian { axes } => {
+                SelectorIdentitiesInner::Cartesian(CartesianIdentities::new(axes))
+            }
+            SelectorUniverse::Explicit { identities } => {
+                SelectorIdentitiesInner::Explicit(identities.iter())
+            }
+        };
+        Self { inner }
+    }
+}
+
+impl Iterator for SelectorIdentities<'_> {
+    type Item = BTreeMap<String, SelectorValue>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match &mut self.inner {
+            SelectorIdentitiesInner::Cartesian(iter) => iter.next(),
+            SelectorIdentitiesInner::Explicit(iter) => iter.next().cloned(),
+        }
+    }
+}
+
+impl std::iter::FusedIterator for SelectorIdentities<'_> {}
+
+struct CartesianIdentities<'a> {
+    axes: Vec<(&'a str, &'a [SelectorValue])>,
+    positions: Vec<usize>,
+    finished: bool,
+}
+
+impl<'a> CartesianIdentities<'a> {
+    fn new(axes: &'a BTreeMap<String, Vec<SelectorValue>>) -> Self {
+        let axes: Vec<_> = axes
+            .iter()
+            .map(|(name, values)| (name.as_str(), values.as_slice()))
+            .collect();
+        let finished = axes.iter().any(|(_, values)| values.is_empty());
+        let positions = vec![0; axes.len()];
+        Self {
+            axes,
+            positions,
+            finished,
+        }
+    }
+}
+
+impl Iterator for CartesianIdentities<'_> {
+    type Item = BTreeMap<String, SelectorValue>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
+
+        let identity = self
+            .axes
+            .iter()
+            .zip(&self.positions)
+            .map(|((name, values), &position)| ((*name).to_string(), values[position].clone()))
+            .collect();
+
+        if self.axes.is_empty() {
+            self.finished = true;
+            return Some(identity);
+        }
+
+        for axis in (0..self.axes.len()).rev() {
+            let next = self.positions[axis] + 1;
+            if next < self.axes[axis].1.len() {
+                self.positions[axis] = next;
+                return Some(identity);
+            }
+            self.positions[axis] = 0;
+        }
+        self.finished = true;
+        Some(identity)
+    }
+}
+
+impl std::iter::FusedIterator for CartesianIdentities<'_> {}
+
+#[derive(Clone, Copy, Default)]
+struct SelectorTypeSet {
+    integer: bool,
+    string: bool,
+}
+
+impl SelectorTypeSet {
+    fn add(&mut self, value: &SelectorValue) {
+        match value {
+            SelectorValue::Integer(_) => self.integer = true,
+            SelectorValue::String(_) => self.string = true,
+        }
+    }
+
+    fn matches(self, value: &SelectorValue) -> bool {
+        match value {
+            SelectorValue::Integer(_) => self.integer,
+            SelectorValue::String(_) => self.string,
+        }
+    }
+
+    fn is_homogeneous(self) -> bool {
+        self.integer != self.string
+    }
+
+    fn name(self) -> &'static str {
+        match (self.integer, self.string) {
+            (true, false) => "integer",
+            (false, true) => "string",
+            (true, true) => "integer or string",
+            (false, false) => "no declared type",
+        }
+    }
+}
+
+struct SelectorUniverseIndex {
+    keys: BTreeSet<String>,
+    types: BTreeMap<String, SelectorTypeSet>,
+    membership: SelectorMembershipIndex,
+    identity_count: usize,
+}
+
+enum SelectorMembershipIndex {
+    Cartesian(BTreeMap<String, BTreeSet<SelectorValue>>),
+    Explicit(BTreeSet<BTreeMap<String, SelectorValue>>),
+}
+
+impl SelectorUniverseIndex {
+    fn new(universe: &SelectorUniverse) -> Self {
+        match universe {
+            SelectorUniverse::Cartesian { axes } => {
+                let mut types = BTreeMap::new();
+                let membership = axes
+                    .iter()
+                    .map(|(key, values)| {
+                        let mut value_types = SelectorTypeSet::default();
+                        for value in values {
+                            value_types.add(value);
+                        }
+                        types.insert(key.clone(), value_types);
+                        (key.clone(), values.iter().cloned().collect())
+                    })
+                    .collect();
+                Self {
+                    keys: axes.keys().cloned().collect(),
+                    types,
+                    membership: SelectorMembershipIndex::Cartesian(membership),
+                    identity_count: universe
+                        .identity_count()
+                        .expect("validated Cartesian cardinality"),
+                }
+            }
+            SelectorUniverse::Explicit { identities } => {
+                let keys = identities
+                    .first()
+                    .map(|identity| identity.keys().cloned().collect())
+                    .unwrap_or_default();
+                let mut types: BTreeMap<String, SelectorTypeSet> = BTreeMap::new();
+                for identity in identities {
+                    for (key, value) in identity {
+                        types.entry(key.clone()).or_default().add(value);
+                    }
+                }
+                Self {
+                    keys,
+                    types,
+                    membership: SelectorMembershipIndex::Explicit(
+                        identities.iter().cloned().collect(),
+                    ),
+                    identity_count: identities.len(),
+                }
+            }
+        }
+    }
+
+    fn types_for(&self, key: &str) -> SelectorTypeSet {
+        self.types.get(key).copied().unwrap_or_default()
+    }
+
+    fn contains(&self, selectors: &BTreeMap<String, SelectorValue>) -> bool {
+        match &self.membership {
+            SelectorMembershipIndex::Cartesian(axes) => {
+                selectors.len() == axes.len()
+                    && selectors.iter().all(|(key, value)| {
+                        axes.get(key).is_some_and(|values| values.contains(value))
+                    })
+            }
+            SelectorMembershipIndex::Explicit(identities) => identities.contains(selectors),
+        }
+    }
+}
+
+/// Completeness of a validated family's selector occupancy.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FamilyCompleteness {
+    /// Every declared expected selector identity is occupied by exactly one
+    /// member or family-scoped gap. Validation proves this from exact indexed
+    /// membership, duplicate rejection, and checked cardinality equality.
+    Complete,
+}
+
+/// A selector-addressed hole in a family's declared universe.
+///
+/// Distinct from document-level [`GapDef`]: this record carries the same typed
+/// selector map as a member and occupies that expected identity. A non-blank
+/// `reason` is required. Its optional citation override resolves against the
+/// mandatory family citation. Global `[gaps]` do not satisfy family
+/// completeness.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FamilyGapDef {
+    /// Discrete selector map. Keys and typed values form the gap identity.
+    pub selectors: BTreeMap<String, SelectorValue>,
+    /// Must be `"undefined"`: a gap must not be filled with a plausible model.
+    pub status: GapStatus,
+    /// Non-blank explanation of why this expected identity is not a member.
+    pub reason: String,
+    /// Optional citation override. Unset fields inherit the family citation.
+    #[serde(default)]
+    pub provenance: Option<SourceProvenanceOverride>,
 }
 
 /// A channel or procedure the sources do not define as a transfer.
@@ -299,6 +645,9 @@ pub struct GapDef {
     pub status: GapStatus,
     /// Non-blank explanation of why the mapping is undefined.
     pub reason: String,
+    /// Optional source citation for this gap.
+    #[serde(default)]
+    pub provenance: Option<SourceProvenanceOverride>,
 }
 
 /// Only `undefined` is valid: a gap must not be filled with a plausible model.
@@ -329,6 +678,21 @@ impl Deref for ResolvedTransfer {
 
     fn deref(&self) -> &TransferDef {
         &self.def
+    }
+}
+
+impl GapDef {
+    /// Declared citation override, when present.
+    pub fn provenance(&self) -> Option<&SourceProvenanceOverride> {
+        self.provenance.as_ref()
+    }
+
+    /// Resolved citation. `None` when no override was declared.
+    pub fn resolved_provenance(&self) -> Result<Option<SourceProvenance>, String> {
+        match &self.provenance {
+            Some(overlay) => overlay.resolve(None).map(Some),
+            None => Ok(None),
+        }
     }
 }
 
@@ -375,6 +739,15 @@ pub(crate) fn expand_families(
 }
 
 fn validate_family(family_name: &str, family: &TransferFamilyDef) -> Result<(), String> {
+    let provenance = family.provenance.as_ref().ok_or_else(|| {
+        format!(
+            "transfer family `{family_name}`: source-backed family requires provenance.identity"
+        )
+    })?;
+    provenance
+        .validate()
+        .map_err(|error| format!("transfer family `{family_name}`: {error}"))?;
+
     if !(2..=FAMILY_MAX_KNOTS_HARD).contains(&family.max_knots) {
         return Err(format!(
             "transfer family `{family_name}`: max_knots must be in 2..={FAMILY_MAX_KNOTS_HARD}"
@@ -420,7 +793,6 @@ fn validate_family(family_name: &str, family: &TransferFamilyDef) -> Result<(), 
     }
 
     let mut seen_identities: BTreeMap<&BTreeMap<String, SelectorValue>, usize> = BTreeMap::new();
-    let mut seen_emitted_names: BTreeMap<String, String> = BTreeMap::new();
     for (index, member) in family.members.iter().enumerate() {
         validate_member(family_name, family, index, member)?;
         if let Some(&previous) = seen_identities.get(&member.selectors) {
@@ -430,7 +802,19 @@ fn validate_family(family_name: &str, family: &TransferFamilyDef) -> Result<(), 
             ));
         }
         seen_identities.insert(&member.selectors, index);
+    }
 
+    let universe = resolved_selector_universe(family_name, family)?;
+    let universe_index = SelectorUniverseIndex::new(&universe);
+
+    let mut seen_emitted_names: BTreeMap<String, String> = BTreeMap::new();
+    for (index, member) in family.members.iter().enumerate() {
+        validate_identity_in_universe(
+            &member_label(family_name, index),
+            family_name,
+            &member.selectors,
+            &universe_index,
+        )?;
         if member.status == MemberStatus::Emit {
             let member_name = expanded_name(family_name, &member.selectors)?;
             if let Some(previous) =
@@ -444,11 +828,279 @@ fn validate_family(family_name: &str, family: &TransferFamilyDef) -> Result<(), 
             }
         }
     }
+
+    let mut seen_gap_identities: BTreeMap<&BTreeMap<String, SelectorValue>, usize> =
+        BTreeMap::new();
+    for (index, gap) in family.gaps.iter().enumerate() {
+        validate_family_gap(family_name, family, index, gap)?;
+        if let Some(&previous) = seen_gap_identities.get(&gap.selectors) {
+            return Err(format!(
+                "transfer family `{family_name}`: family-scoped gaps {previous} and {index} \
+                 share selector identity {}",
+                format_selectors(&gap.selectors)
+            ));
+        }
+        seen_gap_identities.insert(&gap.selectors, index);
+        if let Some(&member_index) = seen_identities.get(&gap.selectors) {
+            return Err(format!(
+                "transfer family `{family_name}`: member {member_index} and family-scoped gap {index} \
+                 share selector identity {}",
+                format_selectors(&gap.selectors)
+            ));
+        }
+        validate_identity_in_universe(
+            &gap_label(family_name, index),
+            family_name,
+            &gap.selectors,
+            &universe_index,
+        )?;
+    }
+
+    validate_completeness(family_name, family, &universe_index)?;
     Ok(())
+}
+
+/// Resolve the declared selector universe. Callers may use this after
+/// `validate_family` has succeeded; it re-checks declaration shape.
+pub(crate) fn resolved_selector_universe(
+    family_name: &str,
+    family: &TransferFamilyDef,
+) -> Result<SelectorUniverse, String> {
+    let universe = match (
+        family.selector_axes.as_ref(),
+        family.expected_selectors.as_ref(),
+    ) {
+        (None, None) => {
+            return Err(format!(
+                "transfer family `{family_name}`: exactly one of selector_axes or expected_selectors \
+             must be specified"
+            ));
+        }
+        (Some(_), Some(_)) => {
+            return Err(format!(
+                "transfer family `{family_name}`: selector_axes and expected_selectors are mutually exclusive"
+            ));
+        }
+        (Some(axes), None) => SelectorUniverse::Cartesian {
+            axes: validate_selector_axes(family_name, axes)?,
+        },
+        (None, Some(identities)) => SelectorUniverse::Explicit {
+            identities: validate_expected_selectors(family_name, identities)?,
+        },
+    };
+    if universe.identity_count().is_none() {
+        return Err(format!(
+            "transfer family `{family_name}`: selector_axes Cartesian product cardinality \
+             exceeds this platform's usize capacity"
+        ));
+    }
+    Ok(universe)
+}
+
+fn validate_selector_axes(
+    family_name: &str,
+    axes: &BTreeMap<String, Vec<SelectorValue>>,
+) -> Result<BTreeMap<String, Vec<SelectorValue>>, String> {
+    if axes.is_empty() {
+        return Err(format!(
+            "transfer family `{family_name}`: selector_axes must not be empty"
+        ));
+    }
+    for (name, values) in axes {
+        if name.is_empty() {
+            return Err(format!(
+                "transfer family `{family_name}`: selector axis names must not be empty"
+            ));
+        }
+        if values.is_empty() {
+            return Err(format!(
+                "transfer family `{family_name}`: selector axis `{name}` must not be empty"
+            ));
+        }
+        let mut seen = BTreeSet::new();
+        for value in values {
+            if let SelectorValue::String(text) = value
+                && text.is_empty()
+            {
+                return Err(format!(
+                    "transfer family `{family_name}`: selector axis `{name}` must not contain a blank string"
+                ));
+            }
+            if !seen.insert(value) {
+                return Err(format!(
+                    "transfer family `{family_name}`: selector axis `{name}` repeats value {}",
+                    format_selector_value(value)
+                ));
+            }
+        }
+    }
+    Ok(axes.clone())
+}
+
+fn validate_expected_selectors(
+    family_name: &str,
+    identities: &[BTreeMap<String, SelectorValue>],
+) -> Result<Vec<BTreeMap<String, SelectorValue>>, String> {
+    if identities.is_empty() {
+        return Err(format!(
+            "transfer family `{family_name}`: expected_selectors must not be empty"
+        ));
+    }
+    let expected_keys: BTreeSet<String> = identities[0].keys().cloned().collect();
+    if expected_keys.is_empty() {
+        return Err(format!(
+            "transfer family `{family_name}`: expected selector 0 must not be empty"
+        ));
+    }
+    if expected_keys.iter().any(|key| key.is_empty()) {
+        return Err(format!(
+            "transfer family `{family_name}`: expected selector 0 keys must not be empty"
+        ));
+    }
+    let mut seen: BTreeMap<&BTreeMap<String, SelectorValue>, usize> = BTreeMap::new();
+    for (index, identity) in identities.iter().enumerate() {
+        if identity.is_empty() {
+            return Err(format!(
+                "transfer family `{family_name}`: expected selector {index} must not be empty"
+            ));
+        }
+        for (key, value) in identity {
+            if key.is_empty() {
+                return Err(format!(
+                    "transfer family `{family_name}`: expected selector {index} keys must not be empty"
+                ));
+            }
+            if let SelectorValue::String(text) = value
+                && text.is_empty()
+            {
+                return Err(format!(
+                    "transfer family `{family_name}`: expected selector {index} `{key}` must not be blank"
+                ));
+            }
+        }
+        let keys: BTreeSet<String> = identity.keys().cloned().collect();
+        if keys != expected_keys {
+            return Err(format!(
+                "transfer family `{family_name}`: expected selector {index} keys {} do not match \
+                 selector 0 keys {}",
+                format_keys(&keys),
+                format_keys(&expected_keys)
+            ));
+        }
+        if let Some(&previous) = seen.get(identity) {
+            return Err(format!(
+                "transfer family `{family_name}`: expected selectors {previous} and {index} share identity {}",
+                format_selectors(identity)
+            ));
+        }
+        seen.insert(identity, index);
+    }
+    Ok(identities.to_vec())
+}
+
+fn validate_family_gap(
+    family_name: &str,
+    family: &TransferFamilyDef,
+    index: usize,
+    gap: &FamilyGapDef,
+) -> Result<(), String> {
+    let label = gap_label(family_name, index);
+    if gap.selectors.is_empty() {
+        return Err(format!("{label}: selectors must not be empty"));
+    }
+    for (key, value) in &gap.selectors {
+        if key.is_empty() {
+            return Err(format!("{label}: selector keys must not be empty"));
+        }
+        if let SelectorValue::String(text) = value
+            && text.is_empty()
+        {
+            return Err(format!("{label}: selector `{key}` must not be blank"));
+        }
+    }
+    if gap.reason.trim().is_empty() {
+        return Err(format!("{label}: reason must not be blank"));
+    }
+    resolved_family_gap_provenance(family_name, family, index, gap)?;
+    Ok(())
+}
+
+fn validate_completeness(
+    family_name: &str,
+    family: &TransferFamilyDef,
+    universe: &SelectorUniverseIndex,
+) -> Result<(), String> {
+    let occupied_count = family
+        .members
+        .len()
+        .checked_add(family.gaps.len())
+        .ok_or_else(|| {
+            format!("transfer family `{family_name}`: selector occupancy count exceeds usize")
+        })?;
+    if occupied_count != universe.identity_count {
+        return Err(format!(
+            "transfer family `{family_name}`: declared selector universe contains {} identities, \
+             but members and family-scoped gaps occupy {occupied_count}",
+            universe.identity_count
+        ));
+    }
+    Ok(())
+}
+
+fn validate_identity_in_universe(
+    label: &str,
+    family_name: &str,
+    selectors: &BTreeMap<String, SelectorValue>,
+    universe: &SelectorUniverseIndex,
+) -> Result<(), String> {
+    let actual_keys: BTreeSet<String> = selectors.keys().cloned().collect();
+    if actual_keys != universe.keys {
+        return Err(format!(
+            "{label}: selector keys {} do not match the declared universe keys {}",
+            format_keys(&actual_keys),
+            format_keys(&universe.keys)
+        ));
+    }
+    for (key, value) in selectors {
+        let allowed = universe.types_for(key);
+        if allowed.is_homogeneous() && !allowed.matches(value) {
+            return Err(format!(
+                "{label}: selector `{key}` has a {} value; the declared universe uses {}",
+                value.type_name(),
+                allowed.name()
+            ));
+        }
+    }
+    if !universe.contains(selectors) {
+        return Err(format!(
+            "transfer family `{family_name}`: selector identity {} is outside the declared universe",
+            format_selectors(selectors)
+        ));
+    }
+    Ok(())
+}
+
+fn format_keys(keys: &BTreeSet<String>) -> String {
+    if keys.is_empty() {
+        return "(none)".into();
+    }
+    let parts: Vec<String> = keys.iter().map(|key| format!("`{key}`")).collect();
+    parts.join(", ")
+}
+
+fn format_selector_value(value: &SelectorValue) -> String {
+    match value {
+        SelectorValue::String(text) => format!("{text:?}"),
+        SelectorValue::Integer(int) => int.to_string(),
+    }
 }
 
 fn member_label(family_name: &str, index: usize) -> String {
     format!("transfer family `{family_name}` member {index}")
+}
+
+fn gap_label(family_name: &str, index: usize) -> String {
+    format!("transfer family `{family_name}` family-scoped gap {index}")
 }
 
 fn source_kind(family: &TransferFamilyDef) -> &'static str {
@@ -521,6 +1173,18 @@ fn validate_member(
         }
     }
     validate_status_reason(&label, member)?;
+    if let Some(overlay) = &member.provenance {
+        family
+            .provenance
+            .as_ref()
+            .ok_or_else(|| {
+                format!(
+                    "transfer family `{family_name}`: source-backed family requires provenance.identity"
+                )
+            })?
+            .merge(overlay)
+            .map_err(|error| format!("{label}: {error}"))?;
+    }
 
     if member.status == MemberStatus::Unsupported {
         if member.input_transform.is_some() {
@@ -568,7 +1232,12 @@ fn validate_member(
                 ));
             }
             let domain = observation_window(&label, member.applicability.observation)?;
-            validate_observation_guard(&label, family.observation_guard, domain[1])?;
+            validate_observation_guard(&label, family.observation_guard.as_ref(), domain[1])?;
+            resolve_guard_provenance(
+                &label,
+                family.observation_guard.as_ref(),
+                family.provenance.as_ref(),
+            )?;
         }
         "points" => {
             if member.input_transform.is_some() {
@@ -596,8 +1265,13 @@ fn validate_member(
             .map_err(|error| format!("{label}: {error}"))?;
             validate_observation_guard(
                 &label,
-                family.observation_guard,
+                family.observation_guard.as_ref(),
                 clipped.last().expect("clip requires two points").input,
+            )?;
+            resolve_guard_provenance(
+                &label,
+                family.observation_guard.as_ref(),
+                family.provenance.as_ref(),
             )?;
         }
         "scaled_polynomial" => {
@@ -637,7 +1311,12 @@ fn validate_member(
                 model_input,
             )
             .map_err(|error| format!("{label}: {error}"))?;
-            validate_observation_guard(&label, family.observation_guard, domain[1])?;
+            validate_observation_guard(&label, family.observation_guard.as_ref(), domain[1])?;
+            resolve_guard_provenance(
+                &label,
+                family.observation_guard.as_ref(),
+                family.provenance.as_ref(),
+            )?;
         }
         "ntc_beta_divider" => {
             if member.input_transform.is_some() {
@@ -670,7 +1349,12 @@ fn validate_member(
                         .map_err(|_| format!("{label}: derived model domain exceeds u16"))?,
                 )
                 .ok_or_else(|| format!("{label}: derived model domain exceeds u16"))?;
-            validate_observation_guard(&label, family.observation_guard, domain_max)?;
+            validate_observation_guard(&label, family.observation_guard.as_ref(), domain_max)?;
+            resolve_guard_provenance(
+                &label,
+                family.observation_guard.as_ref(),
+                family.provenance.as_ref(),
+            )?;
         }
         _ => {
             return Err(format!(
@@ -723,6 +1407,11 @@ fn member_transfer(
     family: &TransferFamilyDef,
     member: &FamilyMemberDef,
 ) -> Result<TransferDef, String> {
+    let resolved_guard_provenance = resolve_guard_provenance(
+        &format!("transfer family `{family_name}`"),
+        family.observation_guard.as_ref(),
+        family.provenance.as_ref(),
+    )?;
     let (model, domain, output_range, points) = match source_kind(family) {
         "scaled_polynomial" => {
             let transform = member
@@ -772,13 +1461,61 @@ fn member_transfer(
         max_knots: family.max_knots,
         below: family.below,
         above: family.above,
-        observation_guard: family.observation_guard,
+        observation_guard: family.observation_guard.clone(),
+        provenance: Some(resolved_member_provenance(family_name, family, member)?),
+        resolved_guard_provenance,
         points,
         formula: family.formula.clone(),
         model,
         domain,
         output_range,
     })
+}
+
+pub(crate) fn resolved_member_provenance(
+    family_name: &str,
+    family: &TransferFamilyDef,
+    member: &FamilyMemberDef,
+) -> Result<SourceProvenance, String> {
+    let base = family.provenance.as_ref().ok_or_else(|| {
+        format!(
+            "transfer family `{family_name}`: source-backed family requires provenance.identity"
+        )
+    })?;
+    match &member.provenance {
+        Some(overlay) => base
+            .merge(overlay)
+            .map_err(|error| format!("transfer family `{family_name}`: {error}")),
+        None => {
+            base.validate()
+                .map_err(|error| format!("transfer family `{family_name}`: {error}"))?;
+            Ok(base.clone())
+        }
+    }
+}
+
+pub(crate) fn resolved_family_gap_provenance(
+    family_name: &str,
+    family: &TransferFamilyDef,
+    index: usize,
+    gap: &FamilyGapDef,
+) -> Result<SourceProvenance, String> {
+    let label = gap_label(family_name, index);
+    let base = family.provenance.as_ref().ok_or_else(|| {
+        format!(
+            "transfer family `{family_name}`: source-backed family requires provenance.identity"
+        )
+    })?;
+    match &gap.provenance {
+        Some(overlay) => base
+            .merge(overlay)
+            .map_err(|error| format!("{label}: {error}")),
+        None => {
+            base.validate()
+                .map_err(|error| format!("{label}: {error}"))?;
+            Ok(base.clone())
+        }
+    }
 }
 
 pub(crate) fn expanded_name(
@@ -866,6 +1603,7 @@ mod tests {
             status,
             reason: reason.map(str::to_string),
             applicability: observation([1, 10]),
+            provenance: None,
         }
     }
 
@@ -882,6 +1620,7 @@ mod tests {
             status: MemberStatus::Emit,
             reason: None,
             applicability: model_input([100.0, 22_000.0]),
+            provenance: None,
         }
     }
 
@@ -897,10 +1636,14 @@ mod tests {
             below: BoundaryDef::Error,
             above: BoundaryDef::Error,
             observation_guard: None,
+            provenance: Some(SourceProvenance::new("test fixture")),
             points: None,
             formula: Some("x".into()),
             model: None,
+            selector_axes: None,
+            expected_selectors: expected_from_members(&members, &[]),
             members,
+            gaps: Vec::new(),
         }
     }
 
@@ -919,6 +1662,7 @@ mod tests {
             below: BoundaryDef::Error,
             above: BoundaryDef::Error,
             observation_guard: None,
+            provenance: Some(SourceProvenance::new("test fixture")),
             points: None,
             formula: None,
             model: Some(ModelDef::ScaledPolynomial {
@@ -926,8 +1670,37 @@ mod tests {
                 scale: None,
                 denominator: 1_000_000,
             }),
+            selector_axes: None,
+            expected_selectors: expected_from_members(&members, &[]),
             members,
+            gaps: Vec::new(),
         }
+    }
+
+    fn expected_from_members(
+        members: &[FamilyMemberDef],
+        gaps: &[FamilyGapDef],
+    ) -> Option<Vec<BTreeMap<String, SelectorValue>>> {
+        let mut identities = Vec::new();
+        for selectors in members
+            .iter()
+            .map(|member| &member.selectors)
+            .chain(gaps.iter().map(|gap| &gap.selectors))
+        {
+            if selectors.is_empty() {
+                continue;
+            }
+            if !identities.iter().any(|identity| identity == selectors) {
+                identities.push(selectors.clone());
+            }
+        }
+        if identities.is_empty() {
+            identities.push(BTreeMap::from([(
+                "gain".into(),
+                SelectorValue::String("div4".into()),
+            )]));
+        }
+        Some(identities)
     }
 
     #[test]
@@ -948,6 +1721,7 @@ mod tests {
         let error = parse_family(
             r#"
 [transfer_families.als]
+provenance = { identity = "test fixture" }
 input_unit = "count"
 output_unit = "unit"
 output_scale = 1
@@ -1068,7 +1842,8 @@ applicability = { observation = [1, 10] }
 
     #[test]
     fn description_only_members_may_share_an_expanded_name() {
-        let emitted = emit_member("div4", 100);
+        let mut emitted = emit_member("div4", 100);
+        emitted.selectors = BTreeMap::from([("a".into(), SelectorValue::String("div4".into()))]);
         let mut string_one = described("x1", 100, MemberStatus::Unnecessary);
         string_one.selectors = BTreeMap::from([("a".into(), SelectorValue::String("1".into()))]);
         let mut int_one = described("x2", 100, MemberStatus::Forbidden);
@@ -1081,7 +1856,8 @@ applicability = { observation = [1, 10] }
 
         let expanded = expand_families(&families).unwrap();
         assert_eq!(expanded.len(), 1);
-        assert!(expanded.contains_key("als_gain_div4_integration_time_ms_100"));
+        assert!(expanded.contains_key("als_a_div4"));
+        assert!(!expanded.contains_key("als_a_1"));
     }
 
     #[test]
@@ -1099,7 +1875,7 @@ applicability = { observation = [1, 10] }
     }
 
     #[test]
-    fn ambiguous_value_concatenation_fails_with_both_selector_maps() {
+    fn member_missing_a_declared_selector_key_is_rejected() {
         let mut first = emit_member("div4", 100);
         first.selectors = BTreeMap::from([
             ("a".into(), SelectorValue::String("x".into())),
@@ -1107,12 +1883,15 @@ applicability = { observation = [1, 10] }
         ]);
         let mut second = emit_member("div8", 100);
         second.selectors = BTreeMap::from([("a".into(), SelectorValue::String("x_b_y".into()))]);
-        let mut families = BTreeMap::new();
-        families.insert("als".into(), formula_family(vec![first, second]));
-        let error = expand_families(&families).unwrap_err();
-        assert!(error.contains("both expand to `als_a_x_b_y`"));
-        assert!(error.contains("a=\"x\""));
-        assert!(error.contains("a=\"x_b_y\""));
+        let mut family = formula_family(vec![first, second]);
+        family.expected_selectors = None;
+        family.selector_axes = Some(BTreeMap::from([
+            ("a".into(), vec![SelectorValue::String("x".into())]),
+            ("b".into(), vec![SelectorValue::String("y".into())]),
+        ]));
+        let error = expand_families(&BTreeMap::from([("als".into(), family)])).unwrap_err();
+        assert!(error.contains("selector keys"), "{error}");
+        assert!(error.contains("`b`"), "{error}");
     }
 
     #[test]
@@ -1122,14 +1901,16 @@ applicability = { observation = [1, 10] }
             ("gain".into(), SelectorValue::String("div4".into())),
             ("t".into(), SelectorValue::Integer(100)),
         ]);
-        let mut collapsed = emit_member("div8", 200);
-        collapsed.selectors =
-            BTreeMap::from([("gain".into(), SelectorValue::String("div4_t".into()))]);
+        let mut distinct = emit_member("div8", 200);
+        distinct.selectors = BTreeMap::from([
+            ("gain".into(), SelectorValue::String("div4_t".into())),
+            ("t".into(), SelectorValue::Integer(100)),
+        ]);
         let mut families = BTreeMap::new();
-        families.insert("als".into(), formula_family(vec![keyed, collapsed]));
+        families.insert("als".into(), formula_family(vec![keyed, distinct]));
         let expanded = expand_families(&families).unwrap();
         assert!(expanded.contains_key("als_gain_div4_t_100"));
-        assert!(expanded.contains_key("als_gain_div4_t"));
+        assert!(expanded.contains_key("als_gain_div4_t_t_100"));
     }
 
     #[test]
@@ -1194,6 +1975,7 @@ applicability = { observation = [1, 10] }
         let error = parse_family(
             r#"
 [transfer_families.als]
+provenance = { identity = "test fixture" }
 input_unit = "count"
 output_unit = "unit"
 output_scale = 1
@@ -1212,6 +1994,7 @@ members = []
         let error = parse_family(
             r#"
 [transfer_families.als]
+provenance = { identity = "test fixture" }
 input_unit = "count"
 output_unit = "unit"
 output_scale = 1
@@ -1234,6 +2017,7 @@ correction = "required"
         let error = parse_family(
             r#"
 [transfer_families.als]
+provenance = { identity = "test fixture" }
 input_unit = "count"
 output_unit = "unit"
 output_scale = 1
@@ -1269,6 +2053,7 @@ channel = "als"
         let error = parse_family(
             r#"
 [transfer_families.als]
+provenance = { identity = "test fixture" }
 input_unit = "count"
 output_unit = "unit"
 output_scale = 1
@@ -1293,6 +2078,7 @@ applicability = { observation = [1, 10] }
         let error_form = parse_family(
             r#"
 [transfer_families.als]
+provenance = { identity = "test fixture" }
 input_unit = "count"
 output_unit = "unit"
 output_scale = 1
@@ -1312,15 +2098,16 @@ members = []
         family.observation_guard = Some(ObservationGuardDef {
             code: 65_535,
             behavior: ObservationGuardBehaviorDef::Error,
+            provenance: None,
         });
         let mut families = BTreeMap::new();
         families.insert("als".into(), family);
         let expanded = expand_families(&families).unwrap();
         let def = &expanded["als_gain_div4_integration_time_ms_100"];
         assert_eq!(def.domain, Some([1, 10]));
-        assert_eq!(def.observation_guard.unwrap().code, 65_535);
+        assert_eq!(def.observation_guard.as_ref().unwrap().code, 65_535);
         assert_eq!(
-            def.observation_guard.unwrap().behavior,
+            def.observation_guard.as_ref().unwrap().behavior,
             ObservationGuardBehaviorDef::Error
         );
     }
@@ -1330,12 +2117,14 @@ members = []
         let defs = parse_family(
             r#"
 [transfer_families.als]
+provenance = { identity = "test fixture" }
 input_unit = "count"
 output_unit = "unit"
 output_scale = 1
 max_interpolation_error = 1
 formula = "x"
 saturation = { code = 10, behavior = "error" }
+selector_axes = { gain = ["div4"] }
 
 [[transfer_families.als.members]]
 selectors = { gain = "div4" }
@@ -1353,6 +2142,7 @@ applicability = { observation = [1, 10] }
         let error = parse_family(
             r#"
 [transfer_families.als]
+provenance = { identity = "test fixture" }
 input_unit = "count"
 output_unit = "unit"
 output_scale = 1
@@ -1374,6 +2164,7 @@ members = []
         let error = parse_family(
             r#"
 [transfer_families.als]
+provenance = { identity = "test fixture" }
 input_unit = "count"
 output_unit = "unit"
 output_scale = 1
@@ -1396,12 +2187,13 @@ members = []
         family.observation_guard = Some(ObservationGuardDef {
             code: 65_535,
             behavior: ObservationGuardBehaviorDef::Error,
+            provenance: None,
         });
         let mut families = BTreeMap::new();
         families.insert("als".into(), family);
         let expanded = expand_families(&families).unwrap();
         let (name, def) = expanded.iter().next().unwrap();
-        assert_eq!(def.observation_guard.unwrap().code, 65_535);
+        assert_eq!(def.observation_guard.as_ref().unwrap().code, 65_535);
         assert_eq!(def.above, BoundaryDef::Clamp);
         let domain = def.domain.unwrap();
         assert!(domain[1] < 65_535, "fitted domain {domain:?}");
@@ -1463,6 +2255,7 @@ members = []
         let error = parse_family(
             r#"
 [transfer_families.als]
+provenance = { identity = "test fixture" }
 input_unit = "count"
 output_unit = "unit"
 output_scale = 1
@@ -1505,6 +2298,7 @@ applicability = { model_input = [63.0, 100.0] }
         let error = parse_family(
             r#"
 [transfer_families.als]
+provenance = { identity = "test fixture" }
 input_unit = "count"
 output_unit = "unit"
 output_scale = 1
@@ -1581,10 +2375,12 @@ applicability = { model_input = [63.0, 100.0] }
     fn points_observation_clips_the_shared_table() {
         let toml = r#"
 [transfer_families.front_end]
+provenance = { identity = "test fixture" }
 input_unit = "count"
 output_unit = "unit"
 output_scale = 1
 max_interpolation_error = 1
+selector_axes = { range = ["full", "low"] }
 points = [
   { input = 1, output = 1.0 },
   { input = 5, output = 5.0 },
@@ -1622,10 +2418,12 @@ applicability = { observation = [1, 5] }
         let error = parse_family(
             r#"
 [transfer_families.front_end]
+provenance = { identity = "test fixture" }
 input_unit = "count"
 output_unit = "unit"
 output_scale = 1
 max_interpolation_error = 1
+selector_axes = { range = ["full"] }
 points = [
   { input = 1, output = 1.0 },
   { input = 10, output = 10.0 },
@@ -1656,6 +2454,7 @@ applicability = { observation = [1, 10] }
             status: MemberStatus::Emit,
             reason: None,
             applicability: model_input([63.0, 100.0]),
+            provenance: None,
         };
         let error = expand_families(&BTreeMap::from([(
             "als".into(),
@@ -1681,10 +2480,12 @@ applicability = { observation = [1, 10] }
     fn ntc_physical_applicability_sets_output_range() {
         let toml = r#"
 [transfer_families.ntc]
+provenance = { identity = "test fixture" }
 input_unit = "adc_code"
 output_unit = "degree_celsius"
 output_scale = 1000
 max_interpolation_error = 50
+selector_axes = { probe = ["wide", "narrow"] }
 
 [transfer_families.ntc.model]
 kind = "ntc_beta_divider"
@@ -1716,10 +2517,12 @@ applicability = { physical = [0.0, 40.0] }
         let error = parse_family(
             r#"
 [transfer_families.ntc]
+provenance = { identity = "test fixture" }
 input_unit = "adc_code"
 output_unit = "degree_celsius"
 output_scale = 1000
 max_interpolation_error = 50
+selector_axes = { probe = ["wide"] }
 
 [transfer_families.ntc.model]
 kind = "ntc_beta_divider"
@@ -1779,11 +2582,13 @@ applicability = { physical = [-20.0, 80.0] }
     fn unsupported_member_omits_source_mapping_and_remains_inspectable() {
         let toml = r#"
 [transfer_families.als]
+provenance = { identity = "test fixture" }
 input_unit = "count"
 output_unit = "unit"
 output_scale = 1
 max_interpolation_error = 1
 formula = "x"
+selector_axes = { gain = ["div4", "x1"] }
 
 [[transfer_families.als.members]]
 selectors = { gain = "div4" }
@@ -1814,11 +2619,15 @@ reason = "the source does not define this selector combination"
     #[test]
     fn unsupported_scaled_polynomial_member_needs_no_transform_or_applicability() {
         let unsupported = FamilyMemberDef {
-            selectors: BTreeMap::from([("gain".into(), SelectorValue::String("x1".into()))]),
+            selectors: BTreeMap::from([
+                ("gain".into(), SelectorValue::String("x1".into())),
+                ("integration_time_ms".into(), SelectorValue::Integer(100)),
+            ]),
             input_transform: None,
             status: MemberStatus::Unsupported,
             reason: Some("the shared model has no mapping for this gain".into()),
             applicability: ApplicabilityDef::default(),
+            provenance: None,
         };
         let expanded = expand_families(&BTreeMap::from([(
             "als".into(),
@@ -1847,11 +2656,15 @@ reason = "the source does not define this selector combination"
         );
 
         let mut transformed = FamilyMemberDef {
-            selectors: BTreeMap::from([("gain".into(), SelectorValue::String("x1".into()))]),
+            selectors: BTreeMap::from([
+                ("gain".into(), SelectorValue::String("x1".into())),
+                ("integration_time_ms".into(), SelectorValue::Integer(100)),
+            ]),
             input_transform: Some(millionths(33_600)),
             status: MemberStatus::Unsupported,
             reason: Some("the shared model has no mapping for this gain".into()),
             applicability: ApplicabilityDef::default(),
+            provenance: None,
         };
         let error = expand_families(&BTreeMap::from([(
             "als".into(),
@@ -1901,6 +2714,7 @@ reason = "the source does not define this selector combination"
         let error = parse_family(
             r#"
 [transfer_families.als]
+provenance = { identity = "test fixture" }
 input_unit = "count"
 output_unit = "unit"
 output_scale = 1
@@ -1916,5 +2730,577 @@ applicability = { observation = [1, 10] }
         )
         .unwrap_err();
         assert!(error.contains("unknown field `scale`"), "{error}");
+    }
+
+    fn two_axis(range: &str, gain: i64) -> BTreeMap<String, SelectorValue> {
+        BTreeMap::from([
+            ("range".into(), SelectorValue::String(range.into())),
+            ("gain".into(), SelectorValue::Integer(gain)),
+        ])
+    }
+
+    fn two_axis_emit(range: &str, gain: i64) -> FamilyMemberDef {
+        let mut member = emit_member("div4", 100);
+        member.selectors = two_axis(range, gain);
+        member
+    }
+
+    fn two_axis_axes() -> BTreeMap<String, Vec<SelectorValue>> {
+        BTreeMap::from([
+            (
+                "range".into(),
+                vec![
+                    SelectorValue::String("low".into()),
+                    SelectorValue::String("high".into()),
+                ],
+            ),
+            (
+                "gain".into(),
+                vec![SelectorValue::Integer(1), SelectorValue::Integer(8)],
+            ),
+        ])
+    }
+
+    fn cartesian_family(
+        members: Vec<FamilyMemberDef>,
+        gaps: Vec<FamilyGapDef>,
+    ) -> TransferFamilyDef {
+        let mut family = formula_family(members);
+        family.selector_axes = Some(two_axis_axes());
+        family.expected_selectors = None;
+        family.gaps = gaps;
+        family
+    }
+
+    fn binary_axes(axis_count: usize) -> BTreeMap<String, Vec<SelectorValue>> {
+        (0..axis_count)
+            .map(|index| {
+                (
+                    format!("axis_{index:03}"),
+                    vec![SelectorValue::Integer(0), SelectorValue::Integer(1)],
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn omitted_cartesian_cell_is_rejected() {
+        let family = cartesian_family(
+            vec![
+                two_axis_emit("low", 1),
+                two_axis_emit("high", 1),
+                two_axis_emit("high", 8),
+            ],
+            Vec::new(),
+        );
+        let error = expand_families(&BTreeMap::from([("front_end".into(), family)])).unwrap_err();
+        assert!(error.contains("contains 4 identities"), "{error}");
+        assert!(error.contains("occupy 3"), "{error}");
+    }
+
+    #[test]
+    fn cartesian_cardinality_overflow_is_rejected_without_expansion() {
+        let axes = binary_axes(usize::BITS as usize);
+        let mut member = emit_member("div4", 100);
+        member.selectors = axes
+            .keys()
+            .map(|key| (key.clone(), SelectorValue::Integer(0)))
+            .collect();
+        let mut family = formula_family(vec![member]);
+        family.selector_axes = Some(axes);
+        family.expected_selectors = None;
+
+        let error = expand_families(&BTreeMap::from([("front_end".into(), family)])).unwrap_err();
+        assert!(error.contains("Cartesian product cardinality"), "{error}");
+        assert!(error.contains("usize capacity"), "{error}");
+    }
+
+    #[test]
+    fn cartesian_identity_enumeration_is_lazy_even_when_cardinality_overflows() {
+        let axis_count = usize::BITS as usize;
+        let universe = SelectorUniverse::Cartesian {
+            axes: binary_axes(axis_count),
+        };
+        assert_eq!(universe.identity_count(), None);
+
+        let identities: Vec<_> = universe.identities().take(3).collect();
+        assert_eq!(identities.len(), 3);
+        assert!(
+            identities[0]
+                .values()
+                .all(|value| value == &SelectorValue::Integer(0))
+        );
+        assert_eq!(
+            identities[1][&format!("axis_{:03}", axis_count - 1)],
+            SelectorValue::Integer(1)
+        );
+        assert_eq!(
+            identities[2][&format!("axis_{:03}", axis_count - 2)],
+            SelectorValue::Integer(1)
+        );
+        assert_eq!(
+            identities[2][&format!("axis_{:03}", axis_count - 1)],
+            SelectorValue::Integer(0)
+        );
+    }
+
+    #[test]
+    fn empty_axis_makes_cardinality_zero_after_an_overflowing_prefix() {
+        let mut axes = binary_axes(usize::BITS as usize);
+        axes.insert("zzz_empty".into(), Vec::new());
+        let universe = SelectorUniverse::Cartesian { axes };
+
+        assert_eq!(universe.identity_count(), Some(0));
+        assert_eq!(universe.identities().count(), 0);
+    }
+
+    #[test]
+    fn selector_addressed_gap_makes_the_cartesian_family_complete() {
+        let gap = FamilyGapDef {
+            selectors: two_axis("low", 8),
+            status: GapStatus::Undefined,
+            reason: "not characterized at this combination".into(),
+            provenance: None,
+        };
+        let family = cartesian_family(
+            vec![
+                two_axis_emit("low", 1),
+                two_axis_emit("high", 1),
+                two_axis_emit("high", 8),
+            ],
+            vec![gap],
+        );
+        let expanded = expand_families(&BTreeMap::from([("front_end".into(), family)])).unwrap();
+        assert_eq!(expanded.len(), 3);
+        assert!(!expanded.contains_key("front_end_range_low_gain_8"));
+    }
+
+    #[test]
+    fn global_named_gap_does_not_satisfy_family_completeness() {
+        let toml = r#"
+[transfer_families.front_end]
+provenance = { identity = "test fixture" }
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+formula = "x"
+selector_axes = { range = ["low", "high"], gain = [1, 8] }
+
+[[transfer_families.front_end.members]]
+selectors = { range = "low", gain = 1 }
+status = "emit"
+applicability = { observation = [1, 10] }
+
+[[transfer_families.front_end.members]]
+selectors = { range = "high", gain = 1 }
+status = "emit"
+applicability = { observation = [1, 10] }
+
+[[transfer_families.front_end.members]]
+selectors = { range = "high", gain = 8 }
+status = "emit"
+applicability = { observation = [1, 10] }
+
+[gaps.low_gain_8]
+status = "undefined"
+reason = "named globally; not a family-scoped identity"
+"#;
+        let error = parse_family(toml)
+            .unwrap()
+            .validate()
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("contains 4 identities"), "{error}");
+        assert!(error.contains("occupy 3"), "{error}");
+    }
+
+    #[test]
+    fn expected_selectors_do_not_invent_cartesian_cells() {
+        let toml = r#"
+[transfer_families.front_end]
+provenance = { identity = "test fixture" }
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+formula = "x"
+expected_selectors = [
+  { range = "low", gain = 1 },
+  { range = "high", gain = 8 },
+]
+
+[[transfer_families.front_end.members]]
+selectors = { range = "low", gain = 1 }
+status = "emit"
+applicability = { observation = [1, 10] }
+
+[[transfer_families.front_end.members]]
+selectors = { range = "high", gain = 8 }
+status = "emit"
+applicability = { observation = [1, 10] }
+"#;
+        let defs = parse_family(toml).unwrap();
+        let validated = defs.validate().unwrap();
+        let family = &validated.families()[0];
+        match family.selector_universe() {
+            SelectorUniverse::Explicit { identities } => assert_eq!(identities.len(), 2),
+            other => panic!("expected explicit universe, got {other:?}"),
+        }
+        assert_eq!(family.selector_universe().identity_count(), Some(2));
+        assert_eq!(family.selector_universe().identities().count(), 2);
+        assert_eq!(family.completeness(), FamilyCompleteness::Complete);
+        assert_eq!(validated.emitted_transfer_names().count(), 2);
+    }
+
+    #[test]
+    fn large_explicit_universe_uses_indexed_membership() {
+        const IDENTITY_COUNT: i64 = 4_096;
+        let mut identities = Vec::with_capacity(IDENTITY_COUNT as usize);
+        let mut members = Vec::with_capacity(IDENTITY_COUNT as usize);
+        for value in 0..IDENTITY_COUNT {
+            let selectors = BTreeMap::from([("n".into(), SelectorValue::Integer(value))]);
+            identities.push(selectors.clone());
+            let member = if value == 0 {
+                let mut member = emit_member("div4", 100);
+                member.selectors = selectors;
+                member
+            } else {
+                FamilyMemberDef {
+                    selectors,
+                    input_transform: None,
+                    status: MemberStatus::Unsupported,
+                    reason: Some("not supported by the shared source".into()),
+                    applicability: ApplicabilityDef::default(),
+                    provenance: None,
+                }
+            };
+            members.push(member);
+        }
+
+        let mut family = formula_family(vec![members[0].clone()]);
+        family.members = members;
+        family.selector_axes = None;
+        family.expected_selectors = Some(identities);
+        let expanded = expand_families(&BTreeMap::from([("large".into(), family)])).unwrap();
+        assert_eq!(expanded.len(), 1);
+        assert!(expanded.contains_key("large_n_0"));
+    }
+
+    #[test]
+    fn integer_and_string_axis_values_remain_distinct_expected_identities() {
+        let mut int_member = emit_member("div4", 100);
+        int_member.selectors = BTreeMap::from([("n".into(), SelectorValue::Integer(1))]);
+        let mut family = formula_family(vec![int_member]);
+        family.expected_selectors = None;
+        family.selector_axes = Some(BTreeMap::from([(
+            "n".into(),
+            vec![SelectorValue::Integer(1), SelectorValue::String("1".into())],
+        )]));
+        let error = expand_families(&BTreeMap::from([("als".into(), family)])).unwrap_err();
+        assert!(error.contains("contains 2 identities"), "{error}");
+        assert!(error.contains("occupy 1"), "{error}");
+    }
+
+    #[test]
+    fn selector_value_type_mismatch_is_rejected() {
+        let mut member = emit_member("div4", 100);
+        member.selectors = BTreeMap::from([("n".into(), SelectorValue::String("1".into()))]);
+        let mut family = formula_family(vec![member]);
+        family.expected_selectors = None;
+        family.selector_axes = Some(BTreeMap::from([(
+            "n".into(),
+            vec![SelectorValue::Integer(1), SelectorValue::Integer(2)],
+        )]));
+        let error = expand_families(&BTreeMap::from([("als".into(), family)])).unwrap_err();
+        assert!(error.contains("has a string value"), "{error}");
+        assert!(error.contains("uses integer"), "{error}");
+    }
+
+    #[test]
+    fn identity_outside_the_declared_universe_is_rejected() {
+        let mut extra = emit_member("div4", 100);
+        extra.selectors = BTreeMap::from([("n".into(), SelectorValue::Integer(3))]);
+        let mut covered = emit_member("div8", 100);
+        covered.selectors = BTreeMap::from([("n".into(), SelectorValue::Integer(1))]);
+        let mut family = formula_family(vec![covered, extra]);
+        family.expected_selectors = None;
+        family.selector_axes = Some(BTreeMap::from([(
+            "n".into(),
+            vec![SelectorValue::Integer(1), SelectorValue::Integer(2)],
+        )]));
+        let error = expand_families(&BTreeMap::from([("als".into(), family)])).unwrap_err();
+        assert!(error.contains("outside the declared universe"), "{error}");
+        assert!(error.contains("n=3"), "{error}");
+    }
+
+    #[test]
+    fn member_and_family_gap_for_the_same_identity_are_rejected() {
+        let gap = FamilyGapDef {
+            selectors: two_axis("low", 1),
+            status: GapStatus::Undefined,
+            reason: "conflicts with the emitted member".into(),
+            provenance: None,
+        };
+        let family = cartesian_family(
+            vec![
+                two_axis_emit("low", 1),
+                two_axis_emit("low", 8),
+                two_axis_emit("high", 1),
+                two_axis_emit("high", 8),
+            ],
+            vec![gap],
+        );
+        let error = expand_families(&BTreeMap::from([("front_end".into(), family)])).unwrap_err();
+        assert!(
+            error.contains("member 0 and family-scoped gap 0 share selector identity"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn family_scoped_gap_requires_a_non_blank_reason() {
+        let gap = FamilyGapDef {
+            selectors: two_axis("low", 8),
+            status: GapStatus::Undefined,
+            reason: "   ".into(),
+            provenance: None,
+        };
+        let family = cartesian_family(
+            vec![
+                two_axis_emit("low", 1),
+                two_axis_emit("high", 1),
+                two_axis_emit("high", 8),
+            ],
+            vec![gap],
+        );
+        let error = expand_families(&BTreeMap::from([("front_end".into(), family)])).unwrap_err();
+        assert!(error.contains("reason must not be blank"), "{error}");
+    }
+
+    #[test]
+    fn selector_axes_and_expected_selectors_are_mutually_exclusive() {
+        let mut family = formula_family(vec![emit_member("div4", 100)]);
+        family.selector_axes = Some(BTreeMap::from([(
+            "gain".into(),
+            vec![SelectorValue::String("div4".into())],
+        )]));
+        let error = expand_families(&BTreeMap::from([("als".into(), family)])).unwrap_err();
+        assert!(error.contains("mutually exclusive"), "{error}");
+    }
+
+    #[test]
+    fn missing_selector_universe_is_rejected() {
+        let mut family = formula_family(vec![emit_member("div4", 100)]);
+        family.selector_axes = None;
+        family.expected_selectors = None;
+        let error = expand_families(&BTreeMap::from([("als".into(), family)])).unwrap_err();
+        assert!(
+            error.contains("exactly one of selector_axes or expected_selectors"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn unknown_family_gap_field_is_rejected() {
+        let error = parse_family(
+            r#"
+[transfer_families.als]
+provenance = { identity = "test fixture" }
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+formula = "x"
+selector_axes = { gain = ["div4"] }
+
+[[transfer_families.als.members]]
+selectors = { gain = "div4" }
+status = "emit"
+applicability = { observation = [1, 10] }
+
+[[transfer_families.als.gaps]]
+selectors = { gain = "div8" }
+status = "undefined"
+reason = "not characterized"
+channel = "als"
+"#,
+        )
+        .unwrap_err();
+        assert!(error.contains("unknown field `channel`"), "{error}");
+    }
+
+    #[test]
+    fn description_only_member_rationale_is_required_and_exposed() {
+        let toml = r#"
+[transfer_families.als]
+provenance = { identity = "test fixture" }
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+formula = "x"
+selector_axes = { gain = ["div4", "x1"] }
+
+[[transfer_families.als.members]]
+selectors = { gain = "div4" }
+status = "emit"
+applicability = { observation = [1, 10] }
+
+[[transfer_families.als.members]]
+selectors = { gain = "x1" }
+status = "forbidden"
+reason = "exceeds the absolute maximum rating"
+applicability = { observation = [1, 10] }
+"#;
+        let family = parse_family(toml).unwrap().validate().unwrap().families()[0].clone();
+        let forbidden = &family.members()[1];
+        assert_eq!(forbidden.status(), MemberStatus::Forbidden);
+        assert_eq!(
+            forbidden.reason(),
+            Some("exceeds the absolute maximum rating")
+        );
+        assert_eq!(family.completeness(), FamilyCompleteness::Complete);
+    }
+
+    #[test]
+    fn source_backed_family_requires_provenance_identity() {
+        let defs = parse_family(
+            r#"
+[transfer_families.als]
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+formula = "x"
+
+[[transfer_families.als.members]]
+selectors = { gain = "div4" }
+status = "emit"
+applicability = { observation = [1, 10] }
+"#,
+        )
+        .unwrap();
+        let error = defs.validate().unwrap_err().to_string();
+        assert!(
+            error.contains("source-backed family requires provenance.identity"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn blank_family_provenance_identity_is_rejected() {
+        let defs = parse_family(
+            r#"
+[transfer_families.als]
+provenance = { identity = "  " }
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+formula = "x"
+
+[[transfer_families.als.members]]
+selectors = { gain = "div4" }
+status = "emit"
+applicability = { observation = [1, 10] }
+"#,
+        )
+        .unwrap();
+        let error = defs.validate().unwrap_err().to_string();
+        assert!(
+            error.contains("provenance.identity must not be blank"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn unknown_provenance_field_is_rejected() {
+        let error = parse_family(
+            r#"
+[transfer_families.als]
+provenance = { identity = "datasheet", fetched = true }
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+formula = "x"
+
+[[transfer_families.als.members]]
+selectors = { gain = "div4" }
+status = "emit"
+applicability = { observation = [1, 10] }
+"#,
+        )
+        .unwrap_err();
+        assert!(error.contains("unknown field `fetched`"), "{error}");
+    }
+
+    #[test]
+    fn member_inherits_family_provenance_unless_overridden() {
+        let defs = parse_family(
+            r#"
+[transfer_families.als]
+provenance = { identity = "synthetic ALS application note", revision = "1.0", locator = "Table 1" }
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+formula = "x"
+selector_axes = { gain = ["div4", "x1"] }
+
+[[transfer_families.als.members]]
+selectors = { gain = "div4" }
+status = "emit"
+applicability = { observation = [1, 10] }
+
+[[transfer_families.als.members]]
+selectors = { gain = "x1" }
+status = "forbidden"
+reason = "datasheet marks this combination invalid"
+applicability = { observation = [1, 10] }
+provenance = { locator = "§4.2 forbidden matrix" }
+"#,
+        )
+        .unwrap();
+        let validated = defs.validate().unwrap();
+        let family = &validated.families()[0];
+        let expected = SourceProvenance::new("synthetic ALS application note")
+            .with_revision("1.0")
+            .with_locator("Table 1");
+        assert_eq!(family.provenance(), &expected);
+        assert_eq!(family.members()[0].provenance(), &expected);
+        assert!(family.members()[0].provenance_override().is_none());
+        assert_eq!(
+            family.members()[1].provenance(),
+            &SourceProvenance::new("synthetic ALS application note")
+                .with_revision("1.0")
+                .with_locator("§4.2 forbidden matrix")
+        );
+        assert_eq!(
+            family.members()[1]
+                .provenance_override()
+                .and_then(|overlay| overlay.locator.as_deref()),
+            Some("§4.2 forbidden matrix")
+        );
+        let expanded = defs.resolved_transfers().unwrap();
+        assert_eq!(
+            expanded["als_gain_div4"].provenance.as_ref(),
+            Some(&expected)
+        );
+    }
+
+    #[test]
+    fn expanded_member_carries_resolved_citation_not_representation() {
+        let mut families = BTreeMap::new();
+        families.insert("als".into(), formula_family(vec![emit_member("div4", 100)]));
+        let expanded = expand_families(&families).unwrap();
+        let def = &expanded["als_gain_div4_integration_time_ms_100"];
+        assert_eq!(
+            def.provenance
+                .as_ref()
+                .map(|citation| citation.identity.as_str()),
+            Some("test fixture")
+        );
     }
 }

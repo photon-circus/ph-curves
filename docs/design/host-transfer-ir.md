@@ -19,13 +19,22 @@ plugin ABI: README and `docs/design/gen-build-api.md` keep that as a non-goal.
 ## Layers
 
 1. **Parsed** — `DefinitionsFile` from TOML or `insert_transfer`.
-2. **Validated** — `DefinitionsFile::validate` runs family/gap/identity checks
-   without fitting or emitting Rust. Every member, including `unnecessary`,
-   `unsupported`, and `forbidden`, is inspectable. Expanded names are reserved
-   only for `emit`.
+2. **Validated** — `DefinitionsFile::validate` runs family/gap/identity and
+   selector-universe completeness checks without fitting or emitting Rust.
+   Every member, including `unnecessary`, `unsupported`, and `forbidden`, is
+   inspectable, as is every family-scoped gap. Expanded names are reserved
+   only for `emit`. Successful validation yields
+   `FamilyCompleteness::Complete`. Document-level `[gaps]` remain a separate
+   named map and do not occupy family identities.
 3. **Generation sources** — TOML formula/points/model, or a `TransferSource`
-   overlay (`EvaluatedTruth`, `PrefittedKnots`, `Points`). Source facts stay on
-   the graph; fit policy stays on the transfer spec. `kind = "scaled_polynomial"`
+   overlay (`EvaluatedTruth`, `PrefittedKnots`, `Points`). Source *citations*
+   (`SourceProvenance`) are distinct from the selected representation (formula
+   text, point count, NTC parameters) and from fit policy on the transfer spec.
+   Every overlay explicitly inherits, replaces, or clears the target citation.
+   Inheritance means the declared, resolved pre-overlay citation and restores
+   it when replacing an earlier overlay. An emitted family member cannot clear
+   its mandatory citation.
+   `kind = "scaled_polynomial"`
    applies per-member `input_transform` as exact
    `u = count * numerator / denominator` (standalone TOML still uses `scale` /
    `1e6`) and evaluates `[c0, c1, ...]` with Horner; firmware still sees integer
@@ -34,27 +43,59 @@ plugin ABI: README and `docs/design/gen-build-api.md` keep that as a non-goal.
    different observation domain.
 
 This slice stores resolved family-member observation domains internally so
-overlay validation is source-independent. Exposing that derived fact on the
-complete public family IR remains part of
-[#41](https://github.com/photon-circus/ph-curves/issues/41).
+overlay validation is source-independent. Exposing that derived fact, the
+shared source, units, fitting policy, and a programmatic family builder
+remains part of [#41](https://github.com/photon-circus/ph-curves/issues/41).
+Selector universe, family-scoped gaps, typed identities, and completeness are
+already on `ValidatedFamily` ([#40](https://github.com/photon-circus/ph-curves/issues/40)).
 
 ## Public surface
 
 Host tools inspect through nameable types: `ValidatedDefinitions`,
-`ValidatedFamily`, `ValidatedMember`, `DeclaredSource`, `TransferFamilyDef`
-accessors, `DefinitionsFile::curves` / `transfers` / `transfer_families` /
-`gaps`. Built-in `ModelDef` remains crate-private.
+`ValidatedFamily`, `ValidatedMember`, `ValidatedFamilyGap`,
+`SelectorUniverse`, its lazy `SelectorIdentities` iterator,
+`FamilyCompleteness`, `DeclaredSource`, `SourceProvenance`,
+`GenerationPolicy`, `ObservationGuardPolicy`,
+`TransferFamilyDef` accessors, `DefinitionsFile::curves` / `transfers` /
+`transfer_families` / `gaps`. `ValidatedFamily::gaps` is the family-scoped
+selector list; `ValidatedDefinitions::gaps` is the document-level named map.
+Built-in `ModelDef` remains crate-private.
+
+`SelectorUniverse::identity_count` is the explicit-list length or checked
+Cartesian axis-length product. Family validation rejects a Cartesian product
+that does not fit the host's `usize`. Completeness follows from indexed
+in-universe membership, duplicate rejection, and equality between occupied
+and expected counts; validation never materializes the product.
+`SelectorUniverse::identities` yields maps lazily in deterministic axis/value
+order for callers that need independent enumeration.
+
+`ValidatedFamily::provenance` and
+`ValidatedFamily::observation_guard_provenance` are separately inspectable
+from the citation-free `ValidatedFamily::policy`; members expose the resolved
+citation plus any declared override. Family-scoped gaps likewise expose their
+resolved inherited citation and optional declared override. A successful
+overlay replacement updates the member's effective `provenance()` while
+`provenance_override()` remains the document declaration; replacing that
+overlay with inheritance restores the declared, resolved citation.
 
 Extension:
 
 - `TransferSpec` + `TransferSource` construct a standalone transfer without TOML.
+  `TransferSpec::with_provenance` attaches the same citation type as TOML.
 - `ValidatedDefinitions::set_source` overlays truth or knots on a standalone
   transfer or an **emitted** family member. Description-only members reject
-  overlays so source facts and generation input stay distinct.
+  overlays so source facts and generation input stay distinct. Construct the
+  required `TransferSourceOverlay` with
+  `TransferSource::{inherit_provenance, with_provenance, clear_provenance}`.
+  Emitted family-member overlays accept intentional inheritance or
+  replacement, not clearing.
 - `ValidatedDefinitions::generate` / `generate_report` emit ordinary
   `PiecewiseLinearTransfer` constants. The report path is the source of
   family totals and aggregate budget diagnostics; the `String` helper
-  discards the report after the same checks.
+  discards the report after the same checks. Reports preserve effective
+  overlay provenance, pre-overlay guard provenance, citation-free policy,
+  every family member and scoped gap, and named document gaps. Totals remain
+  emit-only.
 - Evaluated truth is dense unscaled physical samples; the existing greedy
   fitter runs.
 - Prefitted knots skip the fitter. Inverse-code-error measurement and
@@ -66,9 +107,17 @@ observation-code guard (TOML `saturation`) is copied through family expansion
 and emitted as `with_observation_guard` plus an adjacent
 `Option<ObservationGuardMetadata>` constant. Classification as saturation is
 declared consumer/device policy, not inferred from the integer value.
+A family guard citation resolves against family provenance before member
+overrides. A standalone guard citation resolves against the declared transfer
+citation before a generation-source overlay, so replacing or clearing source
+provenance does not silently rewrite or remove the guard-classification
+citation.
 Standalone TOML guards require the localized
 `[transfers] requires = ["observation_guard_v1"]` capability; its wire shape
 makes older generators reject rather than silently omit the guard.
+Standalone TOML source provenance likewise requires
+`[transfers] requires = ["source_provenance_v1"]`. Documents using both list
+both strings in the same array. Programmatic construction needs no marker.
 
 ## Options
 
@@ -86,3 +135,4 @@ LUT options; `generate` and `generate_report` both enforce them.
 - VEML knot budget and vendor oracle (#29)
 - `kind = "veml7700"` or any device lifecycle API
 - Runtime family types, `std` / alloc / float on the default-feature API
+- Fetching provenance URLs or embedding citation strings in runtime transfers

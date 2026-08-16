@@ -8,9 +8,10 @@
 //! (`DefinitionsFile::validate`) and may overlay [`TransferSource`] values.
 //! That is a public IR, not a plugin ABI: ph-curves does not load or call
 //! device-specific model code. `generate_report` returns the same source as
-//! `generate` plus a [`GenerationReport`] of per-transfer metrics and family
-//! totals; optional family `max_total_knots` / `max_table_bytes` budgets fail
-//! closed on both APIs.
+//! `generate` plus a [`GenerationReport`] of per-transfer metrics, structured
+//! provenance/policy, the complete family member/gap graph, named document
+//! gaps, and emitted-only resource totals; optional family `max_total_knots` /
+//! `max_table_bytes` budgets fail closed on both APIs.
 //!
 //! This module is the crate's only `std` consumer. The crate root is
 //! unconditionally `#![no_std]` and does not `extern crate std`. Each file
@@ -48,6 +49,7 @@ pub(crate) mod formula;
 mod ir;
 pub(crate) mod points;
 mod report;
+pub(crate) mod rustdoc;
 pub(crate) mod transfer;
 
 pub use api::{
@@ -55,13 +57,16 @@ pub use api::{
     generate_from_toml, generate_from_toml_report, generate_report, generate_to_path,
 };
 pub use curve::{CurveDef, DefinitionsFile};
-pub use ir::{ValidatedDefinitions, ValidatedFamily, ValidatedMember};
+pub use ir::{ValidatedDefinitions, ValidatedFamily, ValidatedFamilyGap, ValidatedMember};
 pub use report::{
-    FamilyReport, GenerationPath, GenerationReport, GenerationResult, ResourceTotals,
-    TABLE_BYTES_PER_KNOT, TransferReport,
+    FamilyGapReport, FamilyMemberReport, FamilyReport, GapReport, GenerationPath, GenerationReport,
+    GenerationResult, ResourceTotals, TABLE_BYTES_PER_KNOT, TransferReport,
 };
 pub use transfer::{
-    ApplicabilityDef, BoundaryDef, DeclaredSource, EvaluatedTruth, FamilyMemberDef, GapDef,
-    GapStatus, InputTransform, MemberStatus, ObservationGuardBehaviorDef, ObservationGuardDef,
-    PhysicalPoint, SelectorValue, TransferDef, TransferFamilyDef, TransferSource, TransferSpec,
+    ApplicabilityDef, BoundaryDef, DeclaredSource, EvaluatedTruth, FamilyCompleteness,
+    FamilyGapDef, FamilyMemberDef, GapDef, GapStatus, GenerationPolicy, InputTransform,
+    MemberStatus, ObservationGuardBehaviorDef, ObservationGuardDef, ObservationGuardPolicy,
+    PhysicalPoint, SelectorIdentities, SelectorUniverse, SelectorValue, SourceProvenance,
+    SourceProvenanceDisposition, SourceProvenanceField, SourceProvenanceOverride, TransferDef,
+    TransferFamilyDef, TransferSource, TransferSourceOverlay, TransferSpec,
 };

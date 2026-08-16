@@ -52,7 +52,8 @@ pub const TABLE_BYTES_PER_KNOT: usize = 6; // u16 input + i32 output arrays only
 pub struct GenerationResult { pub source: String, pub report: GenerationReport }
 pub struct GenerationReport {
     pub transfers: Vec<TransferReport>, // sorted by table name
-    pub families: Vec<FamilyReport>,    // sorted by family name; emit members
+    pub families: Vec<FamilyReport>,    // sorted by family name; all members/gaps
+    pub gaps: Vec<GapReport>,           // document-level, sorted by name
     pub totals: ResourceTotals,         // all emitted transfers; no curve LUTs
 }
 
@@ -66,14 +67,40 @@ impl DefinitionsFile {
     pub fn gaps(&self) -> &BTreeMap<String, GapDef>;
 }
 impl ValidatedDefinitions {
-    pub fn set_source(&mut self, name: &str, source: TransferSource) -> Result<(), Error>;
+    pub fn set_source(
+        &mut self,
+        name: &str,
+        overlay: TransferSourceOverlay,
+    ) -> Result<(), Error>;
     pub fn generate(&self, opts: &GenerateOptions) -> Result<String, Error>;
     pub fn generate_report(&self, opts: &GenerateOptions) -> Result<GenerationResult, Error>;
+}
+impl TransferSource {
+    pub fn inherit_provenance(self) -> TransferSourceOverlay;
+    pub fn with_provenance(self, provenance: SourceProvenance) -> TransferSourceOverlay;
+    pub fn clear_provenance(self) -> TransferSourceOverlay;
 }
 pub enum Error { Io(...), Toml(...), Validation(...) }
 ```
 
-**Module layout:** `src/gen/{mod,api,ir,codegen,curve,builtin,formula,points,transfer/*}.rs` exposed as `ph_curves::r#gen`; `src/bin/gen/main.rs` is a thin clap → lib API.
+`TransferReport` keeps runtime metadata metrics together with the fitting path,
+effective source provenance, independently resolved pre-overlay guard
+provenance, and citation-free `GenerationPolicy`. `FamilyReport` preserves the
+family citation, guard citation, policy, compact `SelectorUniverse`,
+completeness result, total-budget declarations, every member, and scoped gaps.
+Member and gap report records expose their effective provenance separately
+from the declared override; only emitted members carry a table/symbol mapping.
+Resource totals and aggregate budget enforcement continue to count emitted
+members only. Member and scoped-gap vectors retain declaration order.
+
+The overlay citation disposition is mandatory. Use inheritance only when the
+new representation still comes from the already-cited source. It means the
+target's declared, resolved pre-overlay citation and restores that citation
+when replacing an earlier overlay. Standalone overlays may replace or clear a
+citation; emitted family-member overlays may inherit or replace it but cannot
+clear it.
+
+**Module layout:** `src/gen/{mod,api,ir,codegen,curve,builtin,formula,points,rustdoc,transfer/*}.rs` exposed as `ph_curves::r#gen`; `src/bin/gen/main.rs` is a thin clap → lib API.
 
 **Consumer sketch**
 
