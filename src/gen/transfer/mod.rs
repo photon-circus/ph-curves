@@ -7,63 +7,261 @@ use std::format;
 use std::prelude::v1::*;
 
 mod adaptive;
+pub(crate) mod family;
 mod model;
 mod points;
+mod provenance;
+mod source;
 
 use crate::MonotonicDirection;
 use serde::Deserialize;
 
 use super::formula;
+use super::report::GenerationPath;
+
+pub use family::{
+    ApplicabilityDef, DeclaredSource, FamilyCompleteness, FamilyGapDef, FamilyMemberDef, GapDef,
+    GapStatus, InputTransform, MemberStatus, SelectorIdentities, SelectorUniverse, SelectorValue,
+    TransferFamilyDef,
+};
+pub(crate) use family::{FamilyMemberOrigin, ResolvedTransfer};
+pub use model::DividerTopology;
+pub use provenance::{
+    GenerationPolicy, ObservationGuardPolicy, SourceProvenance, SourceProvenanceField,
+    SourceProvenanceOverride,
+};
+pub use source::{
+    EvaluatedTruth, FamilySource, FamilySpec, SourceProvenanceDisposition, TransferSource,
+    TransferSourceOverlay, TransferSpec,
+};
 
 const ABSOLUTE_MAX_KNOTS: usize = 4096;
 
+/// How a generated transfer treats observations outside its domain.
 #[derive(Copy, Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum BoundaryDef {
+    /// Out-of-domain observations return an error.
     Error,
+    /// Out-of-domain observations clamp to the nearest endpoint.
     Clamp,
 }
 
 impl BoundaryDef {
-    pub fn rust_name(self) -> &'static str {
+    pub(crate) fn rust_name(self) -> &'static str {
         match self {
             Self::Error => "BoundaryBehavior::Error",
             Self::Clamp => "BoundaryBehavior::Clamp",
         }
     }
+
+    pub(crate) fn toml_name(self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Clamp => "clamp",
+        }
+    }
 }
 
-fn default_boundary() -> BoundaryDef {
+/// Policy for one explicitly declared observation code (TOML `saturation.behavior`).
+#[derive(Copy, Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ObservationGuardBehaviorDef {
+    /// Forward conversion returns [`crate::TransferError::RejectedObservation`].
+    Error,
+    /// Forward conversion returns the output at `domain_max`.
+    Clamp,
+}
+
+impl ObservationGuardBehaviorDef {
+    pub(crate) fn rust_name(self) -> &'static str {
+        match self {
+            Self::Error => "ObservationGuardBehavior::Error",
+            Self::Clamp => "ObservationGuardBehavior::Clamp",
+        }
+    }
+}
+
+/// Explicit observation-code guard declared as TOML `saturation`.
+///
+/// Host IR and runtime use observation-guard terminology. Classification of
+/// the code as saturation is consumer/device policy, not inferred from the
+/// integer value, unless [`Self::provenance`] cites a source that supports
+/// that classification. Even then the classification is applied as declared
+/// policy.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ObservationGuardDef {
+    /// Observation code classified by this guard. Must be strictly above the
+    /// fitted `domain_max`.
+    pub code: u16,
+    /// Policy applied when `code` is observed.
+    pub behavior: ObservationGuardBehaviorDef,
+    /// Optional citation supporting this classification. Resolved against the
+    /// transfer or family provenance when present.
+    #[serde(default)]
+    pub provenance: Option<SourceProvenanceOverride>,
+}
+
+pub(crate) fn default_boundary() -> BoundaryDef {
     BoundaryDef::Error
+}
+
+pub(crate) fn validate_observation_guard(
+    label: &str,
+    guard: Option<&ObservationGuardDef>,
+    domain_max: u16,
+) -> Result<(), String> {
+    let Some(guard) = guard else {
+        return Ok(());
+    };
+    if guard.code <= domain_max {
+        return Err(format!(
+            "{label}: observation guard code {} must be strictly above domain_max {domain_max}",
+            guard.code
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn resolve_guard_provenance(
+    label: &str,
+    guard: Option<&ObservationGuardDef>,
+    parent: Option<&SourceProvenance>,
+) -> Result<Option<SourceProvenance>, String> {
+    let Some(guard) = guard else {
+        return Ok(None);
+    };
+    let Some(overlay) = &guard.provenance else {
+        return Ok(None);
+    };
+    overlay
+        .resolve(parent)
+        .map(Some)
+        .map_err(|error| format!("{label}: {error}"))
 }
 
 fn default_max_knots() -> usize {
     256
 }
 
+/// One physical control point: integer observation to unscaled physical output.
 #[derive(Clone, Debug, Deserialize)]
 pub struct PhysicalPoint {
+    /// Observation-domain input code.
     pub input: u16,
+    /// Unscaled physical output at this input.
     pub output: f64,
 }
 
-#[derive(Debug, Deserialize)]
+impl PhysicalPoint {
+    /// Construct a control point.
+    pub fn new(input: u16, output: f64) -> Self {
+        Self { input, output }
+    }
+}
+
+/// Parsed standalone transfer, or the policy copied onto an expanded family member.
+///
+/// Built-in model parameters stay crate-private; use [`Self::has_model`] and
+/// [`Self::declared_source`] to inspect the source kind.
+/// Standalone TOML definitions using `saturation` must declare
+/// `[transfers] requires = ["observation_guard_v1"]` so older generators fail
+/// closed instead of ignoring the guard.
+/// Standalone TOML definitions using `provenance` likewise require
+/// `source_provenance_v1` in that array so released 0.2.1 readers cannot
+/// silently discard the citation.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TransferDef {
+    /// Observation-domain unit label.
     pub input_unit: String,
+    /// Physical-domain unit label.
     pub output_unit: String,
+    /// Integer output quanta per physical unit.
     pub output_scale: u32,
+    /// Requested interpolation error bound in output quanta.
     pub max_interpolation_error: u32,
+    /// Knot budget (default 256, hard cap 4096 for standalone transfers).
     #[serde(default = "default_max_knots")]
     pub max_knots: usize,
+    /// Below-domain policy.
     #[serde(default = "default_boundary")]
     pub below: BoundaryDef,
+    /// Above-domain policy.
     #[serde(default = "default_boundary")]
     pub above: BoundaryDef,
+    /// Explicit observation-code guard (TOML `saturation`).
+    #[serde(default, rename = "saturation")]
+    pub observation_guard: Option<ObservationGuardDef>,
+    /// Caller-declared source citation, when supplied.
+    #[serde(default)]
+    pub provenance: Option<SourceProvenance>,
+    /// Guard citation resolved against declared transfer/family provenance
+    /// before member or generation-source citation overlays are applied.
+    #[serde(skip)]
+    pub(crate) resolved_guard_provenance: Option<SourceProvenance>,
+    /// Sparse physical control points, when that is the declared source.
     pub points: Option<Vec<PhysicalPoint>>,
+    /// Formula over `x`, when that is the declared source.
     pub formula: Option<String>,
-    pub model: Option<model::ModelDef>,
+    pub(crate) model: Option<model::ModelDef>,
+    /// Inclusive observation domain, required for formula and scaled-polynomial sources.
     pub domain: Option<[u16; 2]>,
+    /// Physical output window, required for output-range models (NTC Beta-divider).
     pub output_range: Option<[f64; 2]>,
+}
+
+impl TransferDef {
+    /// Shared formula text, when the source is a formula.
+    pub fn formula_text(&self) -> Option<&str> {
+        self.formula.as_deref()
+    }
+
+    /// Physical control points, when the source is points.
+    pub fn control_points(&self) -> Option<&[PhysicalPoint]> {
+        self.points.as_deref()
+    }
+
+    /// Whether the source is a built-in host model.
+    pub fn has_model(&self) -> bool {
+        self.model.is_some()
+    }
+
+    /// Explicit observation-code guard, when TOML `saturation` is set.
+    pub fn observation_guard(&self) -> Option<&ObservationGuardDef> {
+        self.observation_guard.as_ref()
+    }
+
+    /// Caller-declared source citation, when supplied.
+    pub fn provenance(&self) -> Option<&SourceProvenance> {
+        self.provenance.as_ref()
+    }
+
+    /// Fit budget, boundaries, and observation-guard classification.
+    pub fn policy(&self) -> GenerationPolicy {
+        GenerationPolicy::new(
+            self.max_interpolation_error,
+            self.max_knots,
+            self.below,
+            self.above,
+            self.observation_guard.as_ref(),
+        )
+    }
+
+    /// Which of formula, points, or model is set. `None` if missing or mixed.
+    pub fn declared_source(&self) -> Option<DeclaredSource> {
+        match (
+            self.formula.is_some(),
+            self.points.is_some(),
+            self.model.is_some(),
+        ) {
+            (true, false, false) => Some(DeclaredSource::Formula),
+            (false, true, false) => Some(DeclaredSource::Points),
+            (false, false, true) => Some(DeclaredSource::Model),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -74,10 +272,21 @@ pub struct TransferData {
     pub achieved_max_error: u32,
     pub achieved_max_error_exact: f64,
     pub worst_case_input: u16,
-    pub provenance: String,
+    pub representation: String,
+    pub provenance: Option<SourceProvenance>,
+    pub guard_provenance: Option<SourceProvenance>,
+    pub generation_path: GenerationPath,
 }
 
 pub fn build(name: &str, def: &TransferDef) -> Result<TransferData, String> {
+    build_with_source(name, def, None)
+}
+
+pub(crate) fn build_with_source(
+    name: &str,
+    def: &TransferDef,
+    overlay: Option<&TransferSource>,
+) -> Result<TransferData, String> {
     if def.output_scale == 0 {
         return Err(format!("transfer `{name}`: output_scale must be positive"));
     }
@@ -85,6 +294,16 @@ pub fn build(name: &str, def: &TransferDef) -> Result<TransferData, String> {
         return Err(format!(
             "transfer `{name}`: max_knots must be in 2..={ABSOLUTE_MAX_KNOTS}"
         ));
+    }
+
+    if let Some(provenance) = &def.provenance {
+        provenance
+            .validate()
+            .map_err(|error| format!("transfer `{name}`: {error}"))?;
+    }
+
+    if let Some(overlay) = overlay {
+        return build_from_overlay(name, def, overlay);
     }
 
     let source_count =
@@ -95,7 +314,9 @@ pub fn build(name: &str, def: &TransferDef) -> Result<TransferData, String> {
         ));
     }
 
-    let (domain_min, truth, provenance) = if let Some(control_points) = &def.points {
+    let (domain_min, truth, representation, generation_path) = if let Some(control_points) =
+        &def.points
+    {
         if def.domain.is_some() || def.output_range.is_some() {
             return Err(format!(
                 "transfer `{name}`: points define their domain; domain and output_range are forbidden"
@@ -106,6 +327,7 @@ pub fn build(name: &str, def: &TransferDef) -> Result<TransferData, String> {
             minimum,
             scale_truth(name, &physical, def.output_scale)?,
             format!("physical points ({} control points)", control_points.len()),
+            GenerationPath::PhysicalPoints,
         )
     } else if let Some(expression) = &def.formula {
         if def.output_range.is_some() {
@@ -134,6 +356,31 @@ pub fn build(name: &str, def: &TransferDef) -> Result<TransferData, String> {
             minimum,
             scale_truth(name, &physical, def.output_scale)?,
             format!("formula y = {expression}"),
+            GenerationPath::Formula,
+        )
+    } else if let Some(model::ModelDef::ScaledPolynomial {
+        coefficients,
+        scale,
+        denominator,
+    }) = &def.model
+    {
+        if def.output_range.is_some() {
+            return Err(format!(
+                "transfer `{name}`: output_range is forbidden for scaled_polynomial; use domain"
+            ));
+        }
+        let scale =
+            scale.ok_or_else(|| format!("transfer `{name}`: scaled_polynomial requires scale"))?;
+        let domain = def.domain.ok_or_else(|| {
+            format!("transfer `{name}`: scaled_polynomial requires domain = [min, max]")
+        })?;
+        let (minimum, physical, description) =
+            model::evaluate_scaled_polynomial(name, coefficients, scale, *denominator, domain)?;
+        (
+            minimum,
+            scale_truth(name, &physical, def.output_scale)?,
+            description,
+            GenerationPath::ScaledPolynomial,
         )
     } else {
         if def.domain.is_some() {
@@ -153,17 +400,189 @@ pub fn build(name: &str, def: &TransferDef) -> Result<TransferData, String> {
             minimum,
             scale_truth(name, &physical, def.output_scale)?,
             description,
+            GenerationPath::NtcBetaDivider,
         )
     };
 
-    let direction = validate_monotonic(name, &truth)?;
+    finish_from_scaled_truth(
+        name,
+        def,
+        domain_min,
+        &truth,
+        representation,
+        generation_path,
+    )
+}
+
+fn build_from_overlay(
+    name: &str,
+    def: &TransferDef,
+    overlay: &TransferSource,
+) -> Result<TransferData, String> {
+    match overlay {
+        TransferSource::EvaluatedTruth(truth) => {
+            let (domain_min, scaled, representation) = evaluated_truth_to_scaled(name, def, truth)?;
+            finish_from_scaled_truth(
+                name,
+                def,
+                domain_min,
+                &scaled,
+                representation,
+                GenerationPath::EvaluatedTruth,
+            )
+        }
+        TransferSource::Points(control_points) => {
+            let (minimum, physical) = points::evaluate(name, control_points)?;
+            let scaled = scale_truth(name, &physical, def.output_scale)?;
+            finish_from_scaled_truth(
+                name,
+                def,
+                minimum,
+                &scaled,
+                format!("physical points ({} control points)", control_points.len()),
+                GenerationPath::PhysicalPoints,
+            )
+        }
+        TransferSource::PrefittedKnots {
+            inputs,
+            outputs,
+            truth,
+        } => build_prefitted(name, def, inputs, outputs, truth),
+    }
+}
+
+pub(crate) fn overlay_observation_span(
+    name: &str,
+    overlay: &TransferSource,
+) -> Result<[u16; 2], String> {
+    match overlay {
+        TransferSource::EvaluatedTruth(truth) | TransferSource::PrefittedKnots { truth, .. } => {
+            evaluated_truth_span(name, truth)
+        }
+        TransferSource::Points(control_points) => {
+            if control_points.len() < 2 {
+                return Err(format!(
+                    "transfer `{name}`: overlay points must contain at least two entries"
+                ));
+            }
+            Ok([
+                control_points[0].input,
+                control_points.last().expect("length checked").input,
+            ])
+        }
+    }
+}
+
+fn evaluated_truth_span(name: &str, truth: &EvaluatedTruth) -> Result<[u16; 2], String> {
+    let physical = truth.physical();
+    if physical.len() < 2 {
+        return Err(format!(
+            "transfer `{name}`: evaluated truth must contain at least two samples"
+        ));
+    }
+    let last_offset = physical.len() - 1;
+    let domain_max = truth
+        .domain_min()
+        .checked_add(
+            u16::try_from(last_offset)
+                .map_err(|_| format!("transfer `{name}`: evaluated truth domain exceeds u16"))?,
+        )
+        .ok_or_else(|| format!("transfer `{name}`: evaluated truth domain exceeds u16"))?;
+    Ok([truth.domain_min(), domain_max])
+}
+
+/// Resolve the observation domain of an expanded family member's shared source.
+///
+/// The caller is responsible for establishing that `def` originated from a
+/// family. Standalone definitions may intentionally be replaced by overlays
+/// with a different domain.
+pub(crate) fn family_source_observation_domain(
+    name: &str,
+    def: &TransferDef,
+) -> Result<[u16; 2], String> {
+    if let Some(domain) = def.domain {
+        return Ok(domain);
+    }
+    if let Some(points) = &def.points {
+        if points.len() < 2 {
+            return Err(format!(
+                "transfer `{name}`: points must contain at least two entries"
+            ));
+        }
+        return Ok([
+            points[0].input,
+            points.last().expect("length checked").input,
+        ]);
+    }
+    if let (Some(model), Some(output_range)) = (&def.model, def.output_range) {
+        let (minimum, physical, _) = model::evaluate(name, model, output_range)?;
+        let last_offset = physical.len() - 1;
+        let domain_max = minimum
+            .checked_add(
+                u16::try_from(last_offset)
+                    .map_err(|_| format!("transfer `{name}`: derived model domain exceeds u16"))?,
+            )
+            .ok_or_else(|| format!("transfer `{name}`: derived model domain exceeds u16"))?;
+        return Ok([minimum, domain_max]);
+    }
+    Err(format!(
+        "transfer `{name}`: expanded family member has no resolvable observation domain"
+    ))
+}
+
+fn evaluated_truth_to_scaled(
+    name: &str,
+    def: &TransferDef,
+    truth: &EvaluatedTruth,
+) -> Result<(u16, Vec<f64>, String), String> {
+    let physical = truth.physical();
+    if physical.len() < 2 {
+        return Err(format!(
+            "transfer `{name}`: evaluated truth must contain at least two samples"
+        ));
+    }
+    let last_offset = physical.len() - 1;
+    if last_offset > usize::from(u16::MAX - truth.domain_min()) {
+        return Err(format!(
+            "transfer `{name}`: evaluated truth domain exceeds u16"
+        ));
+    }
+    let scaled = scale_truth(name, physical, def.output_scale)?;
+    Ok((
+        truth.domain_min(),
+        scaled,
+        format!("evaluated physical truth ({} samples)", physical.len()),
+    ))
+}
+
+fn finish_from_scaled_truth(
+    name: &str,
+    def: &TransferDef,
+    domain_min: u16,
+    truth: &[f64],
+    representation: String,
+    generation_path: GenerationPath,
+) -> Result<TransferData, String> {
+    let direction = validate_monotonic(name, truth)?;
     let result = adaptive::fit(
         name,
         domain_min,
-        &truth,
+        truth,
         def.max_interpolation_error,
         def.max_knots,
     )?;
+
+    let domain_max = *result.inputs.last().expect("fitter requires two knots");
+    let label = format!("transfer `{name}`");
+    validate_observation_guard(&label, def.observation_guard.as_ref(), domain_max)?;
+    let guard_provenance = match &def.resolved_guard_provenance {
+        Some(provenance) => Some(provenance.clone()),
+        None => resolve_guard_provenance(
+            &label,
+            def.observation_guard.as_ref(),
+            def.provenance.as_ref(),
+        )?,
+    };
 
     Ok(TransferData {
         inputs: result.inputs,
@@ -172,7 +591,104 @@ pub fn build(name: &str, def: &TransferDef) -> Result<TransferData, String> {
         achieved_max_error: result.achieved_max_error,
         achieved_max_error_exact: result.achieved_max_error_exact,
         worst_case_input: result.worst_case_input,
-        provenance,
+        representation,
+        provenance: def.provenance.clone(),
+        guard_provenance,
+        generation_path,
+    })
+}
+
+fn build_prefitted(
+    name: &str,
+    def: &TransferDef,
+    inputs: &[u16],
+    outputs: &[i32],
+    truth: &EvaluatedTruth,
+) -> Result<TransferData, String> {
+    if inputs.len() != outputs.len() {
+        return Err(format!(
+            "transfer `{name}`: prefitted inputs and outputs must have the same length"
+        ));
+    }
+    if inputs.len() < 2 {
+        return Err(format!(
+            "transfer `{name}`: prefitted knots must contain at least two entries"
+        ));
+    }
+    if inputs.len() > def.max_knots {
+        return Err(format!(
+            "transfer `{name}`: prefitted knot count {} exceeds max_knots={}",
+            inputs.len(),
+            def.max_knots
+        ));
+    }
+    for pair in inputs.windows(2) {
+        if pair[1] <= pair[0] {
+            return Err(format!(
+                "transfer `{name}`: prefitted inputs must be strictly increasing"
+            ));
+        }
+    }
+
+    let scaled_knots: Vec<f64> = outputs.iter().map(|&value| f64::from(value)).collect();
+    let direction = validate_monotonic(name, &scaled_knots)?;
+
+    let (domain_min, scaled, _) = evaluated_truth_to_scaled(name, def, truth)?;
+    if domain_min != inputs[0] {
+        return Err(format!(
+            "transfer `{name}`: prefitted truth domain_min must match the first knot"
+        ));
+    }
+    let last = *inputs.last().expect("knot count checked");
+    let expected_len = usize::from(last - domain_min) + 1;
+    if scaled.len() != expected_len {
+        return Err(format!(
+            "transfer `{name}`: prefitted truth must cover {domain_min}..={last} ({expected_len} samples)"
+        ));
+    }
+    let knot_offsets: Vec<usize> = inputs
+        .iter()
+        .map(|&input| usize::from(input - domain_min))
+        .collect();
+    let (worst_offset, worst_error) =
+        adaptive::measure_error(domain_min, &scaled, &knot_offsets, outputs)?;
+    if worst_error > f64::from(def.max_interpolation_error) {
+        return Err(format!(
+            "transfer `{name}`: prefitted knots exceed maximum error {}; \
+                 measured {worst_error:.6} at input {}",
+            def.max_interpolation_error,
+            domain_min + worst_offset as u16
+        ));
+    }
+
+    validate_observation_guard(
+        &format!("transfer `{name}`"),
+        def.observation_guard.as_ref(),
+        last,
+    )?;
+    let guard_provenance = match &def.resolved_guard_provenance {
+        Some(provenance) => Some(provenance.clone()),
+        None => resolve_guard_provenance(
+            &format!("transfer `{name}`"),
+            def.observation_guard.as_ref(),
+            def.provenance.as_ref(),
+        )?,
+    };
+
+    Ok(TransferData {
+        inputs: inputs.to_vec(),
+        outputs: outputs.to_vec(),
+        direction,
+        achieved_max_error: worst_error.ceil() as u32,
+        achieved_max_error_exact: worst_error,
+        worst_case_input: domain_min + worst_offset as u16,
+        representation: format!(
+            "prefitted knots ({} knots) verified against evaluated truth",
+            inputs.len()
+        ),
+        provenance: def.provenance.clone(),
+        guard_provenance,
+        generation_path: GenerationPath::PrefittedKnots,
     })
 }
 
@@ -368,6 +884,9 @@ mod tests {
             max_knots: 256,
             below: BoundaryDef::Error,
             above: BoundaryDef::Error,
+            observation_guard: None,
+            provenance: None,
+            resolved_guard_provenance: None,
             points: None,
             formula: None,
             model: None,
@@ -477,5 +996,183 @@ mod tests {
                 .unwrap_err()
                 .contains("greedy fitter did not meet maximum error")
         );
+    }
+
+    fn scaled_poly(
+        coefficients: Vec<f64>,
+        scale: u32,
+        domain: [u16; 2],
+        output_scale: u32,
+    ) -> TransferDef {
+        TransferDef {
+            output_scale,
+            max_interpolation_error: 1,
+            max_knots: 64,
+            model: Some(ModelDef::ScaledPolynomial {
+                coefficients,
+                scale: Some(scale),
+                denominator: model::MODEL_INPUT_SCALE_DENOMINATOR as u32,
+            }),
+            domain: Some(domain),
+            ..base_def()
+        }
+    }
+
+    #[test]
+    fn scaled_polynomial_exact_half_quantum_tie_quantizes_away_from_zero() {
+        let (_minimum, physical, _) = model::evaluate_scaled_polynomial(
+            "tie",
+            &[0.0, 0.5],
+            33_600,
+            model::MODEL_INPUT_SCALE_DENOMINATOR as u32,
+            [1875, 1876],
+        )
+        .unwrap();
+        assert_eq!(physical[0], 31.5);
+        assert_eq!(physical[0].round() as i32, 32);
+
+        let data = build("tie", &scaled_poly(vec![0.0, 0.5], 33_600, [1875, 1876], 1)).unwrap();
+        assert_eq!(data.inputs[0], 1875);
+        assert_eq!(data.outputs[0], 32);
+    }
+
+    #[test]
+    fn scaled_polynomial_reproduces_the_vendor_worked_example() {
+        // Vishay AN84323 rev 06-Mar-2025 p.5: 5581 counts at ×1/4 100 ms.
+        // Exact u is 1500.1728 (vendor prints 1500 lx); both round to 1658 lx
+        // at output_scale = 1. Milli-lux / knot budget stays issue #29.
+        let data = build(
+            "als",
+            &scaled_poly(
+                vec![0.0, 1.0023, 8.1488e-5, -9.3924e-9, 6.0135e-13],
+                268_800,
+                [5581, 5582],
+                1,
+            ),
+        )
+        .unwrap();
+        assert_eq!(data.inputs[0], 5581);
+        assert_eq!(data.outputs[0], 1658);
+    }
+
+    #[test]
+    fn scaled_polynomial_standalone_may_include_u16_max() {
+        let data = build(
+            "full",
+            &scaled_poly(vec![0.0, 1.0], 1_000, [65534, 65535], 1),
+        )
+        .unwrap();
+        assert_eq!(*data.inputs.last().unwrap(), u16::MAX);
+        assert!(!data.representation.contains("saturation"));
+    }
+
+    #[test]
+    fn observation_guard_must_be_strictly_above_fitted_domain() {
+        let mut def = scaled_poly(vec![0.0, 1.0], 1_000, [1, 10], 1);
+        def.observation_guard = Some(ObservationGuardDef {
+            code: 10,
+            behavior: ObservationGuardBehaviorDef::Error,
+            provenance: None,
+        });
+        let error = build("guarded", &def).unwrap_err();
+        assert!(error.contains("strictly above domain_max"), "{error}");
+        assert!(error.contains("10"), "{error}");
+    }
+
+    #[test]
+    fn observation_guard_is_not_added_to_the_fitting_domain() {
+        let mut def = scaled_poly(vec![0.0, 1.0], 1_000, [1, 10], 1);
+        def.observation_guard = Some(ObservationGuardDef {
+            code: 65_535,
+            behavior: ObservationGuardBehaviorDef::Error,
+            provenance: None,
+        });
+        let data = build("guarded", &def).unwrap();
+        assert_eq!(*data.inputs.last().unwrap(), 10);
+        assert!(!data.inputs.contains(&65_535));
+    }
+
+    #[test]
+    fn observation_guard_cannot_be_declared_when_domain_includes_u16_max() {
+        let mut def = scaled_poly(vec![0.0, 1.0], 1_000, [65534, 65535], 1);
+        def.observation_guard = Some(ObservationGuardDef {
+            code: 65_535,
+            behavior: ObservationGuardBehaviorDef::Clamp,
+            provenance: None,
+        });
+        let error = build("full", &def).unwrap_err();
+        assert!(error.contains("strictly above domain_max"), "{error}");
+    }
+
+    #[test]
+    fn scaled_polynomial_rejects_empty_coefficients() {
+        let error = build("empty", &scaled_poly(vec![], 33_600, [1, 2], 1)).unwrap_err();
+        assert!(error.contains("coefficients must not be empty"), "{error}");
+    }
+
+    #[test]
+    fn scaled_polynomial_rejects_non_finite_coefficients() {
+        let error = build("nan", &scaled_poly(vec![0.0, f64::NAN], 33_600, [1, 2], 1)).unwrap_err();
+        assert!(error.contains("coefficient 1 must be finite"), "{error}");
+    }
+
+    #[test]
+    fn scaled_polynomial_rejects_zero_scale() {
+        let error = build("zero", &scaled_poly(vec![0.0, 1.0], 0, [1, 2], 1)).unwrap_err();
+        assert!(error.contains("scale must be positive"), "{error}");
+    }
+
+    #[test]
+    fn scaled_polynomial_requires_scale_on_standalone_definitions() {
+        let mut def = scaled_poly(vec![0.0, 1.0], 1, [1, 2], 1);
+        if let Some(ModelDef::ScaledPolynomial { scale, .. }) = &mut def.model {
+            *scale = None;
+        }
+        let error = build("missing", &def).unwrap_err();
+        assert!(error.contains("requires scale"), "{error}");
+    }
+
+    #[test]
+    fn scaled_polynomial_rejects_invalid_domain() {
+        let error = build("flat", &scaled_poly(vec![0.0, 1.0], 33_600, [10, 10], 1)).unwrap_err();
+        assert!(
+            error.contains("domain must be strictly increasing"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn scaled_polynomial_rejects_non_monotonic_truth() {
+        // y = (u - 2)^2 is not monotonic across u = 0..=4.
+        let error = build(
+            "quad",
+            &scaled_poly(vec![4.0, -4.0, 1.0], 1_000_000, [0, 4], 1),
+        )
+        .unwrap_err();
+        assert!(error.contains("not monotonic"), "{error}");
+    }
+
+    #[test]
+    fn scaled_polynomial_rejects_non_finite_output() {
+        let error = build("inf", &scaled_poly(vec![0.0, 1e308], 1_000_000, [1, 2], 1)).unwrap_err();
+        assert!(error.contains("non-finite"), "{error}");
+    }
+
+    #[test]
+    fn scaled_polynomial_rejects_scaled_i32_overflow() {
+        let error = build(
+            "overflow",
+            &scaled_poly(vec![0.0, 1.0], 1_000_000, [65534, 65535], 100_000),
+        )
+        .unwrap_err();
+        assert!(error.contains("does not fit i32"), "{error}");
+    }
+
+    #[test]
+    fn scaled_polynomial_forbids_output_range() {
+        let mut def = scaled_poly(vec![0.0, 1.0], 33_600, [1, 2], 1);
+        def.output_range = Some([0.0, 1.0]);
+        let error = build("range", &def).unwrap_err();
+        assert!(error.contains("output_range is forbidden"), "{error}");
     }
 }
