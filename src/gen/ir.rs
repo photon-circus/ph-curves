@@ -709,8 +709,9 @@ impl ValidatedDefinitions {
                 "transfer `{name}` collides with a description-only family member name"
             )));
         }
-        self.defs.insert_transfer(spec)?;
-        self.resolved_names.insert(name);
+        let mut defs = self.defs.clone();
+        defs.insert_transfer(spec)?;
+        *self = defs.validate()?;
         Ok(())
     }
 
@@ -2711,6 +2712,58 @@ applicability = { physical = [-20.0, 80.0] }
         validated.insert_family(formula_family_spec()).unwrap();
         assert_eq!(validated.families().len(), 1);
         assert_eq!(validated.emission_manifest().entries().len(), 1);
+    }
+
+    #[test]
+    fn validated_insert_transfer_revalidates_atomically() {
+        fn transfer_spec(name: &str) -> TransferSpec {
+            TransferSpec::new(
+                name,
+                "code",
+                "unit",
+                1,
+                1,
+                TransferSource::points(vec![
+                    PhysicalPoint::new(0, 0.0),
+                    PhysicalPoint::new(1, 1.0),
+                ]),
+            )
+        }
+
+        let mut defs = DefinitionsFile::default();
+        defs.insert_transfer(transfer_spec("foo-bar")).unwrap();
+        let mut validated = defs.validate().unwrap();
+        let before = validated
+            .generate(&GenerateOptions::transfers_only())
+            .unwrap();
+
+        let error = validated
+            .insert_transfer(transfer_spec("foo_bar"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("both normalize to Rust identifier `FOO_BAR`"));
+        assert_eq!(
+            validated.emitted_transfer_names().collect::<Vec<_>>(),
+            ["foo-bar"]
+        );
+        assert_eq!(
+            validated
+                .generate(&GenerateOptions::transfers_only())
+                .unwrap(),
+            before
+        );
+
+        validated.insert_transfer(transfer_spec("bar")).unwrap();
+        assert_eq!(
+            validated.emitted_transfer_names().collect::<Vec<_>>(),
+            ["bar", "foo-bar"]
+        );
+        assert!(
+            validated
+                .generate(&GenerateOptions::transfers_only())
+                .unwrap()
+                .contains("pub const BAR:")
+        );
     }
 
     #[test]

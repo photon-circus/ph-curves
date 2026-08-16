@@ -224,6 +224,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ValidatedDefinitions::insert_transfer` now rebuilds the validated graph
+  transactionally, matching `insert_family`. Normalized Rust-identifier and
+  companion-symbol collisions are rejected by the insertion call without
+  leaving the previously validated definitions partially mutated.
 - Generated rustdoc now escapes Markdown/HTML syntax in every user-derived
   documentation string (names, representation, units, and citations), so text
   such as `[missing]` cannot become a broken intra-doc link under `-D warnings`.
