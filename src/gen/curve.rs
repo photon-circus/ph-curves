@@ -765,9 +765,8 @@ points = [
 
 [[transfer_families.guarded.members]]
 selectors = { variant = "one" }
-scale = 1
 status = "emit"
-applicability = { model_input = [1.0, 10.0] }
+applicability = { observation = [1, 10] }
 "#;
         let error = DefinitionsFile::from_toml_str(toml)
             .unwrap_err()
@@ -802,9 +801,8 @@ saturation = { code = 65535, behavior = "error" }
 
 [[transfer_families.ntc.members]]
 selectors = { variant = "one" }
-scale = 1
 status = "emit"
-applicability = { model_input = [-40.0, 125.0] }
+applicability = { physical = [-40.0, 125.0] }
 "#;
         let error = DefinitionsFile::from_toml_str(toml)
             .unwrap_err()
@@ -832,9 +830,8 @@ points = [
 
 [[transfer_families.valid.members]]
 selectors = { saturation = "enabled", observation_guard = 1 }
-scale = 1
 status = "emit"
-applicability = { model_input = [1.0, 10.0] }
+applicability = { observation = [1, 10] }
 "#;
         let defs = DefinitionsFile::from_toml_str(toml).unwrap();
         let selectors = &defs.transfer_families()["valid"].members[0].selectors;

@@ -17,13 +17,6 @@ pub fn generate(
     value_type: &str,
     lut_size: usize,
 ) -> Result<String, String> {
-    if !curves_file.curves.is_empty() && !curves_file.transfer_families.is_empty() {
-        return Err(
-            "transfer families forbid [curves] in the same document (dense LUT path is not allowed)"
-                .into(),
-        );
-    }
-
     let resolved = curves_file.resolved_transfers()?;
     let mut curves: Vec<(&String, &CurveDef)> = curves_file.curves.iter().collect();
     curves.sort_by_key(|(name, _)| *name);
@@ -841,22 +834,25 @@ output_unit = "unit"
 output_scale = 1000
 max_interpolation_error = 50
 max_knots = 64
-interpolate_selectors = false
 below = "error"
 above = "error"
 formula = "x"
-domain = [1, 10]
 "#
         .into()
     }
 
-    fn member_toml(gain: &str, it: i64, scale: u32, status: &str) -> String {
+    fn member_toml(gain: &str, it: i64, status: &str) -> String {
+        let reason = if status == "emit" {
+            String::new()
+        } else {
+            "reason = \"fixture description-only member\"\n".into()
+        };
         format!(
             "[[transfer_families.als.members]]\n\
              selectors = {{ gain = \"{gain}\", integration_time_ms = {it} }}\n\
-             scale = {scale}\n\
              status = \"{status}\"\n\
-             applicability = {{ model_input = [100.0, 22000.0] }}\n"
+             {reason}\
+             applicability = {{ observation = [1, 10] }}\n"
         )
     }
 
@@ -866,10 +862,10 @@ domain = [1, 10]
             let status = if gain == "div4" || gain == "div8" {
                 "emit"
             } else {
-                "do_not_use"
+                "forbidden"
             };
             for it in [25_i64, 50, 100, 200, 400, 800] {
-                toml.push_str(&member_toml(gain, it, 1_000, status));
+                toml.push_str(&member_toml(gain, it, status));
             }
         }
         toml.push_str(
@@ -880,19 +876,24 @@ domain = [1, 10]
     }
 
     #[test]
-    fn transfer_family_forbids_dense_curve_lut_in_the_same_document() {
+    fn mixed_curve_and_family_generate_through_their_own_paths() {
         let mut toml = String::from("[curves.linear]\nbuiltin = \"linear\"\n");
         toml.push_str(&family_header());
-        toml.push_str(&member_toml("div4", 100, 268_800, "emit"));
+        toml.push_str(&member_toml("div4", 100, "emit"));
         let definition: DefinitionsFile = toml::from_str(&toml).unwrap();
-        let error = generate(&definition, "u8", 256).unwrap_err();
-        assert!(error.contains("forbid [curves]"));
+        let output = generate(&definition, "u8", 256).unwrap();
+        assert!(output.contains("CurveLut"));
+        assert!(output.contains("pub const LINEAR"));
+        assert!(output.contains("PiecewiseLinearTransfer"));
+        assert!(output.contains("pub const ALS_GAIN_DIV4_INTEGRATION_TIME_MS_100"));
+        assert!(!output.contains("f32"));
+        assert!(!output.contains("f64"));
     }
 
     #[test]
     fn family_emits_sparse_integer_transfers_without_floats_or_curve_luts() {
         let mut toml = family_header();
-        toml.push_str(&member_toml("div4", 100, 268_800, "emit"));
+        toml.push_str(&member_toml("div4", 100, "emit"));
         toml.push_str("[gaps.white_channel]\nstatus = \"undefined\"\nreason = \"counts only\"\n");
         let definition: DefinitionsFile = toml::from_str(&toml).unwrap();
         assert_eq!(definition.transfer_families()["als"].members.len(), 1);
@@ -920,7 +921,6 @@ output_unit = "unit"
 output_scale = 1
 max_interpolation_error = 1
 max_knots = 8
-interpolate_selectors = false
 
 [transfer_families.als.model]
 kind = "scaled_polynomial"
@@ -928,8 +928,8 @@ coefficients = [0.0, 0.5]
 
 [[transfer_families.als.members]]
 selectors = { gain = "div4", integration_time_ms = 800 }
-scale = 33600
 status = "emit"
+input_transform = { numerator = 33600, denominator = 1000000 }
 applicability = { model_input = [63.0, 64.0] }
 "#;
         let definition: DefinitionsFile = toml::from_str(toml).unwrap();
@@ -959,7 +959,8 @@ applicability = { model_input = [63.0, 64.0] }
             family.members[0].selectors["gain"],
             crate::r#gen::SelectorValue::String("x1".into())
         );
-        assert_eq!(family.members[0].scale, 1_000);
+        assert_eq!(family.members[0].input_transform, None);
+        assert_eq!(family.members[0].applicability.observation, Some([1, 10]));
 
         let output = generate(&definition, "u8", 256).unwrap();
         for gain in ["DIV4", "DIV8"] {
@@ -1024,7 +1025,7 @@ reason = "undefined channel"
     #[test]
     fn gap_collides_with_family_name() {
         let mut toml = family_header();
-        toml.push_str(&member_toml("div4", 100, 268_800, "emit"));
+        toml.push_str(&member_toml("div4", 100, "emit"));
         toml.push_str("[gaps.als]\nstatus = \"undefined\"\nreason = \"reserved\"\n");
         let error = generate(
             &toml::from_str::<DefinitionsFile>(&toml).unwrap(),
@@ -1038,7 +1039,7 @@ reason = "undefined channel"
     #[test]
     fn gap_collides_with_emitted_member() {
         let mut toml = family_header();
-        toml.push_str(&member_toml("div4", 100, 268_800, "emit"));
+        toml.push_str(&member_toml("div4", 100, "emit"));
         toml.push_str(
             "[gaps.als_gain_div4_integration_time_ms_100]\n\
              status = \"undefined\"\nreason = \"reserved\"\n",
@@ -1074,7 +1075,7 @@ formula = "x"
 "#,
         );
         toml.push_str(&family_header());
-        toml.push_str(&member_toml("div4", 100, 268_800, "emit"));
+        toml.push_str(&member_toml("div4", 100, "emit"));
         let error = generate(
             &toml::from_str::<DefinitionsFile>(&toml).unwrap(),
             "u8",
@@ -1098,7 +1099,7 @@ formula = "x"
 "#,
         );
         toml.push_str(&family_header());
-        toml.push_str(&member_toml("div4", 100, 268_800, "emit"));
+        toml.push_str(&member_toml("div4", 100, "emit"));
         let error = generate(
             &toml::from_str::<DefinitionsFile>(&toml).unwrap(),
             "u8",

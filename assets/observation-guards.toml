@@ -25,11 +25,8 @@ below = "clamp"
 above = "error"
 saturation = { code = 65535, behavior = "clamp" }
 formula = "11 - x"
-domain = [1, 10]
-interpolate_selectors = false
 
 [[transfer_families.guarded_family.members]]
 selectors = { variant = "clamp" }
-scale = 1
 status = "emit"
-applicability = { model_input = [1.0, 10.0] }
+applicability = { observation = [1, 10] }

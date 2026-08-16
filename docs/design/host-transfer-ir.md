@@ -20,13 +20,17 @@ plugin ABI: README and `docs/design/gen-build-api.md` keep that as a non-goal.
 
 1. **Parsed** — `DefinitionsFile` from TOML or `insert_transfer`.
 2. **Validated** — `DefinitionsFile::validate` runs family/gap/identity checks
-   without fitting or emitting Rust. Every member, including `none` and
-   `do_not_use`, is inspectable. Expanded names are reserved only for `emit`.
+   without fitting or emitting Rust. Every member, including `unnecessary`,
+   `unsupported`, and `forbidden`, is inspectable. Expanded names are reserved
+   only for `emit`.
 3. **Generation sources** — TOML formula/points/model, or a `TransferSource`
    overlay (`EvaluatedTruth`, `PrefittedKnots`, `Points`). Source facts stay on
    the graph; fit policy stays on the transfer spec. `kind = "scaled_polynomial"`
-   applies per-member (or standalone) scale as exact `u = count * scale / 1e6`
-   and evaluates `[c0, c1, ...]` with Horner; firmware still sees integer knots.
+   applies per-member `input_transform` as exact
+   `u = count * numerator / denominator` (standalone TOML still uses `scale` /
+   `1e6`) and evaluates `[c0, c1, ...]` with Horner; firmware still sees integer
+   knots. Overlays on family members must span the member's resolved observation
+   domain.
 
 ## Public surface
 

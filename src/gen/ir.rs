@@ -11,8 +11,8 @@ use super::api::{Error, GenerateOptions};
 use super::curve::DefinitionsFile;
 use super::transfer::family::expanded_name;
 use super::transfer::{
-    ApplicabilityDef, GapDef, MemberStatus, SelectorValue, TransferFamilyDef, TransferSource,
-    TransferSpec,
+    ApplicabilityDef, GapDef, InputTransform, MemberStatus, SelectorValue, TransferFamilyDef,
+    TransferSource, TransferSpec,
 };
 
 /// Family, member, and gap graph after identity and collision checks.
@@ -49,8 +49,9 @@ impl ValidatedFamily {
 #[derive(Clone, Debug)]
 pub struct ValidatedMember {
     selectors: BTreeMap<String, SelectorValue>,
-    scale: u32,
+    input_transform: Option<InputTransform>,
     status: MemberStatus,
+    reason: Option<String>,
     applicability: ApplicabilityDef,
     expanded_name: String,
 }
@@ -61,12 +62,13 @@ impl ValidatedMember {
         &self.selectors
     }
 
-    /// Per-member model-input scale.
+    /// Exact input transform, when the shared source applies one.
     ///
-    /// Applied to host truth for `kind = "scaled_polynomial"`
-    /// (`u = count * scale / 1e6`). Inspectable for formula and points sources.
-    pub fn scale(&self) -> u32 {
-        self.scale
+    /// Present for `kind = "scaled_polynomial"`
+    /// (`u = count * numerator / denominator`). Absent for formula, points,
+    /// and NTC members.
+    pub fn input_transform(&self) -> Option<InputTransform> {
+        self.input_transform
     }
 
     /// Whether this member is generated.
@@ -74,7 +76,12 @@ impl ValidatedMember {
         self.status
     }
 
-    /// Source-backed window in the model's input units.
+    /// Non-blank rationale for a non-`emit` status.
+    pub fn reason(&self) -> Option<&str> {
+        self.reason.as_deref()
+    }
+
+    /// Source-backed window in the coordinate space the shared source uses.
     pub fn applicability(&self) -> &ApplicabilityDef {
         &self.applicability
     }
@@ -93,13 +100,6 @@ impl DefinitionsFile {
     /// Every family member is checked before non-`emit` statuses are filtered.
     /// Description-only members remain inspectable on the returned graph.
     pub fn validate(&self) -> Result<ValidatedDefinitions, Error> {
-        if !self.curves.is_empty() && !self.transfer_families.is_empty() {
-            return Err(Error::Validation(
-                "transfer families forbid [curves] in the same document (dense LUT path is not allowed)"
-                    .into(),
-            ));
-        }
-
         let resolved = self.resolved_transfers().map_err(Error::Validation)?;
         let curves: Vec<_> = self.curves.iter().collect();
         let transfers: Vec<_> = resolved.iter().collect();
@@ -164,8 +164,9 @@ fn inspect_families(
         for member in &family.members {
             members.push(ValidatedMember {
                 selectors: member.selectors.clone(),
-                scale: member.scale,
+                input_transform: member.input_transform,
                 status: member.status,
+                reason: member.reason.clone(),
                 applicability: member.applicability.clone(),
                 expanded_name: expanded_name(family_name, &member.selectors)?,
             });
@@ -263,26 +264,23 @@ output_unit = "unit"
 output_scale = 1000
 max_interpolation_error = 50
 formula = "x"
-domain = [1, 10]
-interpolate_selectors = false
 
 [[transfer_families.als.members]]
 selectors = { gain = "div4", integration_time_ms = 100 }
-scale = 268800
 status = "emit"
-applicability = { model_input = [100.0, 22000.0] }
+applicability = { observation = [1, 10] }
 
 [[transfer_families.als.members]]
 selectors = { gain = "x1", integration_time_ms = 100 }
-scale = 4200
-status = "none"
-applicability = { model_input = [100.0, 22000.0] }
+status = "unnecessary"
+reason = "high-gain row is documented, not generated"
+applicability = { observation = [1, 10] }
 
 [[transfer_families.als.members]]
 selectors = { gain = "x2", integration_time_ms = 100 }
-scale = 2100
-status = "do_not_use"
-applicability = { model_input = [100.0, 22000.0] }
+status = "forbidden"
+reason = "exceeds the absolute maximum rating"
+applicability = { observation = [1, 10] }
 
 [gaps.white_channel]
 status = "undefined"
@@ -307,7 +305,8 @@ reason = "counts only; no conversion"
 
         let emit = &family.members()[0];
         assert_eq!(emit.status(), MemberStatus::Emit);
-        assert_eq!(emit.scale(), 268_800);
+        assert_eq!(emit.input_transform(), None);
+        assert_eq!(emit.applicability().observation, Some([1, 10]));
         assert_eq!(
             emit.selectors()["gain"],
             SelectorValue::String("div4".into())
@@ -317,12 +316,16 @@ reason = "counts only; no conversion"
             "als_gain_div4_integration_time_ms_100"
         );
 
-        assert_eq!(family.members()[1].status(), MemberStatus::None);
+        assert_eq!(family.members()[1].status(), MemberStatus::Unnecessary);
+        assert_eq!(
+            family.members()[1].reason(),
+            Some("high-gain row is documented, not generated")
+        );
         assert_eq!(
             family.members()[1].expanded_name(),
             "als_gain_x1_integration_time_ms_100"
         );
-        assert_eq!(family.members()[2].status(), MemberStatus::DoNotUse);
+        assert_eq!(family.members()[2].status(), MemberStatus::Forbidden);
 
         assert_eq!(
             validated.gaps()["white_channel"].reason,
@@ -364,6 +367,43 @@ reason = "counts only; no conversion"
         assert!(out.contains("TransferMetadata"));
         assert!(!out.contains("CurveLut"));
         assert!(!out.contains("pub const ALS_GAIN_X1"));
+    }
+
+    #[test]
+    fn overlay_evaluated_truth_must_match_member_observation_domain() {
+        let defs = DefinitionsFile::from_toml_str(family_toml()).unwrap();
+        let mut validated = defs.validate().unwrap();
+        validated
+            .set_source(
+                "als_gain_div4_integration_time_ms_100",
+                TransferSource::evaluated_truth(2, vec![2.0, 3.0, 4.0]),
+            )
+            .unwrap();
+        let error = validated
+            .generate(&GenerateOptions::transfers_only())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("overlay observation domain"), "{error}");
+        assert!(error.contains("[2, 4]"), "{error}");
+        assert!(error.contains("[1, 10]"), "{error}");
+    }
+
+    #[test]
+    fn prefitted_knots_on_a_family_member_must_match_observation_domain() {
+        let defs = DefinitionsFile::from_toml_str(family_toml()).unwrap();
+        let mut validated = defs.validate().unwrap();
+        let truth = crate::r#gen::EvaluatedTruth::new(1, (1..=10).map(f64::from).collect());
+        validated
+            .set_source(
+                "als_gain_div4_integration_time_ms_100",
+                TransferSource::prefitted_knots_verified(vec![1, 10], vec![1000, 10_000], truth),
+            )
+            .unwrap();
+        let out = validated
+            .generate(&GenerateOptions::transfers_only())
+            .unwrap();
+        assert!(out.contains("verified against evaluated truth"));
+        assert!(out.contains("ALS_GAIN_DIV4_INTEGRATION_TIME_MS_100"));
     }
 
     #[test]

@@ -321,8 +321,9 @@ points do not need to start at zero or end at full scale.
 
 Discrete selector combinations that share one source belong in a transfer
 family. Selectors are never interpolated. Only `status = "emit"` members are
-generated; `none` and `do_not_use` members stay on the description.
-`[gaps]` records channels the sources leave undefined:
+generated; `unnecessary`, `unsupported`, and `forbidden` members stay on the
+description and require a non-blank `reason`. `[gaps]` records channels the
+sources leave undefined:
 
 ```toml
 [transfer_families.als]
@@ -331,29 +332,37 @@ output_unit = "unit"
 output_scale = 1000
 max_interpolation_error = 50
 formula = "x"
-domain = [1, 10]
-interpolate_selectors = false
 
 [[transfer_families.als.members]]
 selectors = { gain = "div4", integration_time_ms = 100 }
-scale = 268800
 status = "emit"
-applicability = { model_input = [100.0, 22000.0] }
+applicability = { observation = [1, 10] }
 
 [gaps.white_channel]
 status = "undefined"
 reason = "counts only; no conversion"
 ```
 
-Families cannot share a document with `[curves]` (the dense LUT path).
-Per-member `scale` is required. For `kind = "scaled_polynomial"` the generator
-applies it as `u = count * scale / 1e6` with an exact integer product, and
-converts inclusive `applicability.model_input` to observation codes:
+Families may share a document with unrelated `[curves]`. Dense LUT generation
+stays curve-only; family members remain sparse integer transfers. Family knot
+default is 64 with a hard cap of 256. Every accepted member field is
+source-aware: formula and points members declare `applicability.observation`,
+NTC members declare `applicability.physical`, and `kind = "scaled_polynomial"`
+requires an exact `input_transform` plus `applicability.model_input`. The
+generator applies that transform as `u = count * numerator / denominator` with
+an exact integer product, and converts inclusive model-input bounds to
+observation codes:
 
 ```toml
 [transfer_families.als.model]
 kind = "scaled_polynomial"
 coefficients = [0.0, 1.0023, 8.1488e-5, -9.3924e-9, 6.0135e-13]
+
+[[transfer_families.als.members]]
+selectors = { gain = "div4", integration_time_ms = 100 }
+status = "emit"
+input_transform = { numerator = 268800, denominator = 1000000 }
+applicability = { model_input = [100.0, 22000.0] }
 ```
 
 Standalone polynomial definitions supply their own `scale` and `domain`. The

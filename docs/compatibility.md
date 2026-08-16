@@ -138,13 +138,22 @@ generator does not understand. Narrowing formerly accepted documents is the
 cost of making schema evolution explicit.
 
 `[transfer_families]` and `[gaps]` are now known top-level tables. Nested
-unknown fields on family, member, applicability, and gap types are rejected.
-Standalone curves still ignore unknown direct fields. Standalone transfers
-reject unknown direct fields, while legacy NTC model parameters remain
-permissive for compatibility.
+unknown fields on family, member, applicability, input-transform, and gap
+types are rejected. Standalone curves still ignore unknown direct fields.
+Standalone transfers reject unknown direct fields, while legacy NTC model
+parameters remain permissive for compatibility.
+
+The family member schema in this unreleased tree is source-aware: every
+accepted field must change validation, fitting, emission, metadata, or
+documentation, and a field unsupported by the selected source fails closed.
+That is the publish shape. `[transfer_families]` has not shipped in 0.2.1, so
+this is not a 0.2.x document break. Standalone transfer TOML (`scale` / `1e6`,
+`domain`) is unchanged. The first release that publishes families must include
+this matrix; do not ship accepted-but-inert member fields.
 
 No runtime API is involved. The version that ships a TOML tightening is a
-release decision, not part of the behaviour change.
+release decision, not part of the behaviour change. A broader whole-document
+`schema_version` field remains a separate schema decision.
 
 ## Host TOML: fail-closed standalone observation guards
 
