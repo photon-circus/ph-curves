@@ -882,9 +882,14 @@ mod tests {
     }
 
     fn family_header() -> String {
-        r#"
+        family_header_with_axes(r#"{ gain = ["div4"], integration_time_ms = [100] }"#)
+    }
+
+    fn family_header_with_axes(axes: &str) -> String {
+        format!(
+            r#"
 [transfer_families.als]
-provenance = { identity = "test fixture" }
+provenance = {{ identity = "test fixture" }}
 input_unit = "count"
 output_unit = "unit"
 output_scale = 1000
@@ -893,8 +898,9 @@ max_knots = 64
 below = "error"
 above = "error"
 formula = "x"
+selector_axes = {axes}
 "#
-        .into()
+        )
     }
 
     fn member_toml(gain: &str, it: i64, status: &str) -> String {
@@ -913,7 +919,9 @@ formula = "x"
     }
 
     fn twenty_four_member_family_toml() -> String {
-        let mut toml = family_header();
+        let mut toml = family_header_with_axes(
+            r#"{ gain = ["x1", "x2", "div4", "div8"], integration_time_ms = [25, 50, 100, 200, 400, 800] }"#,
+        );
         for gain in ["x1", "x2", "div4", "div8"] {
             let status = if gain == "div4" || gain == "div8" {
                 "emit"
@@ -978,6 +986,7 @@ output_unit = "unit"
 output_scale = 1
 max_interpolation_error = 1
 max_knots = 8
+selector_axes = { gain = ["div4"], integration_time_ms = [800] }
 
 [transfer_families.als.model]
 kind = "scaled_polynomial"
@@ -1179,6 +1188,7 @@ max_knots = 8
 below = "error"
 above = "clamp"
 formula = "x"
+selector_axes = { gain = ["div4"] }
 
 [[transfer_families.als.members]]
 selectors = { gain = "div4" }
@@ -1296,6 +1306,7 @@ max_interpolation_error = 1
 max_knots = 8
 saturation = { code = 65535, behavior = "clamp" }
 formula = "x"
+selector_axes = { variant = ["clamp"] }
 
 [[transfer_families.als.members]]
 selectors = { variant = "clamp" }
@@ -1312,6 +1323,7 @@ max_interpolation_error = 1
 max_knots = 8
 saturation = { code = 65535, behavior = "clamp", provenance = { locator = "§5.2 overflow" } }
 formula = "x"
+selector_axes = { variant = ["clamp"] }
 
 [[transfer_families.als.members]]
 selectors = { variant = "clamp" }

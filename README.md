@@ -324,8 +324,12 @@ family. Selectors are never interpolated. Only `status = "emit"` members are
 generated. `unnecessary` and `forbidden` members stay on the description,
 require a non-blank `reason`, and retain a validated source mapping.
 `unsupported` members also require a reason but set no applicability coordinate
-or `input_transform` because no source mapping exists. `[gaps]` records
-channels the sources leave undefined:
+or `input_transform` because no source mapping exists. Every family declares
+its expected selector universe with `selector_axes` (Cartesian product) or
+`expected_selectors` (an explicit non-Cartesian set). Each expected identity
+must appear exactly once as a member or as a family-scoped gap with a
+non-blank reason. Document-level `[gaps]` records channels the sources leave
+undefined and do not satisfy family completeness:
 
 ```toml
 [transfer_families.als]
@@ -335,11 +339,18 @@ output_unit = "unit"
 output_scale = 1000
 max_interpolation_error = 50
 formula = "x"
+selector_axes = { gain = ["div4"], integration_time_ms = [100, 200] }
 
 [[transfer_families.als.members]]
 selectors = { gain = "div4", integration_time_ms = 100 }
 status = "emit"
 applicability = { observation = [1, 10] }
+
+[[transfer_families.als.gaps]]
+selectors = { gain = "div4", integration_time_ms = 200 }
+status = "undefined"
+reason = "not characterized at 200 ms"
+provenance = { locator = "Table 1, omitted row" }
 
 [gaps.white_channel]
 status = "undefined"
@@ -374,6 +385,9 @@ input_transform = { numerator = 268800, denominator = 1000000 }
 applicability = { model_input = [100.0, 22000.0] }
 ```
 
+The scaled-polynomial snippet above still needs a declared universe on the
+family table (`selector_axes` or `expected_selectors`) covering that member.
+
 Standalone polynomial definitions supply their own `scale` and `domain`. The
 generic polynomial evaluator includes `u16::MAX` whenever that declared domain
 includes it; there is no implicit saturation rule. A guard may target that code
@@ -383,10 +397,18 @@ Generated output is still independent `PiecewiseLinearTransfer` constants.
 Inspect parsed families and gaps through
 `DefinitionsFile::transfer_families` and `gaps`. `DefinitionsFile::validate`
 returns a `ValidatedDefinitions` graph that includes description-only members
-and gap reasons. Family citations are a structured `provenance` table
+and family-scoped gaps, the declared selector universe and completeness
+status, and document-level gap reasons. The universe exposes a checked
+`identity_count`; Cartesian overflow is a validation error, completeness is
+proven from indexed occupancy counts, and `identities()` enumerates lazily
+without materializing the axis product.
+
+Family citations are a structured `provenance` table
 (identity, optional revision/locator/URL/note), distinct from fit policy,
 boundaries, emission status, and observation-guard classification. Members
-inherit the family citation unless they declare an override. An override may
+and family-scoped gaps inherit the family citation unless they declare an
+override. Validated gaps expose both the effective citation and their declared
+override. An override may
 remove inherited optional fields with `clear = ["revision", "locator", "url",
 "note"]`; replacing `identity` starts a new citation and clears every
 unspecified optional field. A family guard citation resolves against the family

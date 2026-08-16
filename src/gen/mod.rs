@@ -52,11 +52,12 @@ pub use api::{
     generate_to_path,
 };
 pub use curve::{CurveDef, DefinitionsFile};
-pub use ir::{ValidatedDefinitions, ValidatedFamily, ValidatedMember};
+pub use ir::{ValidatedDefinitions, ValidatedFamily, ValidatedFamilyGap, ValidatedMember};
 pub use transfer::{
-    ApplicabilityDef, BoundaryDef, DeclaredSource, EvaluatedTruth, FamilyMemberDef, GapDef,
-    GapStatus, GenerationPolicy, InputTransform, MemberStatus, ObservationGuardBehaviorDef,
-    ObservationGuardDef, ObservationGuardPolicy, PhysicalPoint, SelectorValue, SourceProvenance,
+    ApplicabilityDef, BoundaryDef, DeclaredSource, EvaluatedTruth, FamilyCompleteness,
+    FamilyGapDef, FamilyMemberDef, GapDef, GapStatus, GenerationPolicy, InputTransform,
+    MemberStatus, ObservationGuardBehaviorDef, ObservationGuardDef, ObservationGuardPolicy,
+    PhysicalPoint, SelectorIdentities, SelectorUniverse, SelectorValue, SourceProvenance,
     SourceProvenanceDisposition, SourceProvenanceField, SourceProvenanceOverride, TransferDef,
     TransferFamilyDef, TransferSource, TransferSourceOverlay, TransferSpec,
 };

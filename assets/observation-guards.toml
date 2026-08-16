@@ -26,6 +26,7 @@ below = "clamp"
 above = "error"
 saturation = { code = 65535, behavior = "clamp" }
 formula = "11 - x"
+selector_axes = { variant = ["clamp"] }
 
 [[transfer_families.guarded_family.members]]
 selectors = { variant = "clamp" }

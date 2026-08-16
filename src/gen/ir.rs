@@ -9,12 +9,15 @@ use std::prelude::v1::*;
 
 use super::api::{Error, GenerateOptions};
 use super::curve::DefinitionsFile;
-use super::transfer::family::{expanded_name, resolved_member_provenance};
+use super::transfer::family::{
+    expanded_name, resolved_family_gap_provenance, resolved_member_provenance,
+    resolved_selector_universe,
+};
 use super::transfer::{
-    ApplicabilityDef, GapDef, GenerationPolicy, InputTransform, MemberStatus, SelectorValue,
-    SourceProvenance, SourceProvenanceDisposition, SourceProvenanceOverride, TransferFamilyDef,
-    TransferSourceOverlay, TransferSpec, family_source_observation_domain,
-    overlay_observation_span, resolve_guard_provenance,
+    ApplicabilityDef, FamilyCompleteness, GapDef, GapStatus, GenerationPolicy, InputTransform,
+    MemberStatus, SelectorUniverse, SelectorValue, SourceProvenance, SourceProvenanceDisposition,
+    SourceProvenanceOverride, TransferFamilyDef, TransferSourceOverlay, TransferSpec,
+    family_source_observation_domain, overlay_observation_span, resolve_guard_provenance,
 };
 
 /// Family, member, and gap graph after identity and collision checks.
@@ -29,14 +32,17 @@ pub struct ValidatedDefinitions {
     family_overlay_domains: BTreeMap<String, [u16; 2]>,
 }
 
-/// One validated family, including description-only members.
+/// One validated family, including description-only members and family-scoped gaps.
 #[derive(Clone, Debug)]
 pub struct ValidatedFamily {
     name: String,
     provenance: SourceProvenance,
     guard_provenance: Option<SourceProvenance>,
     policy: GenerationPolicy,
+    selector_universe: SelectorUniverse,
     members: Vec<ValidatedMember>,
+    gaps: Vec<ValidatedFamilyGap>,
+    completeness: FamilyCompleteness,
 }
 
 impl ValidatedFamily {
@@ -63,9 +69,70 @@ impl ValidatedFamily {
         &self.policy
     }
 
+    /// Declared expected selector identities (Cartesian axes or an explicit set).
+    ///
+    /// [`SelectorUniverse::identity_count`] reports the checked cardinality;
+    /// [`SelectorUniverse::identities`] enumerates lazily without materializing
+    /// a Cartesian product.
+    pub fn selector_universe(&self) -> &SelectorUniverse {
+        &self.selector_universe
+    }
+
     /// Every member, in declaration order. Non-`emit` members are present.
     pub fn members(&self) -> &[ValidatedMember] {
         &self.members
+    }
+
+    /// Family-scoped gaps, in declaration order.
+    ///
+    /// Document-level `[gaps]` are on [`ValidatedDefinitions::gaps`] and do not
+    /// occupy family selector identities.
+    pub fn gaps(&self) -> &[ValidatedFamilyGap] {
+        &self.gaps
+    }
+
+    /// Occupancy result. Successful validation always yields
+    /// [`FamilyCompleteness::Complete`].
+    pub fn completeness(&self) -> FamilyCompleteness {
+        self.completeness
+    }
+}
+
+/// One validated family-scoped gap occupying an expected selector identity.
+#[derive(Clone, Debug)]
+pub struct ValidatedFamilyGap {
+    selectors: BTreeMap<String, SelectorValue>,
+    status: GapStatus,
+    reason: String,
+    provenance: SourceProvenance,
+    provenance_override: Option<SourceProvenanceOverride>,
+}
+
+impl ValidatedFamilyGap {
+    /// Selector map; keys, value types, and values are the identity.
+    pub fn selectors(&self) -> &BTreeMap<String, SelectorValue> {
+        &self.selectors
+    }
+
+    /// Always [`GapStatus::Undefined`].
+    pub fn status(&self) -> GapStatus {
+        self.status
+    }
+
+    /// Non-blank rationale for this expected identity not being a member.
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
+
+    /// Effective citation after applying the declared gap override to the
+    /// mandatory family citation.
+    pub fn provenance(&self) -> &SourceProvenance {
+        &self.provenance
+    }
+
+    /// Gap-level citation override declared in the family document.
+    pub fn provenance_override(&self) -> Option<&SourceProvenanceOverride> {
+        self.provenance_override.as_ref()
     }
 }
 
@@ -205,6 +272,7 @@ fn inspect_families(
 ) -> Result<Vec<ValidatedFamily>, String> {
     let mut out = Vec::new();
     for (family_name, family) in families {
+        let selector_universe = resolved_selector_universe(family_name, family)?;
         let mut members = Vec::new();
         for member in &family.members {
             let provenance = resolved_member_provenance(family_name, family, member)?;
@@ -225,6 +293,20 @@ fn inspect_families(
                 "transfer family `{family_name}`: source-backed family requires provenance.identity"
             )
         })?;
+        let gaps = family
+            .gaps
+            .iter()
+            .enumerate()
+            .map(|(index, gap)| {
+                Ok(ValidatedFamilyGap {
+                    selectors: gap.selectors.clone(),
+                    status: gap.status,
+                    reason: gap.reason.clone(),
+                    provenance: resolved_family_gap_provenance(family_name, family, index, gap)?,
+                    provenance_override: gap.provenance.clone(),
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
         out.push(ValidatedFamily {
             name: family_name.clone(),
             provenance,
@@ -234,7 +316,10 @@ fn inspect_families(
                 family.provenance(),
             )?,
             policy: family.policy(),
+            selector_universe,
             members,
+            gaps,
+            completeness: FamilyCompleteness::Complete,
         });
     }
     Ok(out)
@@ -269,7 +354,9 @@ impl ValidatedDefinitions {
         &self.families
     }
 
-    /// Declared gaps. A missing gap is not the same as an undefined one.
+    /// Declared document-level gaps. A missing gap is not the same as an
+    /// undefined one. Family-scoped selector gaps live on
+    /// [`ValidatedFamily::gaps`].
     pub fn gaps(&self) -> &BTreeMap<String, GapDef> {
         self.defs.gaps()
     }
@@ -383,8 +470,9 @@ impl ValidatedDefinitions {
 mod tests {
     use super::*;
     use crate::r#gen::{
-        GenerateOptions, MemberStatus, ObservationGuardBehaviorDef, ObservationGuardDef,
-        PhysicalPoint, SelectorValue, SourceProvenance, TransferSource, TransferSpec,
+        FamilyCompleteness, GenerateOptions, MemberStatus, ObservationGuardBehaviorDef,
+        ObservationGuardDef, PhysicalPoint, SelectorUniverse, SelectorValue, SourceProvenance,
+        TransferSource, TransferSpec,
     };
     use std::vec;
 
@@ -397,6 +485,7 @@ output_unit = "unit"
 output_scale = 1000
 max_interpolation_error = 50
 formula = "x"
+selector_axes = { gain = ["div4", "x1", "x2"], integration_time_ms = [100] }
 
 [[transfer_families.als.members]]
 selectors = { gain = "div4", integration_time_ms = 100 }
@@ -466,6 +555,309 @@ reason = "counts only; no conversion"
         );
         let emitted: Vec<_> = validated.emitted_transfer_names().collect();
         assert_eq!(emitted, ["als_gain_div4_integration_time_ms_100"]);
+        assert_eq!(family.completeness(), FamilyCompleteness::Complete);
+        assert_eq!(family.gaps().len(), 0);
+        match family.selector_universe() {
+            SelectorUniverse::Cartesian { axes } => {
+                assert_eq!(axes.get("gain").map(Vec::len), Some(3));
+                assert_eq!(axes.get("integration_time_ms").map(Vec::len), Some(1));
+            }
+            other => panic!("expected cartesian universe, got {other:?}"),
+        }
+        assert_eq!(family.selector_universe().identity_count(), Some(3));
+        assert_eq!(family.selector_universe().identities().count(), 3);
+    }
+
+    #[test]
+    fn validate_enumerates_family_scoped_gaps_independently_of_global_gaps() {
+        let toml = r#"
+[transfer_families.front_end]
+provenance = { identity = "test fixture" }
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+formula = "x"
+selector_axes = { range = ["low", "high"], gain = [1, 8] }
+
+[[transfer_families.front_end.members]]
+selectors = { range = "low", gain = 1 }
+status = "emit"
+applicability = { observation = [1, 10] }
+
+[[transfer_families.front_end.members]]
+selectors = { range = "high", gain = 1 }
+status = "forbidden"
+reason = "exceeds the absolute maximum rating"
+applicability = { observation = [1, 10] }
+
+[[transfer_families.front_end.members]]
+selectors = { range = "high", gain = 8 }
+status = "emit"
+applicability = { observation = [1, 10] }
+
+[[transfer_families.front_end.gaps]]
+selectors = { range = "low", gain = 8 }
+status = "undefined"
+reason = "not characterized at this combination"
+
+[gaps.white_channel]
+status = "undefined"
+reason = "counts only; no conversion"
+"#;
+        let validated = DefinitionsFile::from_toml_str(toml)
+            .unwrap()
+            .validate()
+            .unwrap();
+        let family = &validated.families()[0];
+        assert_eq!(family.completeness(), FamilyCompleteness::Complete);
+        assert_eq!(family.members().len(), 3);
+        assert_eq!(family.gaps().len(), 1);
+        assert_eq!(
+            family.gaps()[0].reason(),
+            "not characterized at this combination"
+        );
+        assert_eq!(family.gaps()[0].status(), GapStatus::Undefined);
+        assert_eq!(
+            family.gaps()[0].selectors()["gain"],
+            SelectorValue::Integer(8)
+        );
+        let identities: Vec<_> = family.selector_universe().identities().collect();
+        assert_eq!(identities.len(), 4);
+        assert!(identities.iter().any(|identity| {
+            identity.get("range") == Some(&SelectorValue::String("low".into()))
+                && identity.get("gain") == Some(&SelectorValue::Integer(8))
+        }));
+        assert_eq!(
+            validated.gaps()["white_channel"].reason,
+            "counts only; no conversion"
+        );
+        assert_eq!(
+            family.members()[1].reason(),
+            Some("exceeds the absolute maximum rating")
+        );
+    }
+
+    #[test]
+    fn family_gap_inherits_family_provenance_in_validated_ir() {
+        let toml = r#"
+[transfer_families.front_end]
+provenance = { identity = "front-end datasheet", revision = "2.0", locator = "Table 7", url = "https://example.invalid/front-end", note = "characterization matrix" }
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+formula = "x"
+selector_axes = { mode = ["mapped", "undefined"] }
+
+[[transfer_families.front_end.members]]
+selectors = { mode = "mapped" }
+status = "emit"
+applicability = { observation = [1, 10] }
+
+[[transfer_families.front_end.gaps]]
+selectors = { mode = "undefined" }
+status = "undefined"
+reason = "the source does not characterize this mode"
+"#;
+        let validated = DefinitionsFile::from_toml_str(toml)
+            .unwrap()
+            .validate()
+            .unwrap();
+        let gap = &validated.families()[0].gaps()[0];
+        let expected = SourceProvenance::new("front-end datasheet")
+            .with_revision("2.0")
+            .with_locator("Table 7")
+            .with_url("https://example.invalid/front-end")
+            .with_note("characterization matrix");
+
+        assert_eq!(gap.provenance(), &expected);
+        assert_eq!(gap.provenance_override(), None);
+    }
+
+    #[test]
+    fn family_gap_override_replaces_identity_or_clears_inherited_fields() {
+        let toml = r#"
+[transfer_families.front_end]
+provenance = { identity = "front-end datasheet", revision = "2.0", locator = "Table 7", url = "https://example.invalid/front-end", note = "characterization matrix" }
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+formula = "x"
+selector_axes = { mode = ["mapped", "replaced", "cleared"] }
+
+[[transfer_families.front_end.members]]
+selectors = { mode = "mapped" }
+status = "emit"
+applicability = { observation = [1, 10] }
+
+[[transfer_families.front_end.gaps]]
+selectors = { mode = "replaced" }
+status = "undefined"
+reason = "defined by a different source"
+provenance = { identity = "errata sheet" }
+
+[[transfer_families.front_end.gaps]]
+selectors = { mode = "cleared" }
+status = "undefined"
+reason = "the table locator does not apply"
+provenance = { clear = ["locator"] }
+"#;
+        let validated = DefinitionsFile::from_toml_str(toml)
+            .unwrap()
+            .validate()
+            .unwrap();
+        let gaps = validated.families()[0].gaps();
+
+        assert_eq!(gaps[0].provenance(), &SourceProvenance::new("errata sheet"));
+        let replaced = gaps[0].provenance_override().unwrap();
+        assert_eq!(replaced.identity.as_deref(), Some("errata sheet"));
+        assert!(replaced.revision.is_none());
+        assert!(replaced.locator.is_none());
+        assert!(replaced.url.is_none());
+        assert!(replaced.note.is_none());
+
+        assert_eq!(gaps[1].provenance().identity, "front-end datasheet");
+        assert_eq!(gaps[1].provenance().revision.as_deref(), Some("2.0"));
+        assert_eq!(gaps[1].provenance().locator, None);
+        assert_eq!(
+            gaps[1].provenance().url.as_deref(),
+            Some("https://example.invalid/front-end")
+        );
+        assert_eq!(
+            gaps[1].provenance().note.as_deref(),
+            Some("characterization matrix")
+        );
+        assert!(
+            gaps[1]
+                .provenance_override()
+                .unwrap()
+                .clear
+                .contains(&crate::r#gen::SourceProvenanceField::Locator)
+        );
+    }
+
+    #[test]
+    fn invalid_family_gap_provenance_overrides_fail_validation() {
+        let template = r#"
+[transfer_families.front_end]
+provenance = { identity = "front-end datasheet", locator = "Table 7" }
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+formula = "x"
+selector_axes = { mode = ["mapped", "undefined"] }
+
+[[transfer_families.front_end.members]]
+selectors = { mode = "mapped" }
+status = "emit"
+applicability = { observation = [1, 10] }
+
+[[transfer_families.front_end.gaps]]
+selectors = { mode = "undefined" }
+status = "undefined"
+reason = "not characterized"
+provenance = __OVERRIDE__
+"#;
+        for (declaration, expected) in [
+            (
+                r#"{ locator = "   " }"#,
+                "provenance.locator must not be blank",
+            ),
+            (
+                r#"{ locator = "Table 9", clear = ["locator"] }"#,
+                "provenance.locator cannot be both set and cleared",
+            ),
+        ] {
+            let error =
+                DefinitionsFile::from_toml_str(&template.replace("__OVERRIDE__", declaration))
+                    .unwrap()
+                    .validate()
+                    .unwrap_err()
+                    .to_string();
+            assert!(error.contains("family-scoped gap 0"), "{error}");
+            assert!(error.contains(expected), "{error}");
+        }
+    }
+
+    #[test]
+    fn programmatic_family_gap_override_is_preserved_in_validated_ir() {
+        let toml = r#"
+[transfer_families.front_end]
+provenance = { identity = "front-end datasheet", locator = "Table 7", url = "https://example.invalid/front-end" }
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+formula = "x"
+selector_axes = { mode = ["mapped", "undefined"] }
+
+[[transfer_families.front_end.members]]
+selectors = { mode = "mapped" }
+status = "emit"
+applicability = { observation = [1, 10] }
+"#;
+        let mut defs = DefinitionsFile::from_toml_str(toml).unwrap();
+        let declared =
+            SourceProvenanceOverride::default().clearing(crate::r#gen::SourceProvenanceField::Url);
+        defs.transfer_families
+            .get_mut("front_end")
+            .unwrap()
+            .gaps
+            .push(crate::r#gen::FamilyGapDef {
+                selectors: BTreeMap::from([(
+                    "mode".into(),
+                    SelectorValue::String("undefined".into()),
+                )]),
+                status: GapStatus::Undefined,
+                reason: "not characterized".into(),
+                provenance: Some(declared.clone()),
+            });
+
+        let validated = defs.validate().unwrap();
+        let gap = &validated.families()[0].gaps()[0];
+        assert_eq!(gap.provenance().identity, "front-end datasheet");
+        assert_eq!(gap.provenance().locator.as_deref(), Some("Table 7"));
+        assert_eq!(gap.provenance().url, None);
+        assert_eq!(gap.provenance_override(), Some(&declared));
+    }
+
+    #[test]
+    fn provenance_remains_a_valid_family_gap_selector_key() {
+        let toml = r#"
+[transfer_families.front_end]
+provenance = { identity = "front-end datasheet", locator = "Table 7" }
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+formula = "x"
+selector_axes = { provenance = ["mapped", "undefined"] }
+
+[[transfer_families.front_end.members]]
+selectors = { provenance = "mapped" }
+status = "emit"
+applicability = { observation = [1, 10] }
+
+[[transfer_families.front_end.gaps]]
+selectors = { provenance = "undefined" }
+status = "undefined"
+reason = "not characterized"
+provenance = { locator = "Table 8" }
+"#;
+        let validated = DefinitionsFile::from_toml_str(toml)
+            .unwrap()
+            .validate()
+            .unwrap();
+        let gap = &validated.families()[0].gaps()[0];
+        assert_eq!(
+            gap.selectors()["provenance"],
+            SelectorValue::String("undefined".into())
+        );
+        assert_eq!(gap.provenance().identity, "front-end datasheet");
+        assert_eq!(gap.provenance().locator.as_deref(), Some("Table 8"));
     }
 
     #[test]
@@ -528,6 +920,7 @@ provenance = { identity = "test fixture" }
                 output_unit = "unit"
                 output_scale = 1
                 max_interpolation_error = 1
+                selector_axes = { range = ["middle"] }
                 points = [
                     { input = 1, output = 1.0 },
                     { input = 5, output = 5.0 },
@@ -579,6 +972,7 @@ provenance = { identity = "test fixture" }
                 output_unit = "degree_celsius"
                 output_scale = 1000
                 max_interpolation_error = 50
+                selector_axes = { probe = ["wide"] }
 
                 [transfer_families.ntc.model]
                 kind = "ntc_beta_divider"
@@ -993,6 +1387,7 @@ max_knots = 8
 below = "error"
 above = "clamp"
 formula = "x"
+selector_axes = { gain = ["div4"] }
 
 [[transfer_families.als.members]]
 selectors = { gain = "div4" }
@@ -1041,6 +1436,7 @@ max_knots = 8
 below = "error"
 above = "error"
 formula = "x"
+selector_axes = { gain = ["div4"] }
 
 [[transfer_families.tight.members]]
 selectors = { gain = "div4" }
@@ -1058,6 +1454,7 @@ below = "clamp"
 above = "clamp"
 saturation = { code = 65535, behavior = "error" }
 formula = "x"
+selector_axes = { gain = ["div4"] }
 
 [[transfer_families.loose.members]]
 selectors = { gain = "div4" }
@@ -1095,6 +1492,7 @@ max_interpolation_error = 1
 max_knots = 8
 saturation = { code = 65535, behavior = "error", provenance = { locator = "guard table" } }
 formula = "x"
+selector_axes = { range = ["low"] }
 
 [[transfer_families.sensor.members]]
 selectors = { range = "low" }
@@ -1230,6 +1628,7 @@ output_unit = "unit"
 output_scale = 1
 max_interpolation_error = 1
 formula = "x"
+selector_axes = { gain = ["div4"] }
 
 [[transfer_families.als.members]]
 selectors = { gain = "div4" }
