@@ -198,8 +198,8 @@ pub use tickless::{RepeatMode, Tickless, TicklessDeadline, TicklessIter, Tickles
 pub use transfer::{
     AffineCalibration, AffineCalibrationError, BoundaryBehavior, FlatResolution,
     InterpolationError, InverseTransferError, InverseTransferFunction, MonotonicDirection,
-    PiecewiseLinearTransfer, TransferError, TransferFunction, TransferMetadata,
-    interpolate_segment, invert_segment,
+    ObservationGuard, ObservationGuardBehavior, ObservationGuardMetadata, PiecewiseLinearTransfer,
+    TransferError, TransferFunction, TransferMetadata, interpolate_segment, invert_segment,
 };
 
 #[cfg(feature = "gen-lib")]

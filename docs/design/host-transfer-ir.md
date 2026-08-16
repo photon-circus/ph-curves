@@ -47,7 +47,11 @@ Extension:
   `emit_transfer` still run. A dense oracle is required so interpolation error
   is verified before the table and its accuracy metadata are emitted.
 
-Output remains ordinary `PiecewiseLinearTransfer` constants.
+Output remains ordinary `PiecewiseLinearTransfer` constants. An optional
+observation-code guard (TOML `saturation`) is copied through family expansion
+and emitted as `with_observation_guard` plus an adjacent
+`Option<ObservationGuardMetadata>` constant. Classification as saturation is
+declared consumer/device policy, not inferred from the integer value.
 
 ## Options
 
@@ -59,7 +63,7 @@ when the document contains `[curves]`. Fit policy (`max_interpolation_error`,
 ## Keep-outs
 
 - Plugin, callback, or WASM evaluator ABI
-- Independent `saturation` / `extrapolation` fields (#28)
+- Independent `extrapolation` fields
 - VEML knot budget and vendor oracle (#29)
 - `kind = "veml7700"` or any device lifecycle API
 - Runtime family types, `std` / alloc / float on the default-feature API

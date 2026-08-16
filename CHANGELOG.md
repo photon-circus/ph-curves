@@ -44,9 +44,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fail closed. Unknown scaled-polynomial model fields are rejected without
   tightening the existing standalone NTC parser. Generated firmware remains
   integer knots.
+- Explicit observation-code guard on piecewise-linear transfers, independent
+  of the fitted domain and of ordinary `below` / `above` policy. Forward
+  conversion classifies a declared code first: `Error` returns
+  `TransferError::RejectedObservation`, `Clamp` returns the output at
+  `domain_max`. Inverse conversion is unchanged. The host schema names the
+  field `saturation = { code, behavior }` (consumer/device policy, not
+  inferred from the integer); host IR and runtime use observation-guard
+  terminology. The guarded code must be strictly above `domain_max` and is
+  not added to the fitting domain. Metadata is an adjacent
+  `Option<ObservationGuardMetadata>` constant so `TransferMetadata` struct
+  literals stay additive.
 
 ### Changed
 
+- **Breaking (pre-1.0):** `TransferError` gained `RejectedObservation { input }`
+  so a deliberately rejected observation code is not an `AboveDomain`.
+  Exhaustive downstream matches need a new arm. `PiecewiseLinearTransfer`
+  stores an optional guard and is larger by that field; unguarded construction
+  keeps the previous convert/invert behavior.
 - `scripts/local-ci.ps1` sets `CARGO_INCREMENTAL=0`. Incremental compilation
   made the gate flaky on Windows: rustc could fail to finalize
   `target/debug/incremental` ("Access is denied", os error 5) and `cargo test`

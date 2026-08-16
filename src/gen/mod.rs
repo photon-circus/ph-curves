@@ -54,6 +54,6 @@ pub use curve::{CurveDef, DefinitionsFile};
 pub use ir::{ValidatedDefinitions, ValidatedFamily, ValidatedMember};
 pub use transfer::{
     ApplicabilityDef, BoundaryDef, DeclaredSource, EvaluatedTruth, FamilyMemberDef, GapDef,
-    GapStatus, MemberStatus, PhysicalPoint, SelectorValue, TransferDef, TransferFamilyDef,
-    TransferSource, TransferSpec,
+    GapStatus, MemberStatus, ObservationGuardBehaviorDef, ObservationGuardDef, PhysicalPoint,
+    SelectorValue, TransferDef, TransferFamilyDef, TransferSource, TransferSpec,
 };

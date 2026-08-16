@@ -5,7 +5,7 @@ extern crate std;
 
 use std::prelude::v1::*;
 
-use super::{BoundaryDef, PhysicalPoint, TransferDef, default_boundary};
+use super::{BoundaryDef, ObservationGuardDef, PhysicalPoint, TransferDef, default_boundary};
 
 fn default_max_knots() -> usize {
     256
@@ -104,6 +104,7 @@ pub struct TransferSpec {
     max_knots: usize,
     below: BoundaryDef,
     above: BoundaryDef,
+    observation_guard: Option<ObservationGuardDef>,
     source: TransferSource,
 }
 
@@ -126,6 +127,7 @@ impl TransferSpec {
             max_knots: default_max_knots(),
             below: default_boundary(),
             above: default_boundary(),
+            observation_guard: None,
             source,
         }
     }
@@ -141,6 +143,12 @@ impl TransferSpec {
     pub fn with_boundaries(mut self, below: BoundaryDef, above: BoundaryDef) -> Self {
         self.below = below;
         self.above = above;
+        self
+    }
+
+    /// Explicit observation-code guard (TOML `saturation`).
+    pub fn with_observation_guard(mut self, guard: ObservationGuardDef) -> Self {
+        self.observation_guard = Some(guard);
         self
     }
 
@@ -184,6 +192,11 @@ impl TransferSpec {
         self.above
     }
 
+    /// Explicit observation-code guard, when set.
+    pub fn observation_guard(&self) -> Option<ObservationGuardDef> {
+        self.observation_guard
+    }
+
     /// Generation source.
     pub fn source(&self) -> &TransferSource {
         &self.source
@@ -198,6 +211,7 @@ impl TransferSpec {
             max_knots: self.max_knots,
             below: self.below,
             above: self.above,
+            observation_guard: self.observation_guard,
             points: None,
             formula: None,
             model: None,

@@ -551,6 +551,8 @@ formula = "pow((t + 0.16) / 1.16, 3.0)"
 | `CurveLut65536`        | Type alias: `CurveLut<u16, u16, 65536>`             |
 | `MonotonicCurveLut65536` | Type alias: `MonotonicCurveLut<u16, u16, 65536>`  |
 | `PiecewiseLinearTransfer<N>` | Sparse integer ADC↔measurement transfer (forward + inverse) |
+| `ObservationGuard`         | Explicit observation-code policy, independent of `below`/`above` |
+| `ObservationGuardMetadata` | Adjacent optional guard facts (not a `TransferMetadata` field) |
 | `TransferMetadata`       | Units, scale, domain/range, flats, and error bounds |
 | `FlatResolution`         | Policy for non-unique (flat) inverse outputs      |
 | `AffineCalibration<T>`   | Gain/offset/scale wrapper over any transfer, invertible |
