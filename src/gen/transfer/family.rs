@@ -113,7 +113,7 @@ impl TransferFamilyDef {
             self.max_knots,
             self.below,
             self.above,
-            self.observation_guard.clone(),
+            self.observation_guard.as_ref(),
         )
     }
 
@@ -752,6 +752,11 @@ fn member_transfer(
     family: &TransferFamilyDef,
     member: &FamilyMemberDef,
 ) -> Result<TransferDef, String> {
+    let resolved_guard_provenance = resolve_guard_provenance(
+        &format!("transfer family `{family_name}`"),
+        family.observation_guard.as_ref(),
+        family.provenance.as_ref(),
+    )?;
     let (model, domain, output_range, points) = match source_kind(family) {
         "scaled_polynomial" => {
             let transform = member
@@ -803,6 +808,7 @@ fn member_transfer(
         above: family.above,
         observation_guard: family.observation_guard.clone(),
         provenance: Some(resolved_member_provenance(family_name, family, member)?),
+        resolved_guard_provenance,
         points,
         formula: family.formula.clone(),
         model,

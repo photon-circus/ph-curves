@@ -9,6 +9,7 @@ use std::{format, vec};
 use std::collections::BTreeMap;
 
 use super::curve::{CurveData, CurveDef, DefinitionsFile};
+use super::rustdoc::markdown_debug;
 use super::transfer::{TransferData, TransferDef};
 
 /// Render all curves and transfers as a complete Rust source string.
@@ -63,7 +64,10 @@ pub fn generate(
 
     for (name, def) in &transfers {
         let data = if let Some(overlay) = curves_file.overlays.get(*name) {
-            super::transfer::build_with_source(name, def, Some(overlay))?
+            let effective = overlay
+                .effective_def(def)
+                .map_err(|error| format!("transfer `{name}`: {error}"))?;
+            super::transfer::build_with_source(name, &effective, Some(overlay.source()))?
         } else {
             super::transfer::build(name, def)?
         };
@@ -93,6 +97,7 @@ fn emit_curve(
     value_type: &str,
     lut_size: usize,
 ) {
+    let name_doc = markdown_debug(name);
     // Forward LUT.
     out.push_str(&format!(
         "static {const_name}_FWD: [{vt}; {lut_size}] = {arr};\n",
@@ -109,17 +114,17 @@ fn emit_curve(
         ));
     }
 
-    // Public constant. Debug-format the TOML name so newlines cannot break
-    // out of the generated `///` comment.
+    // Public constant. Markdown-safe Debug formatting keeps TOML text inside
+    // the generated `///` comment without creating rustdoc constructs.
     if def.monotonic {
         out.push_str(&format!(
-            "/// {name:?} \u{2014} monotonic curve.\n\
+            "/// {name_doc} \u{2014} monotonic curve.\n\
              pub const {const_name}: MonoLut = \
              MonoLut::new(&{const_name}_FWD, &{const_name}_INV);\n\n",
         ));
     } else {
         out.push_str(&format!(
-            "/// {name:?} \u{2014} curve (non-monotonic).\n\
+            "/// {name_doc} \u{2014} curve (non-monotonic).\n\
              pub const {const_name}: Lut = \
              Lut::new(&{const_name}_FWD, None);\n\n",
         ));
@@ -140,6 +145,10 @@ fn emit_transfer(
     };
     let domain_min = data.inputs[0];
     let domain_max = *data.inputs.last().unwrap();
+    let name_doc = markdown_debug(name);
+    let representation_doc = markdown_debug(&data.representation);
+    let input_unit_doc = markdown_debug(&def.input_unit);
+    let output_unit_doc = markdown_debug(&def.output_unit);
 
     out.push_str(&format!(
         "#[rustfmt::skip]\n\
@@ -196,15 +205,15 @@ fn emit_transfer(
         "/// Generation policy: {}.\n",
         def.policy().rustdoc_clause()
     );
-    // Debug-format TOML-derived text so newlines or comment terminators in
-    // names, provenance, or units cannot break out of `///` doc comments.
+    // Markdown-safe Debug formatting prevents TOML-derived text from breaking
+    // the comment or becoming links, emphasis, code, or raw HTML.
     out.push_str(&format!(
-        "/// {name:?} sparse physical transfer function.\n\
+        "/// {name_doc} sparse physical transfer function.\n\
          ///\n\
          {provenance_docs}\
-         /// Representation: {representation:?}.\n\
+         /// Representation: {representation_doc}.\n\
          {policy_docs}\
-         /// Domain: {domain_min}..={domain_max} {input_unit:?}; output: {output_unit:?} x {output_scale}.\n\
+         /// Domain: {domain_min}..={domain_max} {input_unit_doc}; output: {output_unit_doc} x {output_scale}.\n\
          /// Knots: {knot_count} ({payload} bytes array payload).\n\
          /// Exhaustive numerical error: requested <= {requested}, achieved {achieved:.6} output quanta\n\
          /// (conservative metadata bound {achieved_bound}) at input {worst}.\n\
@@ -213,9 +222,6 @@ fn emit_transfer(
          #[rustfmt::skip]\n\
          pub const {const_name}: PiecewiseLinearTransfer<{knot_count}> =\n\
              {construction}",
-        representation = data.representation,
-        input_unit = def.input_unit,
-        output_unit = def.output_unit,
         output_scale = def.output_scale,
         payload = knot_count * 6,
         requested = def.max_interpolation_error,
@@ -668,6 +674,7 @@ mod tests {
                 above: BoundaryDef::Error,
                 observation_guard: None,
                 provenance: None,
+                resolved_guard_provenance: None,
                 points: Some(vec![
                     PhysicalPoint {
                         input: 0,
@@ -714,6 +721,7 @@ mod tests {
                     above: BoundaryDef::Error,
                     observation_guard: None,
                     provenance: None,
+                    resolved_guard_provenance: None,
                     points: Some(vec![
                         PhysicalPoint {
                             input: 0,
@@ -760,6 +768,7 @@ mod tests {
                 above: BoundaryDef::Error,
                 observation_guard: None,
                 provenance: None,
+                resolved_guard_provenance: None,
                 formula: Some("x\n* 0.5".into()),
                 points: None,
                 model: None,
@@ -778,7 +787,7 @@ mod tests {
         )
         .unwrap();
         assert!(out.contains(r#"/// "line\nbreak" sparse physical transfer function."#));
-        assert!(out.contains(r#"Representation: "formula y = x\n* 0.5"."#));
+        assert!(out.contains(r#"Representation: "formula y = x\n\* 0.5"."#));
         assert!(out.contains("Source provenance: none declared."));
         assert!(out.contains(r#""adc\ncode""#));
         assert!(out.contains(r#""volt\nunit""#));
@@ -840,6 +849,7 @@ mod tests {
                     above: BoundaryDef::Error,
                     observation_guard: None,
                     provenance: None,
+                    resolved_guard_provenance: None,
                     points: Some(vec![
                         PhysicalPoint {
                             input: 0,
@@ -1184,6 +1194,94 @@ applicability = { observation = [1, 10] }
             "Generation policy: requested interpolation error <= 1; max_knots = 8; below = error; above = clamp."
         ));
         assert!(!out.contains("/// Source: "));
+    }
+
+    #[test]
+    fn generated_user_text_markdown_passes_actual_rustdoc() {
+        let toml = r#"
+[curves."[curve_name]"]
+builtin = "linear"
+
+[transfers]
+requires = ["observation_guard_v1", "source_provenance_v1"]
+
+[transfers."[transfer_name]"]
+input_unit = "[input_unit]"
+output_unit = "<output_unit>"
+output_scale = 1
+max_interpolation_error = 1
+provenance = { identity = "[missing]", note = "`code` <tag> & text" }
+saturation = { code = 65535, behavior = "error", provenance = { locator = "[guard]" } }
+formula = "x * 0.5"
+domain = [1, 10]
+"#;
+        let out = generate(&toml::from_str::<DefinitionsFile>(toml).unwrap(), "u8", 256).unwrap();
+        assert!(out.contains(r#"\[curve\_name\]"#), "{out}");
+        assert!(out.contains(r#"\[transfer\_name\]"#), "{out}");
+        assert!(out.contains(r#"identity "\[missing\]""#), "{out}");
+        assert!(out.contains(r#"locator "\[guard\]""#), "{out}");
+        assert!(out.contains(r#"formula y = x \* 0.5"#), "{out}");
+        assert!(out.contains(r#""\[input\_unit\]""#), "{out}");
+        assert!(out.contains(r#""\<output\_unit\>""#), "{out}");
+
+        fn documentation_block(generated: &str, first_line_marker: &str) -> String {
+            let mut lines = generated.lines();
+            while let Some(line) = lines.next() {
+                if !line.starts_with("///") || !line.contains(first_line_marker) {
+                    continue;
+                }
+                let mut block = format!("{line}\n");
+                for line in lines.by_ref() {
+                    if !line.starts_with("///") {
+                        break;
+                    }
+                    block.push_str(line);
+                    block.push('\n');
+                }
+                return block;
+            }
+            panic!("generated documentation block containing {first_line_marker:?}");
+        }
+
+        // Compile the complete user-facing curve and transfer doc blocks, not
+        // only the originally reported provenance line.
+        let curve_docs = documentation_block(&out, "monotonic curve.");
+        let transfer_docs = documentation_block(&out, "sparse physical transfer function.");
+        let rustdoc_source = format!(
+            "{curve_docs}pub struct CurveProbe;\n\n\
+             {transfer_docs}pub struct TransferProbe;\n"
+        );
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "ph_curves_generated_rustdoc_{}_{}",
+            std::process::id(),
+            unique
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let source = directory.join("probe.rs");
+        std::fs::write(&source, rustdoc_source).unwrap();
+
+        let output = std::process::Command::new("rustdoc")
+            .arg("--edition=2024")
+            .arg("--crate-type=lib")
+            .arg("--crate-name=provenance_probe")
+            .arg("-Dwarnings")
+            .arg("--out-dir")
+            .arg(&directory)
+            .arg(&source)
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&directory);
+        assert!(
+            output.status.success(),
+            "rustdoc failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]

@@ -38,15 +38,24 @@ A source-backed family requires a structured `provenance` table with a
 non-blank `identity` (title or stable identifier). Optional `revision`,
 `locator`, `url`, and `note` fields locate the cited document. URLs are stored
 as opaque strings and are never fetched. Members inherit that citation unless
-they declare a `provenance` override; unset override fields inherit, set fields
-replace. Global `[gaps]` may declare their own citation; without a parent
-family they still require `identity` when `provenance` is present.
+they declare a `provenance` override. Set fields replace; optional fields named
+by `clear = ["revision", "locator", "url", "note"]` are removed. Unset fields
+inherit while `identity` is unchanged. Replacing `identity` starts a new
+citation, so unspecified optional fields are cleared instead of being combined
+with fields from the old document. Global `[gaps]` may declare their own
+citation; without a parent family they still require `identity` when
+`provenance` is present.
 
-Fit budget, knot cap, `below` / `above`, `saturation`, and member `status` are
-generation/consumer policy. They stay on the existing family and member fields
-and are inspectable as `GenerationPolicy`, not as part of the citation.
+Fit budget, knot cap, `below` / `above`, and `saturation` are
+generation/consumer policy inspectable as `GenerationPolicy`, not as part of
+the citation. Member `status` is a separate emission decision exposed through
+`ValidatedMember::status`.
 Observation-guard classification is policy unless `saturation` carries a nested
-`provenance` override that cites a source supporting that classification.
+`provenance` override that cites a source supporting that classification. A
+family-level guard citation resolves against family provenance before any
+member override is applied. `GenerationPolicy` projects only the guard code and
+behavior; inspect the resolved citation separately through
+`ValidatedFamily::observation_guard_provenance`.
 
 Mapped member fields are a capability matrix. A field unsupported by the
 selected source fails validation with a diagnostic that names the family,
@@ -80,8 +89,9 @@ Gaps require `status = "undefined"` and a non-blank `reason`. They are not
 generated as transfers.
 
 Unknown fields on family, shared point entry, shared NTC model, member,
-applicability, input-transform, and gap tables are rejected. Standalone point
-and legacy NTC source values retain their compatibility behavior.
+applicability, input-transform, and gap tables are rejected. Unreserved fields
+in standalone point and legacy NTC source values retain their compatibility
+behavior; reserved guard and provenance spellings fail closed.
 
 Evaluated-truth and prefitted overlays are observation-space generation
 inputs. They do not re-apply `input_transform` to samples. The member's

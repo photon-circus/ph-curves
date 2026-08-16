@@ -355,8 +355,9 @@ NTC members declare `applicability.physical`, and `kind = "scaled_polynomial"`
 requires an exact `input_transform` plus `applicability.model_input`. The
 matrix applies to mapped (`emit`, `unnecessary`, and `forbidden`) members;
 `unsupported` members carry selector identity and a reason only. Unknown
-fields in family point entries and NTC model tables fail closed, while the
-legacy standalone source formats retain their compatibility behavior. The
+fields in family point entries and NTC model tables fail closed, while
+unreserved extension fields in the legacy standalone source formats retain
+their compatibility behavior. The
 generator applies that transform as `u = count * numerator / denominator` with
 an exact integer product, and converts inclusive model-input bounds to
 observation codes:
@@ -385,16 +386,41 @@ returns a `ValidatedDefinitions` graph that includes description-only members
 and gap reasons. Family citations are a structured `provenance` table
 (identity, optional revision/locator/URL/note), distinct from fit policy,
 boundaries, emission status, and observation-guard classification. Members
-inherit the family citation unless they declare an override. Inspect
-`ValidatedFamily::provenance` and `ValidatedFamily::policy` separately; generated
-rustdoc labels them the same way. Runtime transfer objects do not retain citation
-strings. A host tool that owns device evaluation can overlay
+inherit the family citation unless they declare an override. An override may
+remove inherited optional fields with `clear = ["revision", "locator", "url",
+"note"]`; replacing `identity` starts a new citation and clears every
+unspecified optional field. A family guard citation resolves against the family
+citation, not a member override. A standalone guard citation likewise resolves
+against the declared transfer citation before any generation-source overlay,
+so replacing or clearing source provenance does not rewrite or remove the
+guard-classification citation. Inspect `ValidatedFamily::provenance`,
+`ValidatedFamily::observation_guard_provenance`, and the citation-free
+`ValidatedFamily::policy` separately; generated rustdoc labels them the same
+way. Runtime transfer objects do not retain citation strings.
+
+Standalone TOML provenance must opt in with
+`[transfers] requires = ["source_provenance_v1"]`. Put both capability strings
+in the same array when a standalone transfer uses cited provenance and an
+observation guard. The marker makes released 0.2.1 transfer-map readers reject
+the document instead of silently discarding the citation. Programmatic
+`TransferSpec::with_provenance` needs no wire-format marker. A `provenance`
+table nested inside a point or model is rejected as misplaced rather than
+accepted by a permissive legacy source parser.
+
+A host tool that owns device evaluation can overlay
 `TransferSource::evaluated_truth` or prefitted knots on an emitted member and
 still receive ordinary generated tables. A family-member overlay must span
 the member's resolved observation domain; a standalone overlay replaces its
-declared source and may define a different domain. Transfer-only generation
-uses `GenerateOptions::transfers_only()`; curve LUT `value_type` / `lut_size`
-are not required.
+declared source and may define a different domain. Every overlay also chooses
+its citation disposition explicitly with `.inherit_provenance()`,
+`.with_provenance(...)`, or `.clear_provenance()`. Inheritance means the
+target's declared, resolved pre-overlay citation and restores it when replacing
+an earlier overlay. Emitted family-member overlays may inherit or replace their
+mandatory citation but cannot clear it. The validated member's effective
+`provenance()` follows that choice while `provenance_override()` remains the
+original document declaration. Transfer-only generation uses
+`GenerateOptions::transfers_only()`; curve LUT `value_type` / `lut_size` are
+not required.
 
 If a model needs conditionals, multiple independent inputs, dynamic
 calibration, temperature/load compensation, or domain-specific state, compute

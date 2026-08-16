@@ -91,6 +91,91 @@ impl TransferSource {
     pub fn points(points: Vec<PhysicalPoint>) -> Self {
         Self::Points(points)
     }
+
+    /// Overlay this source while intentionally using the target's declared,
+    /// resolved pre-overlay citation.
+    ///
+    /// Use this only when the new samples are another representation of the
+    /// already-cited source. Replacing an earlier overlay with this disposition
+    /// restores that declared citation. The explicit choice prevents a
+    /// standalone source replacement from silently retaining an unrelated
+    /// citation.
+    pub fn inherit_provenance(self) -> TransferSourceOverlay {
+        TransferSourceOverlay::new(self, SourceProvenanceDisposition::Inherit)
+    }
+
+    /// Overlay this source and replace the target citation.
+    ///
+    /// A declared observation-guard citation remains resolved against the
+    /// target's pre-overlay citation; replacing the generation source does not
+    /// silently re-parent the guard classification.
+    pub fn with_provenance(self, provenance: SourceProvenance) -> TransferSourceOverlay {
+        TransferSourceOverlay::new(self, SourceProvenanceDisposition::Replace(provenance))
+    }
+
+    /// Overlay this source and remove any target citation.
+    ///
+    /// A declared observation-guard citation remains resolved against the
+    /// target's pre-overlay citation and is not removed with the source
+    /// citation.
+    ///
+    /// Source-backed family members cannot clear their mandatory citation.
+    pub fn clear_provenance(self) -> TransferSourceOverlay {
+        TransferSourceOverlay::new(self, SourceProvenanceDisposition::Clear)
+    }
+}
+
+/// What a generation-source overlay does with the target source citation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SourceProvenanceDisposition {
+    /// Use the target's declared, resolved pre-overlay citation intentionally.
+    ///
+    /// This restores that citation when replacing an earlier overlay.
+    Inherit,
+    /// Replace the target citation with this value.
+    Replace(SourceProvenance),
+    /// Remove the target citation.
+    Clear,
+}
+
+/// Generation source plus an explicit citation disposition.
+///
+/// Construct through [`TransferSource::inherit_provenance`],
+/// [`TransferSource::with_provenance`], or
+/// [`TransferSource::clear_provenance`].
+#[derive(Clone, Debug)]
+pub struct TransferSourceOverlay {
+    source: TransferSource,
+    provenance: SourceProvenanceDisposition,
+}
+
+impl TransferSourceOverlay {
+    fn new(source: TransferSource, provenance: SourceProvenanceDisposition) -> Self {
+        Self { source, provenance }
+    }
+
+    /// Replacement formula/points/model representation.
+    pub fn source(&self) -> &TransferSource {
+        &self.source
+    }
+
+    /// Explicit handling of the target citation.
+    pub fn provenance_disposition(&self) -> &SourceProvenanceDisposition {
+        &self.provenance
+    }
+
+    pub(crate) fn effective_def(&self, def: &TransferDef) -> Result<TransferDef, String> {
+        let mut effective = def.clone();
+        match &self.provenance {
+            SourceProvenanceDisposition::Inherit => {}
+            SourceProvenanceDisposition::Replace(provenance) => {
+                provenance.validate()?;
+                effective.provenance = Some(provenance.clone());
+            }
+            SourceProvenanceDisposition::Clear => effective.provenance = None,
+        }
+        Ok(effective)
+    }
 }
 
 /// A standalone transfer constructed without TOML.
@@ -157,7 +242,11 @@ impl TransferSpec {
         self
     }
 
-    /// Caller-declared source citation. Independent of [`TransferSource`].
+    /// Caller-declared source citation.
+    ///
+    /// This is equivalent to supplying provenance on a source overlay. The
+    /// spec owns both its initial source and citation, so no overlay
+    /// disposition is needed at construction time.
     pub fn with_provenance(mut self, provenance: SourceProvenance) -> Self {
         self.provenance = Some(provenance);
         self
@@ -220,7 +309,7 @@ impl TransferSpec {
             self.max_knots,
             self.below,
             self.above,
-            self.observation_guard.clone(),
+            self.observation_guard.as_ref(),
         )
     }
 
@@ -240,6 +329,7 @@ impl TransferSpec {
             above: self.above,
             observation_guard: self.observation_guard,
             provenance: self.provenance,
+            resolved_guard_provenance: None,
             points: None,
             formula: None,
             model: None,

@@ -22,8 +22,14 @@ pub use family::{
     ApplicabilityDef, DeclaredSource, FamilyMemberDef, GapDef, GapStatus, InputTransform,
     MemberStatus, SelectorValue, TransferFamilyDef,
 };
-pub use provenance::{GenerationPolicy, SourceProvenance, SourceProvenanceOverride};
-pub use source::{EvaluatedTruth, TransferSource, TransferSpec};
+pub use provenance::{
+    GenerationPolicy, ObservationGuardPolicy, SourceProvenance, SourceProvenanceField,
+    SourceProvenanceOverride,
+};
+pub use source::{
+    EvaluatedTruth, SourceProvenanceDisposition, TransferSource, TransferSourceOverlay,
+    TransferSpec,
+};
 
 const ABSOLUTE_MAX_KNOTS: usize = 4096;
 
@@ -158,6 +164,9 @@ impl PhysicalPoint {
 /// Standalone TOML definitions using `saturation` must declare
 /// `[transfers] requires = ["observation_guard_v1"]` so older generators fail
 /// closed instead of ignoring the guard.
+/// Standalone TOML definitions using `provenance` likewise require
+/// `source_provenance_v1` in that array so released 0.2.1 readers cannot
+/// silently discard the citation.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TransferDef {
@@ -184,6 +193,10 @@ pub struct TransferDef {
     /// Caller-declared source citation, when supplied.
     #[serde(default)]
     pub provenance: Option<SourceProvenance>,
+    /// Guard citation resolved against declared transfer/family provenance
+    /// before member or generation-source citation overlays are applied.
+    #[serde(skip)]
+    pub(crate) resolved_guard_provenance: Option<SourceProvenance>,
     /// Sparse physical control points, when that is the declared source.
     pub points: Option<Vec<PhysicalPoint>>,
     /// Formula over `x`, when that is the declared source.
@@ -228,7 +241,7 @@ impl TransferDef {
             self.max_knots,
             self.below,
             self.above,
-            self.observation_guard.clone(),
+            self.observation_guard.as_ref(),
         )
     }
 
@@ -535,11 +548,14 @@ fn finish_from_scaled_truth(
     let domain_max = *result.inputs.last().expect("fitter requires two knots");
     let label = format!("transfer `{name}`");
     validate_observation_guard(&label, def.observation_guard.as_ref(), domain_max)?;
-    let guard_provenance = resolve_guard_provenance(
-        &label,
-        def.observation_guard.as_ref(),
-        def.provenance.as_ref(),
-    )?;
+    let guard_provenance = match &def.resolved_guard_provenance {
+        Some(provenance) => Some(provenance.clone()),
+        None => resolve_guard_provenance(
+            &label,
+            def.observation_guard.as_ref(),
+            def.provenance.as_ref(),
+        )?,
+    };
 
     Ok(TransferData {
         inputs: result.inputs,
@@ -622,11 +638,14 @@ fn build_prefitted(
         def.observation_guard.as_ref(),
         last,
     )?;
-    let guard_provenance = resolve_guard_provenance(
-        &format!("transfer `{name}`"),
-        def.observation_guard.as_ref(),
-        def.provenance.as_ref(),
-    )?;
+    let guard_provenance = match &def.resolved_guard_provenance {
+        Some(provenance) => Some(provenance.clone()),
+        None => resolve_guard_provenance(
+            &format!("transfer `{name}`"),
+            def.observation_guard.as_ref(),
+            def.provenance.as_ref(),
+        )?,
+    };
 
     Ok(TransferData {
         inputs: inputs.to_vec(),
@@ -838,6 +857,7 @@ mod tests {
             above: BoundaryDef::Error,
             observation_guard: None,
             provenance: None,
+            resolved_guard_provenance: None,
             points: None,
             formula: None,
             model: None,

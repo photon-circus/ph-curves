@@ -44,6 +44,7 @@ pub(crate) mod curve;
 pub(crate) mod formula;
 mod ir;
 pub(crate) mod points;
+pub(crate) mod rustdoc;
 pub(crate) mod transfer;
 
 pub use api::{
@@ -55,6 +56,7 @@ pub use ir::{ValidatedDefinitions, ValidatedFamily, ValidatedMember};
 pub use transfer::{
     ApplicabilityDef, BoundaryDef, DeclaredSource, EvaluatedTruth, FamilyMemberDef, GapDef,
     GapStatus, GenerationPolicy, InputTransform, MemberStatus, ObservationGuardBehaviorDef,
-    ObservationGuardDef, PhysicalPoint, SelectorValue, SourceProvenance, SourceProvenanceOverride,
-    TransferDef, TransferFamilyDef, TransferSource, TransferSpec,
+    ObservationGuardDef, ObservationGuardPolicy, PhysicalPoint, SelectorValue, SourceProvenance,
+    SourceProvenanceDisposition, SourceProvenanceField, SourceProvenanceOverride, TransferDef,
+    TransferFamilyDef, TransferSource, TransferSourceOverlay, TransferSpec,
 };

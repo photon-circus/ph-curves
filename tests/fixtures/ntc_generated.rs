@@ -6,12 +6,12 @@ use ph_curves::{BoundaryBehavior, MonotonicDirection, ObservationGuardMetadata, 
 static NTC_10K_BETA_3950_INPUTS: [u16; 61] = [142, 152, 163, 175, 187, 200, 212, 226, 239, 254, 269, 285, 303, 320, 337, 357, 377, 398, 418, 441, 464, 512, 567, 625, 684, 749, 821, 887, 958, 1036, 1117, 1200, 1294, 1394, 1494, 1681, 1899, 2110, 2664, 2806, 2930, 3072, 3195, 3308, 3408, 3465, 3522, 3572, 3620, 3666, 3709, 3747, 3785, 3818, 3851, 3880, 3909, 3933, 3956, 3976, 3995];
 #[rustfmt::skip]
 static NTC_10K_BETA_3950_OUTPUTS: [i32; 61] = [124957, 122145, 119291, 116423, 113775, 111120, 108840, 106360, 104211, 101890, 99720, 97552, 95270, 93251, 91349, 89242, 87262, 85304, 83542, 81625, 79813, 76323, 72727, 69310, 66152, 62975, 59759, 57040, 54320, 51535, 48832, 46230, 43455, 40668, 38022, 33373, 28306, 23632, 11641, 8465, 5595, 2151, -1024, -4154, -7155, -8991, -10940, -12762, -14630, -16553, -18493, -20348, -22366, -24281, -26387, -28436, -30724, -32852, -35153, -37431, -39919];
-/// "ntc_10k_beta_3950" sparse physical transfer function.
+/// "ntc\_10k\_beta\_3950" sparse physical transfer function.
 ///
 /// Source provenance: none declared.
 /// Representation: "NTC Beta divider: R0=10000 ohm, B=3950 K, T0=25 C, fixed=10000 ohm, ADC max=4095, topology=NtcToGround".
 /// Generation policy: requested interpolation error <= 50; max_knots = 256; below = error; above = error.
-/// Domain: 142..=3995 "adc_code"; output: "degree_celsius" x 1000.
+/// Domain: 142..=3995 "adc\_code"; output: "degree\_celsius" x 1000.
 /// Knots: 61 (366 bytes array payload).
 /// Exhaustive numerical error: requested <= 50, achieved 48.418946 output quanta
 /// (conservative metadata bound 49) at input 539.

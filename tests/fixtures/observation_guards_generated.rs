@@ -6,7 +6,7 @@ use ph_curves::{BoundaryBehavior, MonotonicDirection, ObservationGuardBehavior, 
 static GUARDED_ERROR_INPUTS: [u16; 2] = [1, 10];
 #[rustfmt::skip]
 static GUARDED_ERROR_OUTPUTS: [i32; 2] = [1, 10];
-/// "guarded_error" sparse physical transfer function.
+/// "guarded\_error" sparse physical transfer function.
 ///
 /// Source provenance: none declared.
 /// Representation: "formula y = x".
@@ -54,7 +54,7 @@ pub const GUARDED_ERROR_OBSERVATION_GUARD: Option<ObservationGuardMetadata> = So
 static GUARDED_FAMILY_VARIANT_CLAMP_INPUTS: [u16; 2] = [1, 10];
 #[rustfmt::skip]
 static GUARDED_FAMILY_VARIANT_CLAMP_OUTPUTS: [i32; 2] = [10, 1];
-/// "guarded_family_variant_clamp" sparse physical transfer function.
+/// "guarded\_family\_variant\_clamp" sparse physical transfer function.
 ///
 /// Source provenance: identity "test fixture".
 /// Representation: "formula y = 11 - x".

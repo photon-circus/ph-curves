@@ -9,7 +9,8 @@ use std::{format, vec};
 
 use serde::Deserialize;
 
-use super::{BoundaryDef, ObservationGuardDef};
+use super::super::rustdoc::markdown_debug;
+use super::{BoundaryDef, ObservationGuardBehaviorDef, ObservationGuardDef};
 
 /// Caller-declared source citation.
 ///
@@ -74,18 +75,47 @@ impl SourceProvenance {
         self
     }
 
-    /// Merge an override: set fields replace, unset fields inherit.
+    /// Merge an override.
+    ///
+    /// Set fields replace and explicitly cleared fields become absent. Unset
+    /// fields inherit while identity is unchanged. Replacing identity starts a
+    /// new citation, so every unspecified optional field is cleared instead of
+    /// being silently attached to the new document.
     pub fn merge(&self, overlay: &SourceProvenanceOverride) -> Result<Self, String> {
         overlay.validate()?;
+        let replaces_identity = overlay
+            .identity
+            .as_deref()
+            .is_some_and(|identity| identity != self.identity);
         let merged = Self {
             identity: overlay
                 .identity
                 .clone()
                 .unwrap_or_else(|| self.identity.clone()),
-            revision: overlay.revision.clone().or_else(|| self.revision.clone()),
-            locator: overlay.locator.clone().or_else(|| self.locator.clone()),
-            url: overlay.url.clone().or_else(|| self.url.clone()),
-            note: overlay.note.clone().or_else(|| self.note.clone()),
+            revision: merge_optional_field(
+                self.revision.as_ref(),
+                overlay.revision.as_ref(),
+                overlay.clears(SourceProvenanceField::Revision),
+                replaces_identity,
+            ),
+            locator: merge_optional_field(
+                self.locator.as_ref(),
+                overlay.locator.as_ref(),
+                overlay.clears(SourceProvenanceField::Locator),
+                replaces_identity,
+            ),
+            url: merge_optional_field(
+                self.url.as_ref(),
+                overlay.url.as_ref(),
+                overlay.clears(SourceProvenanceField::Url),
+                replaces_identity,
+            ),
+            note: merge_optional_field(
+                self.note.as_ref(),
+                overlay.note.as_ref(),
+                overlay.clears(SourceProvenanceField::Note),
+                replaces_identity,
+            ),
         };
         merged.validate()?;
         Ok(merged)
@@ -102,54 +132,114 @@ impl SourceProvenance {
 
     /// Debug-formatted citation fields for generated rustdoc.
     pub(crate) fn rustdoc_clause(&self) -> String {
-        let mut parts = vec![format!("identity {:?}", self.identity)];
+        let mut parts = vec![format!("identity {}", markdown_debug(&self.identity))];
         if let Some(revision) = &self.revision {
-            parts.push(format!("revision {revision:?}"));
+            parts.push(format!("revision {}", markdown_debug(revision)));
         }
         if let Some(locator) = &self.locator {
-            parts.push(format!("locator {locator:?}"));
+            parts.push(format!("locator {}", markdown_debug(locator)));
         }
         if let Some(url) = &self.url {
-            parts.push(format!("url {url:?}"));
+            parts.push(format!("url {}", markdown_debug(url)));
         }
         if let Some(note) = &self.note {
-            parts.push(format!("note {note:?}"));
+            parts.push(format!("note {}", markdown_debug(note)));
         }
         parts.join("; ")
     }
 }
 
-/// Partial citation that replaces declared fields and inherits the rest.
+fn merge_optional_field(
+    base: Option<&String>,
+    replacement: Option<&String>,
+    clear: bool,
+    replaces_identity: bool,
+) -> Option<String> {
+    if clear {
+        None
+    } else if let Some(replacement) = replacement {
+        Some(replacement.clone())
+    } else if replaces_identity {
+        None
+    } else {
+        base.cloned()
+    }
+}
+
+/// Optional citation field that an override can explicitly clear.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceProvenanceField {
+    /// Document revision or version.
+    Revision,
+    /// Section, table, page, row, or equation locator.
+    Locator,
+    /// Opaque source URL.
+    Url,
+    /// Free-form source note.
+    Note,
+}
+
+impl SourceProvenanceField {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Revision => "revision",
+            Self::Locator => "locator",
+            Self::Url => "url",
+            Self::Note => "note",
+        }
+    }
+}
+
+/// Partial citation that replaces declared fields and can clear optional ones.
 ///
-/// Used on family members, gaps, standalone transfers, and observation-guard
-/// tables. Resolving without a parent still requires `identity`.
+/// Used on family members, gaps, and observation-guard tables. A standalone
+/// `TransferDef` uses [`SourceProvenance`] directly. Unset optional fields
+/// inherit unless `identity` changes, which starts a new citation and resets
+/// them. Resolving without a parent still requires `identity`.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct SourceProvenanceOverride {
     /// Replacement identity. Inherited when omitted.
     #[serde(default)]
     pub identity: Option<String>,
-    /// Replacement revision. Inherited when omitted.
+    /// Replacement revision. Inherited when omitted and identity is unchanged.
     #[serde(default)]
     pub revision: Option<String>,
-    /// Replacement locator. Inherited when omitted.
+    /// Replacement locator. Inherited when omitted and identity is unchanged.
     #[serde(default)]
     pub locator: Option<String>,
-    /// Replacement URL. Inherited when omitted. Never fetched.
+    /// Replacement URL. Inherited when omitted and identity is unchanged. Never fetched.
     #[serde(default)]
     pub url: Option<String>,
-    /// Replacement note. Inherited when omitted.
+    /// Replacement note. Inherited when omitted and identity is unchanged.
     #[serde(default)]
     pub note: Option<String>,
+    /// Optional inherited fields to remove.
+    ///
+    /// TOML example: `clear = ["revision", "url"]`.
+    #[serde(default)]
+    pub clear: Vec<SourceProvenanceField>,
 }
 
 impl SourceProvenanceOverride {
-    /// Citation that sets only `identity`. Other fields inherit or stay unset.
+    /// Citation that sets only `identity`.
+    ///
+    /// When it replaces a different identity, unspecified optional fields are
+    /// cleared. When it repeats the parent identity, they inherit.
     pub fn new(identity: impl Into<String>) -> Self {
         Self {
             identity: Some(identity.into()),
             ..Self::default()
         }
+    }
+
+    /// Explicitly remove one inherited optional field.
+    pub fn clearing(mut self, field: SourceProvenanceField) -> Self {
+        if !self.clear.contains(&field) {
+            self.clear.push(field);
+        }
+        self
     }
 
     /// Resolve against an optional parent citation.
@@ -161,6 +251,12 @@ impl SourceProvenanceOverride {
             Some(base) => base.merge(self),
             None => {
                 self.validate()?;
+                if let Some(field) = self.clear.first() {
+                    return Err(format!(
+                        "provenance.clear cannot remove `{}` without inherited source provenance",
+                        field.name()
+                    ));
+                }
                 let provenance = SourceProvenance {
                     identity: self.identity.clone().unwrap_or_default(),
                     revision: self.revision.clone(),
@@ -183,8 +279,41 @@ impl SourceProvenanceOverride {
         reject_optional_blank("provenance.locator", self.locator.as_deref())?;
         reject_optional_blank("provenance.url", self.url.as_deref())?;
         reject_optional_blank("provenance.note", self.note.as_deref())?;
+        for (index, field) in self.clear.iter().enumerate() {
+            if self.clear[..index].contains(field) {
+                return Err(format!(
+                    "provenance.clear contains duplicate field `{}`",
+                    field.name()
+                ));
+            }
+            let is_set = match field {
+                SourceProvenanceField::Revision => self.revision.is_some(),
+                SourceProvenanceField::Locator => self.locator.is_some(),
+                SourceProvenanceField::Url => self.url.is_some(),
+                SourceProvenanceField::Note => self.note.is_some(),
+            };
+            if is_set {
+                return Err(format!(
+                    "provenance.{} cannot be both set and cleared",
+                    field.name()
+                ));
+            }
+        }
         Ok(())
     }
+
+    fn clears(&self, field: SourceProvenanceField) -> bool {
+        self.clear.contains(&field)
+    }
+}
+
+/// Observation-guard behavior projected without any source citation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ObservationGuardPolicy {
+    /// Observation code classified by this policy.
+    pub code: u16,
+    /// Behavior applied when the code is observed.
+    pub behavior: ObservationGuardBehaviorDef,
 }
 
 /// Consumer/generator policy, distinct from [`SourceProvenance`].
@@ -203,7 +332,7 @@ pub struct GenerationPolicy {
     /// Observation-domain above policy.
     pub above: BoundaryDef,
     /// Explicit observation-code guard (TOML `saturation`), when declared.
-    pub observation_guard: Option<ObservationGuardDef>,
+    pub observation_guard: Option<ObservationGuardPolicy>,
 }
 
 impl GenerationPolicy {
@@ -212,14 +341,17 @@ impl GenerationPolicy {
         max_knots: usize,
         below: BoundaryDef,
         above: BoundaryDef,
-        observation_guard: Option<ObservationGuardDef>,
+        observation_guard: Option<&ObservationGuardDef>,
     ) -> Self {
         Self {
             max_interpolation_error,
             max_knots,
             below,
             above,
-            observation_guard,
+            observation_guard: observation_guard.map(|guard| ObservationGuardPolicy {
+                code: guard.code,
+                behavior: guard.behavior,
+            }),
         }
     }
 
@@ -279,6 +411,108 @@ mod tests {
             error.contains("source-backed citation requires provenance.identity"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn replacing_identity_does_not_inherit_old_document_fields() {
+        let base = SourceProvenance::new("old document")
+            .with_revision("old revision")
+            .with_locator("old table")
+            .with_url("https://old.invalid")
+            .with_note("old note");
+        let resolved = base
+            .merge(&SourceProvenanceOverride::new("new document"))
+            .unwrap();
+
+        assert_eq!(resolved.identity, "new document");
+        assert_eq!(resolved.revision, None);
+        assert_eq!(resolved.locator, None);
+        assert_eq!(resolved.url, None);
+        assert_eq!(resolved.note, None);
+    }
+
+    #[test]
+    fn override_can_clear_one_inherited_optional_field() {
+        let base = SourceProvenance::new("datasheet")
+            .with_revision("1.0")
+            .with_locator("Table 1");
+        let overlay = SourceProvenanceOverride::default().clearing(SourceProvenanceField::Locator);
+        let resolved = base.merge(&overlay).unwrap();
+
+        assert_eq!(resolved.identity, "datasheet");
+        assert_eq!(resolved.revision.as_deref(), Some("1.0"));
+        assert_eq!(resolved.locator, None);
+    }
+
+    #[test]
+    fn override_rejects_setting_and_clearing_the_same_field() {
+        let overlay = SourceProvenanceOverride {
+            locator: Some("Table 2".into()),
+            clear: vec![SourceProvenanceField::Locator],
+            ..SourceProvenanceOverride::default()
+        };
+        let error = SourceProvenance::new("datasheet")
+            .merge(&overlay)
+            .unwrap_err();
+        assert!(
+            error.contains("provenance.locator cannot be both set and cleared"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn override_rejects_duplicate_clear_fields() {
+        let overlay = SourceProvenanceOverride {
+            clear: vec![
+                SourceProvenanceField::Locator,
+                SourceProvenanceField::Locator,
+            ],
+            ..SourceProvenanceOverride::default()
+        };
+        let error = SourceProvenance::new("datasheet")
+            .merge(&overlay)
+            .unwrap_err();
+        assert!(
+            error.contains("provenance.clear contains duplicate field `locator`"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn override_rejects_unknown_clear_field() {
+        let error = toml::from_str::<SourceProvenanceOverride>(
+            "identity = \"datasheet\"\nclear = [\"uri\"]\n",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("unknown variant `uri`") && error.contains("revision"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn override_rejects_clear_without_parent_provenance() {
+        let overlay =
+            SourceProvenanceOverride::new("standalone").clearing(SourceProvenanceField::Locator);
+        let error = overlay.resolve(None).unwrap_err();
+        assert!(
+            error.contains(
+                "provenance.clear cannot remove `locator` without inherited source provenance"
+            ),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rustdoc_clause_escapes_markdown_and_html() {
+        let clause = SourceProvenance::new("[datasheet]")
+            .with_note("`code` <tag> & text")
+            .rustdoc_clause();
+        assert!(clause.contains(r#"identity "\[datasheet\]""#), "{clause}");
+        assert!(clause.contains(r#"\`code\`"#), "{clause}");
+        assert!(clause.contains(r#"\<tag\>"#), "{clause}");
+        assert!(clause.contains("&amp;"), "{clause}");
     }
 
     #[test]
