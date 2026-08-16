@@ -21,10 +21,25 @@ fn default_family_max_knots() -> usize {
     64
 }
 
+/// How a parsed family or standalone transfer declares its host source.
+///
+/// Built-in model parameters stay crate-private. Host tools distinguish a
+/// model source from formula or points without depending on the NTC catalog.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DeclaredSource {
+    /// A formula over the observation-domain variable `x`.
+    Formula,
+    /// Sparse physical control points.
+    Points,
+    /// A built-in host model (currently the NTC Beta-divider).
+    Model,
+}
+
 /// One named family: shared source, per-member scale and applicability.
 ///
-/// Fields are public so host tools can inspect the parsed document. Dependents
-/// obtain the map via `DefinitionsFile::transfer_families`.
+/// Metadata fields are public. Source and boundary fields are inspectable
+/// through accessors so the NTC model catalog is not part of the public IR.
+/// Dependents obtain the map via `DefinitionsFile::transfer_families`.
 ///
 /// Scale is per-member only. A family-level `scale` field is rejected as
 /// unknown so a shared-model scale cannot be silently overwritten.
@@ -56,6 +71,57 @@ pub struct TransferFamilyDef {
     pub(crate) output_range: Option<[f64; 2]>,
     /// Explicit selector combinations. Never synthesized.
     pub members: Vec<FamilyMemberDef>,
+}
+
+impl TransferFamilyDef {
+    /// Observation-domain below policy copied onto emitted members.
+    pub fn below(&self) -> super::BoundaryDef {
+        self.below
+    }
+
+    /// Observation-domain above policy copied onto emitted members.
+    pub fn above(&self) -> super::BoundaryDef {
+        self.above
+    }
+
+    /// Shared formula text, when the family source is a formula.
+    pub fn formula(&self) -> Option<&str> {
+        self.formula.as_deref()
+    }
+
+    /// Shared physical control points, when the family source is points.
+    pub fn points(&self) -> Option<&[super::PhysicalPoint]> {
+        self.points.as_deref()
+    }
+
+    /// Inclusive observation domain, required for formula sources.
+    pub fn domain(&self) -> Option<[u16; 2]> {
+        self.domain
+    }
+
+    /// Physical output window, required for model sources.
+    pub fn output_range(&self) -> Option<[f64; 2]> {
+        self.output_range
+    }
+
+    /// Whether the shared source is a built-in host model.
+    pub fn has_model(&self) -> bool {
+        self.model.is_some()
+    }
+
+    /// Which of formula, points, or model is set. `None` if the source is missing or mixed.
+    pub fn declared_source(&self) -> Option<DeclaredSource> {
+        match (
+            self.formula.is_some(),
+            self.points.is_some(),
+            self.model.is_some(),
+        ) {
+            (true, false, false) => Some(DeclaredSource::Formula),
+            (false, true, false) => Some(DeclaredSource::Points),
+            (false, false, true) => Some(DeclaredSource::Model),
+            _ => None,
+        }
+    }
 }
 
 /// One explicit selector combination. Never synthesized by interpolation.
@@ -321,7 +387,7 @@ fn member_transfer(family: &TransferFamilyDef) -> TransferDef {
     }
 }
 
-fn expanded_name(
+pub(crate) fn expanded_name(
     family_name: &str,
     selectors: &BTreeMap<String, SelectorValue>,
 ) -> Result<String, String> {

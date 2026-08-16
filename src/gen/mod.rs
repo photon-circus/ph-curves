@@ -4,6 +4,11 @@
 //! Firmware crates should keep the default feature set and `include!`
 //! generated source without enabling this module.
 //!
+//! Host tools that own device evaluation inspect the validated transfer graph
+//! (`DefinitionsFile::validate`) and may overlay [`TransferSource`] values.
+//! That is a public IR, not a plugin ABI: ph-curves does not load or call
+//! device-specific model code.
+//!
 //! This module is the crate's only `std` consumer. The crate root is
 //! unconditionally `#![no_std]` and does not `extern crate std`. Each file
 //! under `src/gen` links `std` with a module-local `extern crate std`, imports
@@ -37,6 +42,7 @@ pub(crate) mod builtin;
 pub(crate) mod codegen;
 pub(crate) mod curve;
 pub(crate) mod formula;
+mod ir;
 pub(crate) mod points;
 pub(crate) mod transfer;
 
@@ -44,8 +50,10 @@ pub use api::{
     Error, GenerateOptions, ValueType, generate, generate_from_str, generate_from_toml,
     generate_to_path,
 };
-pub use curve::DefinitionsFile;
+pub use curve::{CurveDef, DefinitionsFile};
+pub use ir::{ValidatedDefinitions, ValidatedFamily, ValidatedMember};
 pub use transfer::{
-    ApplicabilityDef, FamilyMemberDef, GapDef, GapStatus, MemberStatus, SelectorValue,
-    TransferFamilyDef,
+    ApplicabilityDef, BoundaryDef, DeclaredSource, EvaluatedTruth, FamilyMemberDef, GapDef,
+    GapStatus, MemberStatus, PhysicalPoint, SelectorValue, TransferDef, TransferFamilyDef,
+    TransferSource, TransferSpec,
 };

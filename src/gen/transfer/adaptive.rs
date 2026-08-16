@@ -70,7 +70,7 @@ pub fn fit(
     }
 }
 
-fn measure_error(
+pub(crate) fn measure_error(
     domain_min: u16,
     truth: &[f64],
     knot_offsets: &[usize],

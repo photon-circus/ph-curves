@@ -13,8 +13,10 @@ explicitly leave channels or procedures undefined; those gaps must remain
 distinguishable from omissions.
 
 Issue #24 is the generic schema, integrity, inspection, and sparse emission
-slice of [#23](https://github.com/photon-circus/ph-curves/issues/23). It does
-not add a device-specific model, a runtime family registry, or firmware API.
+slice of [#23](https://github.com/photon-circus/ph-curves/issues/23). The
+host inspection/extension IR is documented in
+[host-transfer-ir.md](host-transfer-ir.md). This slice does not add a
+device-specific model, a runtime family registry, or firmware API.
 
 ## Schema
 
@@ -65,6 +67,4 @@ type.
 - `kind = "scaled_polynomial"` and applying member scale to host truth (#30)
 - Independent `saturation` / `extrapolation` fields (#28)
 - VEML knot budget and vendor oracle (#29)
-- The full host inspection/extension IR (#25); this slice only exposes
-  read-only `transfer_families()` / `gaps()` views
 - `kind = "veml7700"` or any device lifecycle API

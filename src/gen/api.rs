@@ -54,11 +54,15 @@ impl ValueType {
 /// Options controlling curve LUT generation.
 ///
 /// Defaults match the CLI today: `u8` values with a 256-entry LUT.
+/// Transfer-only documents should use [`Self::transfers_only`]; `value_type`
+/// and `lut_size` are ignored unless the document contains `[curves]`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GenerateOptions {
     /// Rust type used for LUT index and value (`u8` or `u16`).
+    /// Ignored when the document has no `[curves]`.
     pub value_type: ValueType,
     /// Number of entries in each LUT (must cover the full value-type domain).
+    /// Ignored when the document has no `[curves]`.
     pub lut_size: usize,
 }
 
@@ -68,6 +72,16 @@ impl Default for GenerateOptions {
             value_type: ValueType::U8,
             lut_size: ValueType::U8.required_lut_size(),
         }
+    }
+}
+
+impl GenerateOptions {
+    /// Options for a document with no `[curves]`.
+    ///
+    /// LUT fields keep CLI-compatible defaults but are not validated or used
+    /// when the definitions contain only transfers, families, or gaps.
+    pub fn transfers_only() -> Self {
+        Self::default()
     }
 }
 
@@ -139,7 +153,9 @@ pub fn generate_to_path(
 
 /// Lower-level entry: already-parsed definitions → Rust source.
 pub fn generate(defs: &DefinitionsFile, opts: &GenerateOptions) -> Result<String, Error> {
-    validate_options(opts)?;
+    if !defs.curves().is_empty() {
+        validate_options(opts)?;
+    }
     codegen::generate(defs, opts.value_type.as_str(), opts.lut_size).map_err(Error::Validation)
 }
 
@@ -288,5 +304,41 @@ applicability = { model_input = [100.0, 22000.0] }
         let error = generate_from_str(toml, &GenerateOptions::default()).unwrap_err();
         assert!(matches!(error, Error::Validation(_)));
         assert!(error.to_string().contains("scale must be positive"));
+    }
+
+    #[test]
+    fn transfer_only_generation_skips_lut_size_validation() {
+        let toml = r#"
+            [transfers.linear]
+            input_unit = "code"
+            output_unit = "unit"
+            output_scale = 1
+            max_interpolation_error = 1
+            points = [
+              { input = 0, output = 0.0 },
+              { input = 10, output = 10.0 },
+            ]
+        "#;
+        let opts = GenerateOptions {
+            value_type: ValueType::U8,
+            lut_size: 1,
+        };
+        let out = generate_from_str(toml, &opts).unwrap();
+        assert!(out.contains("PiecewiseLinearTransfer"));
+        assert!(!out.contains("CurveLut"));
+    }
+
+    #[test]
+    fn curves_still_require_full_lut_domain() {
+        let toml = r#"
+            [curves.linear]
+            builtin = "linear"
+        "#;
+        let opts = GenerateOptions {
+            value_type: ValueType::U8,
+            lut_size: 1,
+        };
+        let error = generate_from_str(toml, &opts).unwrap_err();
+        assert!(error.to_string().contains("--lut-size must be 256"));
     }
 }

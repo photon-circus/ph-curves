@@ -217,7 +217,9 @@ The transfer layer does **not** currently provide:
 - Automatic chaining or unit conversion between transfer functions.
 - Sensor fusion, state estimation, hysteretic application decisions, or
   missing/invalid-sample policy.
-- A plugin interface for arbitrary host model code.
+- A plugin interface for arbitrary host model code. Dedicated crates inspect
+  the validated transfer graph and supply evaluated truth or prefitted knots
+  through the host `gen-lib` IR instead.
 
 Only the NTC Beta-divider has a built-in physical model. Other devices should
 normally use a formula or empirical points. Dedicated crates may provide
@@ -310,13 +312,19 @@ Families cannot share a document with `[curves]` (the dense LUT path).
 Per-member `scale` is required and inspectable; applying it to host truth is
 a later model. Generated output is still independent
 `PiecewiseLinearTransfer` constants. Inspect parsed families and gaps through
-`DefinitionsFile::transfer_families` and `gaps` on the host `gen-lib` API.
+`DefinitionsFile::transfer_families` and `gaps`. `DefinitionsFile::validate`
+returns a `ValidatedDefinitions` graph that includes description-only members
+and gap reasons. A host tool that owns device evaluation can overlay
+`TransferSource::evaluated_truth` or prefitted knots on an emitted member and
+still receive ordinary generated tables. Transfer-only generation uses
+`GenerateOptions::transfers_only()`; curve LUT `value_type` / `lut_size` are
+not required.
 
 If a model needs conditionals, multiple independent inputs, dynamic
 calibration, temperature/load compensation, or domain-specific state, compute
-calibration points in a dedicated host tool/crate and feed those points to the
-generic generator. Do not turn `ph-curves` into a device driver or an
-open-ended sensor-model catalog.
+calibration points or dense truth in a dedicated host tool/crate and feed them
+to the generic generator through `TransferSpec` / `TransferSource`. Do not turn
+`ph-curves` into a device driver or an open-ended sensor-model catalog.
 
 ### Accuracy scope
 

@@ -61,7 +61,11 @@ pub fn generate(
     }
 
     for (name, def) in &transfers {
-        let data = super::transfer::build(name, def)?;
+        let data = if let Some(overlay) = curves_file.overlays.get(*name) {
+            super::transfer::build_with_source(name, def, Some(overlay))?
+        } else {
+            super::transfer::build(name, def)?
+        };
         let const_name = &const_names[*name];
         emit_transfer(&mut out, name, const_name, def, &data);
     }

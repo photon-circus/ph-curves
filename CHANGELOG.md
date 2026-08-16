@@ -23,6 +23,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   read-only inspection views. Selectors are never interpolated, unknown
   nested family/member/applicability/gap fields are rejected, and every
   member is validated before non-emitted statuses are filtered.
+- Host-only transfer inspection and extension IR. `DefinitionsFile::validate`
+  returns a `ValidatedDefinitions` graph of families, every member (including
+  `none` / `do_not_use`), and gap reasons without generating Rust.
+  `TransferSpec` / `TransferSource` construct or overlay evaluated physical
+  truth and prefitted knots so a device crate can own source interpretation
+  while reusing ph-curves fitting, metadata, and `PiecewiseLinearTransfer`
+  codegen. `GenerateOptions::transfers_only` skips dense LUT validation when
+  the document has no `[curves]`. There is still no plugin/evaluator ABI.
 
 ### Changed
 
