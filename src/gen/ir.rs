@@ -98,6 +98,9 @@ impl DefinitionsFile {
         }
 
         let resolved = self.resolved_transfers().map_err(Error::Validation)?;
+        let curves: Vec<_> = self.curves.iter().collect();
+        let transfers: Vec<_> = resolved.iter().collect();
+        super::codegen::emitted_const_names(&curves, &transfers).map_err(Error::Validation)?;
         let families = inspect_families(&self.transfer_families).map_err(Error::Validation)?;
         let resolved_names = resolved.keys().cloned().collect();
 
@@ -362,6 +365,12 @@ reason = "counts only; no conversion"
     #[test]
     fn prefitted_knots_reuse_codegen_without_copying_emit_path() {
         let mut defs = DefinitionsFile::default();
+        let truth = crate::r#gen::EvaluatedTruth::new(
+            20,
+            (20..=100)
+                .map(|input| f64::from(input - 20) / 2.0)
+                .collect(),
+        );
         defs.insert_transfer(
             TransferSpec::new(
                 "linear",
@@ -369,7 +378,7 @@ reason = "counts only; no conversion"
                 "unit",
                 1000,
                 1,
-                TransferSource::prefitted_knots(vec![20, 100], vec![0, 40_000]),
+                TransferSource::prefitted_knots_verified(vec![20, 100], vec![0, 40_000], truth),
             )
             .with_max_knots(8),
         )
@@ -378,8 +387,55 @@ reason = "counts only; no conversion"
         let out = crate::r#gen::generate(&defs, &GenerateOptions::transfers_only()).unwrap();
         assert!(out.contains("pub const LINEAR: PiecewiseLinearTransfer<2>"));
         assert!(out.contains("LINEAR_METADATA"));
-        assert!(out.contains("not verified against a source oracle"));
+        assert!(out.contains("verified against evaluated truth"));
+        assert!(out.contains("achieved_max_error: 0"));
         assert_eq!(out.matches("pub const LINEAR:").count(), 1);
+    }
+
+    #[test]
+    fn validate_rejects_codegen_identifier_collisions() {
+        let toml = r#"
+            [transfers."foo-bar"]
+            input_unit = "code"
+            output_unit = "unit"
+            output_scale = 1
+            max_interpolation_error = 1
+            points = [{ input = 0, output = 0.0 }, { input = 1, output = 1.0 }]
+
+            [transfers.foo_bar]
+            input_unit = "code"
+            output_unit = "unit"
+            output_scale = 1
+            max_interpolation_error = 1
+            points = [{ input = 0, output = 0.0 }, { input = 1, output = 1.0 }]
+        "#;
+        let defs = DefinitionsFile::from_toml_str(toml).unwrap();
+        let error = defs.validate().unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("both normalize to Rust identifier")
+        );
+    }
+
+    #[test]
+    fn points_overlay_replaces_formula_source_fields() {
+        let defs = DefinitionsFile::from_toml_str(family_toml()).unwrap();
+        let mut validated = defs.validate().unwrap();
+        validated
+            .set_source(
+                "als_gain_div4_integration_time_ms_100",
+                TransferSource::points(vec![
+                    PhysicalPoint::new(1, 1.0),
+                    PhysicalPoint::new(10, 10.0),
+                ]),
+            )
+            .unwrap();
+
+        let out = validated
+            .generate(&GenerateOptions::transfers_only())
+            .unwrap();
+        assert!(out.contains("physical points (2 control points)"));
     }
 
     #[test]

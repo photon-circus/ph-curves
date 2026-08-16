@@ -42,9 +42,8 @@ Extension:
 - Evaluated truth is dense unscaled physical samples; the existing greedy
   fitter runs.
 - Prefitted knots skip the fitter. Inverse-code-error measurement and
-  `emit_transfer` still run. Interpolation error against a dense oracle is
-  recorded only when truth is supplied; otherwise provenance states that the
-  bound was not verified.
+  `emit_transfer` still run. A dense oracle is required so interpolation error
+  is verified before the table and its accuracy metadata are emitted.
 
 Output remains ordinary `PiecewiseLinearTransfer` constants.
 

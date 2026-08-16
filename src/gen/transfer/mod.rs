@@ -249,11 +249,6 @@ fn build_from_overlay(
             finish_from_scaled_truth(name, def, domain_min, &scaled, provenance)
         }
         TransferSource::Points(control_points) => {
-            if def.domain.is_some() || def.output_range.is_some() {
-                return Err(format!(
-                    "transfer `{name}`: points define their domain; domain and output_range are forbidden"
-                ));
-            }
             let (minimum, physical) = points::evaluate(name, control_points)?;
             let scaled = scale_truth(name, &physical, def.output_scale)?;
             finish_from_scaled_truth(
@@ -268,7 +263,7 @@ fn build_from_overlay(
             inputs,
             outputs,
             truth,
-        } => build_prefitted(name, def, inputs, outputs, truth.as_ref()),
+        } => build_prefitted(name, def, inputs, outputs, truth),
     }
 }
 
@@ -329,7 +324,7 @@ fn build_prefitted(
     def: &TransferDef,
     inputs: &[u16],
     outputs: &[i32],
-    truth: Option<&EvaluatedTruth>,
+    truth: &EvaluatedTruth,
 ) -> Result<TransferData, String> {
     if inputs.len() != outputs.len() {
         return Err(format!(
@@ -359,66 +354,45 @@ fn build_prefitted(
     let scaled_knots: Vec<f64> = outputs.iter().map(|&value| f64::from(value)).collect();
     let direction = validate_monotonic(name, &scaled_knots)?;
 
-    let (achieved_max_error, achieved_max_error_exact, worst_case_input, provenance) = if let Some(
-        truth,
-    ) = truth
-    {
-        let (domain_min, scaled, _) = evaluated_truth_to_scaled(name, def, truth)?;
-        if domain_min != inputs[0] {
-            return Err(format!(
-                "transfer `{name}`: prefitted truth domain_min must match the first knot"
-            ));
-        }
-        let last = *inputs.last().expect("knot count checked");
-        let expected_len = usize::from(last - domain_min) + 1;
-        if scaled.len() != expected_len {
-            return Err(format!(
-                "transfer `{name}`: prefitted truth must cover {domain_min}..={last} ({expected_len} samples)"
-            ));
-        }
-        let knot_offsets: Vec<usize> = inputs
-            .iter()
-            .map(|&input| usize::from(input - domain_min))
-            .collect();
-        let (worst_offset, worst_error) =
-            adaptive::measure_error(domain_min, &scaled, &knot_offsets, outputs)?;
-        if worst_error > f64::from(def.max_interpolation_error) {
-            return Err(format!(
-                "transfer `{name}`: prefitted knots exceed maximum error {}; \
-                     measured {worst_error:.6} at input {}",
-                def.max_interpolation_error,
-                domain_min + worst_offset as u16
-            ));
-        }
-        (
-            worst_error.ceil() as u32,
-            worst_error,
-            domain_min + worst_offset as u16,
-            format!(
-                "prefitted knots ({} knots) verified against evaluated truth",
-                inputs.len()
-            ),
-        )
-    } else {
-        (
-            0,
-            0.0,
-            inputs[0],
-            format!(
-                "prefitted knots ({} knots); interpolation error was not verified against a source oracle",
-                inputs.len()
-            ),
-        )
-    };
+    let (domain_min, scaled, _) = evaluated_truth_to_scaled(name, def, truth)?;
+    if domain_min != inputs[0] {
+        return Err(format!(
+            "transfer `{name}`: prefitted truth domain_min must match the first knot"
+        ));
+    }
+    let last = *inputs.last().expect("knot count checked");
+    let expected_len = usize::from(last - domain_min) + 1;
+    if scaled.len() != expected_len {
+        return Err(format!(
+            "transfer `{name}`: prefitted truth must cover {domain_min}..={last} ({expected_len} samples)"
+        ));
+    }
+    let knot_offsets: Vec<usize> = inputs
+        .iter()
+        .map(|&input| usize::from(input - domain_min))
+        .collect();
+    let (worst_offset, worst_error) =
+        adaptive::measure_error(domain_min, &scaled, &knot_offsets, outputs)?;
+    if worst_error > f64::from(def.max_interpolation_error) {
+        return Err(format!(
+            "transfer `{name}`: prefitted knots exceed maximum error {}; \
+                 measured {worst_error:.6} at input {}",
+            def.max_interpolation_error,
+            domain_min + worst_offset as u16
+        ));
+    }
 
     Ok(TransferData {
         inputs: inputs.to_vec(),
         outputs: outputs.to_vec(),
         direction,
-        achieved_max_error,
-        achieved_max_error_exact,
-        worst_case_input,
-        provenance,
+        achieved_max_error: worst_error.ceil() as u32,
+        achieved_max_error_exact: worst_error,
+        worst_case_input: domain_min + worst_offset as u16,
+        provenance: format!(
+            "prefitted knots ({} knots) verified against evaluated truth",
+            inputs.len()
+        ),
     })
 }
 

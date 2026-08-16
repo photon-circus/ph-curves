@@ -218,7 +218,7 @@ fn emit_transfer(
     ));
 }
 
-fn emitted_const_names(
+pub(crate) fn emitted_const_names(
     curves: &[(&String, &CurveDef)],
     transfers: &[(&String, &TransferDef)],
 ) -> Result<BTreeMap<String, String>, String> {

@@ -29,8 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `TransferSpec` / `TransferSource` construct or overlay evaluated physical
   truth and prefitted knots so a device crate can own source interpretation
   while reusing ph-curves fitting, metadata, and `PiecewiseLinearTransfer`
-  codegen. `GenerateOptions::transfers_only` skips dense LUT validation when
-  the document has no `[curves]`. There is still no plugin/evaluator ABI.
+  codegen. Prefitted knots require dense truth so emitted accuracy metadata is
+  always verified. `GenerateOptions::transfers_only` skips dense LUT validation
+  when the document has no `[curves]`. There is still no plugin/evaluator ABI.
 
 ### Changed
 

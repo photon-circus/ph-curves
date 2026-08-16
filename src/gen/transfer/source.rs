@@ -51,16 +51,15 @@ pub enum TransferSource {
     EvaluatedTruth(EvaluatedTruth),
     /// Caller-chosen knots. The greedy fitter is skipped.
     ///
-    /// When `truth` is `Some`, interpolation error is measured against that
-    /// dense series. When `None`, metadata records that the bound was not
-    /// verified against a source oracle.
+    /// Interpolation error is measured against `truth` before metadata is
+    /// emitted, so prefitted tables cannot claim an unverified error bound.
     PrefittedKnots {
         /// Strictly increasing observation-domain knot codes.
         inputs: Vec<u16>,
         /// Scaled integer knot outputs (`physical * output_scale`, rounded).
         outputs: Vec<i32>,
-        /// Optional dense unscaled truth covering the knot domain.
-        truth: Option<EvaluatedTruth>,
+        /// Dense unscaled truth covering the knot domain.
+        truth: EvaluatedTruth,
     },
     /// Sparse physical control points, matching TOML `points`.
     Points(Vec<PhysicalPoint>),
@@ -72,15 +71,6 @@ impl TransferSource {
         Self::EvaluatedTruth(EvaluatedTruth::new(domain_min, physical))
     }
 
-    /// Prefitted knots without a dense oracle.
-    pub fn prefitted_knots(inputs: Vec<u16>, outputs: Vec<i32>) -> Self {
-        Self::PrefittedKnots {
-            inputs,
-            outputs,
-            truth: None,
-        }
-    }
-
     /// Prefitted knots verified against dense unscaled truth.
     pub fn prefitted_knots_verified(
         inputs: Vec<u16>,
@@ -90,7 +80,7 @@ impl TransferSource {
         Self::PrefittedKnots {
             inputs,
             outputs,
-            truth: Some(truth),
+            truth,
         }
     }
 
