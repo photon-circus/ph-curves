@@ -70,11 +70,12 @@
 //! # Temporal stabilization
 //!
 //! Filters consume samples supplied by the caller and retain bounded,
-//! const-generic state. Windowed filters return [`FilterOutput::WarmingUp`]
-//! until ready. Stability classification is separate from smoothing so a
-//! filtered value is not implicitly treated as settled. [`Hysteresis`] and
-//! [`Debounce`] latch application decisions from sample-count cadence only;
-//! they do not live inside [`TransferFunction`] and never own GPIO or clocks.
+//! const-generic state. Sample types are [`u16`], [`i32`], and [`u32`].
+//! Windowed filters return [`FilterOutput::WarmingUp`] until ready. Stability
+//! classification is separate from smoothing so a filtered value is not
+//! implicitly treated as settled. [`Hysteresis`] and [`Debounce`] latch
+//! application decisions from sample-count cadence only; they do not live
+//! inside [`TransferFunction`] and never own GPIO or clocks.
 //!
 //! # Physical measurements
 //!
