@@ -74,6 +74,14 @@ fn host_report_agrees_with_emitted_observation_guard_metadata() {
         .unwrap();
     assert_eq!(family_member.family.as_deref(), Some("guarded_family"));
     assert_eq!(
+        family_member.metadata_symbol,
+        "GUARDED_FAMILY_VARIANT_CLAMP_METADATA"
+    );
+    assert_eq!(
+        family_member.observation_guard_symbol,
+        "GUARDED_FAMILY_VARIANT_CLAMP_OBSERVATION_GUARD"
+    );
+    assert_eq!(
         family_member.domain_min,
         GUARDED_FAMILY_VARIANT_CLAMP_METADATA.domain_min
     );

@@ -90,10 +90,13 @@ impl<'de> Deserialize<'de> for ModelDef {
     }
 }
 
-#[derive(Copy, Clone, Debug, Deserialize)]
+/// Voltage-divider wiring for a host NTC Beta-divider model.
+#[derive(Copy, Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum DividerTopology {
+    /// NTC from the ADC node to ground; fixed resistor to supply.
     NtcToGround,
+    /// NTC from the ADC node to supply; fixed resistor to ground.
     NtcToSupply,
 }
 

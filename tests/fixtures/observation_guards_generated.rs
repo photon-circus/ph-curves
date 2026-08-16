@@ -54,6 +54,8 @@ pub const GUARDED_ERROR_OBSERVATION_GUARD: Option<ObservationGuardMetadata> = So
 static GUARDED_FAMILY_VARIANT_CLAMP_INPUTS: [u16; 2] = [1, 10];
 #[rustfmt::skip]
 static GUARDED_FAMILY_VARIANT_CLAMP_OUTPUTS: [i32; 2] = [10, 1];
+/// Family: "guarded\_family".
+/// Selectors: "variant" = "clamp".
 /// "guarded\_family\_variant\_clamp" sparse physical transfer function.
 ///
 /// Source provenance: identity "test fixture".

@@ -415,7 +415,22 @@ unspecified optional field. A family guard citation resolves against the family
 citation, not a member override. A standalone guard citation likewise resolves
 against the declared transfer citation before any generation-source overlay,
 so replacing or clearing source provenance does not rewrite or remove the
-guard-classification citation. Inspect `ValidatedFamily::provenance`,
+guard-classification citation. `ValidatedFamily` also exposes units, output
+scale, aggregate budgets, and its exact validated `FamilySource` through
+`ValidatedFamily::source`, including scaled-polynomial coefficients or every
+NTC Beta-divider parameter. The declared-source, formula, points, and
+model-presence accessors remain convenient projections. Members expose their
+resolved observation domain and emitted identity. Construct a
+family without TOML through `FamilySpec` / `FamilySource` and `insert_family`;
+that path uses the same validation and generation pipeline, including
+provenance. An optional member `emitted_name` keeps the generated stem stable
+when selector display spelling changes. An emitted-name collision identifies
+both origin families and their exact typed selector maps. `emission_manifest`
+maps family plus typed selectors to the table stem, symbol, and companion
+metadata names before fitting. Generated rustdoc for family members names the
+family and the exact selector map.
+
+Inspect `ValidatedFamily::provenance`,
 `ValidatedFamily::observation_guard_provenance`, and the citation-free
 `ValidatedFamily::policy` separately; generated rustdoc labels them the same
 way. Runtime transfer objects do not retain citation strings.
@@ -425,7 +440,7 @@ Standalone TOML provenance must opt in with
 in the same array when a standalone transfer uses cited provenance and an
 observation guard. The marker makes released 0.2.1 transfer-map readers reject
 the document instead of silently discarding the citation. Programmatic
-`TransferSpec::with_provenance` needs no wire-format marker. A `provenance`
+`TransferSpec::with_provenance` and `FamilySpec` need no wire-format marker. A `provenance`
 table nested inside a point or model is rejected as misplaced rather than
 accepted by a permissive legacy source parser.
 
@@ -451,13 +466,15 @@ Family reports retain the compact selector universe, completeness result,
 family citation and budgets, every member (including description-only
 statuses), and family-scoped gaps. Member and gap records keep both effective
 and declared-override provenance; emitted members additionally map to their
-table and Rust symbol. Named document-level gaps are reported independently.
+table, Rust symbol, and `_METADATA` / `_OBSERVATION_GUARD` companions. Named
+document-level gaps are reported independently.
 Resource totals still count emitted tables only.
 
 If a model needs conditionals, multiple independent inputs, dynamic
 calibration, temperature/load compensation, or domain-specific state, compute
 calibration points or dense truth in a dedicated host tool/crate and feed them
-to the generic generator through `TransferSpec` / `TransferSource`. Do not turn
+to the generic generator through `TransferSpec` / `TransferSource` or
+`FamilySpec`. Do not turn
 `ph-curves` into a device driver or an open-ended sensor-model catalog.
 
 ### Accuracy scope

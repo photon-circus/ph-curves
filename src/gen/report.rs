@@ -115,10 +115,14 @@ pub struct FamilyMemberReport {
     pub provenance: SourceProvenance,
     /// Member-level citation override exactly as declared.
     pub provenance_override: Option<SourceProvenanceOverride>,
-    /// Generated table name for an emitted member; absent otherwise.
+    /// Resolved emitted table name (explicit or selector-derived); absent otherwise.
     pub table_name: Option<String>,
     /// Generated Rust constant name for an emitted member; absent otherwise.
     pub symbol: Option<String>,
+    /// Companion `{symbol}_METADATA` name for an emitted member; absent otherwise.
+    pub metadata_symbol: Option<String>,
+    /// Companion `{symbol}_OBSERVATION_GUARD` name for an emitted member; absent otherwise.
+    pub observation_guard_symbol: Option<String>,
 }
 
 /// One family-scoped selector gap in a generation audit.
@@ -164,10 +168,17 @@ pub struct TransferReport {
     pub family: Option<String>,
     /// Selector identity of a family member. Empty for standalone transfers.
     pub selectors: BTreeMap<String, SelectorValue>,
-    /// Definitions-table name used for codegen (expanded name for members).
+    /// Resolved table name used for codegen.
+    ///
+    /// For a family member, this is its explicit `emitted_name` when present,
+    /// otherwise the deterministic family-plus-selector name.
     pub table_name: String,
     /// Emitted Rust constant name (`to_const_name` of [`Self::table_name`]).
     pub symbol: String,
+    /// Companion metadata constant name (`{symbol}_METADATA`).
+    pub metadata_symbol: String,
+    /// Companion observation-guard constant name (`{symbol}_OBSERVATION_GUARD`).
+    pub observation_guard_symbol: String,
     /// Inclusive observation-domain minimum (first knot input).
     pub domain_min: u16,
     /// Inclusive observation-domain maximum (last knot input).
@@ -295,6 +306,9 @@ pub(crate) fn assemble_report(
                 provenance_override: member.provenance.clone(),
                 table_name: emitted.map(|transfer| transfer.table_name.clone()),
                 symbol: emitted.map(|transfer| transfer.symbol.clone()),
+                metadata_symbol: emitted.map(|transfer| transfer.metadata_symbol.clone()),
+                observation_guard_symbol: emitted
+                    .map(|transfer| transfer.observation_guard_symbol.clone()),
             });
         }
 

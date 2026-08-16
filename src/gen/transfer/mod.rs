@@ -25,13 +25,14 @@ pub use family::{
     TransferFamilyDef,
 };
 pub(crate) use family::{FamilyMemberOrigin, ResolvedTransfer};
+pub use model::DividerTopology;
 pub use provenance::{
     GenerationPolicy, ObservationGuardPolicy, SourceProvenance, SourceProvenanceField,
     SourceProvenanceOverride,
 };
 pub use source::{
-    EvaluatedTruth, SourceProvenanceDisposition, TransferSource, TransferSourceOverlay,
-    TransferSpec,
+    EvaluatedTruth, FamilySource, FamilySpec, SourceProvenanceDisposition, TransferSource,
+    TransferSourceOverlay, TransferSpec,
 };
 
 const ABSOLUTE_MAX_KNOTS: usize = 4096;
