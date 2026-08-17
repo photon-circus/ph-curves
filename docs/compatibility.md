@@ -20,6 +20,15 @@ and generation reports, standalone affine transforms, `u32` temporal
 primitives, and 16-bit-pointer target support. The sections below record the
 exact compatibility boundaries and migration requirements.
 
+### Rust 1.92 dependency resolution
+
+The published dependency on `fixed` is bounded below `1.31`: that upstream
+release raises its own minimum Rust version to 1.93. This bound matters for a
+fresh edition-2021 / resolver-2 consumer, which does not inherit this
+repository's `Cargo.lock` and otherwise selects the newest semver-compatible
+`fixed`. CI creates exactly that downstream shape with an empty lockfile and
+builds it on Rust 1.92, in addition to testing the repository's locked graph.
+
 ## 0.2.0 result
 
 Assessment of every 0.2.0 change that could break the 0.1.2 baseline, what was
@@ -98,7 +107,8 @@ the boundary is enforced by the type system, not by review.
 
 1. Fails if `#![no_std]` is feature-conditional or missing.
 2. Builds the default feature set against a `core`-only sysroot
-   (`-Z build-std=core`) on thumbv7em, thumbv6m, and riscv32imc.
+   (`-Z build-std=core`) on thumbv7em, thumbv6m, riscv32imc, and the
+   16-bit-pointer `msp430-none-elf` target.
 
 Step 2 matters more than it appears. A plain `cargo build --target
 thumbv7em-none-eabi` **passes** with an `alloc` dependency, because bare-metal
@@ -160,9 +170,9 @@ cost of making schema evolution explicit.
 `[transfer_families]` and `[gaps]` are now known top-level tables. Nested
 unknown fields on family, shared point entry, shared NTC model, member,
 applicability, input-transform, and gap types are rejected. Standalone curves
-still ignore unknown direct fields. Standalone transfers reject unknown direct
-fields, while other, unreserved fields nested in standalone point values and
-legacy standalone NTC model parameters remain permissive for compatibility.
+and standalone transfers now both reject unknown direct fields. Other,
+unreserved fields nested in standalone point values and legacy standalone NTC
+model parameters remain permissive for compatibility.
 
 The family member schema published in 0.3.0 is source-aware: every
 accepted field must change validation, fitting, emission, metadata, or
@@ -183,11 +193,11 @@ their optional overrides use the same replace/clear rules and are validated
 against the family citation. A selector key literally named `provenance`
 remains part of the typed selector identity. Together, these constraints are
 the intended first-publish shape. `[transfer_families]` has not shipped in
-0.2.1, so this is not a 0.2.x document break. Legacy standalone transfer TOML
-that uses only documented 0.2.1 fields retains its meaning. A document that
-relied on unknown direct transfer fields being ignored now fails closed, as
-described above; that deliberate tightening is not covered by the compatibility
-statement. The first-publish
+0.2.1, so this is not a 0.2.x document break. Legacy standalone curve and
+transfer TOML that uses only documented 0.2.1 fields retains its meaning. A
+document that relied on unknown direct curve or transfer fields being ignored
+now fails closed, as described above; that deliberate tightening is not
+covered by the compatibility statement. The first-publish
 shape is now evidenced by the device-neutral acceptance fixture
 (`assets/family-acceptance.toml`, `tests/family_acceptance.rs`,
 `tests/family_acceptance_gen.rs`): two selector axes, distinct member
@@ -274,11 +284,11 @@ both forms at once, that transfer must be renamed before any capability is
 added. In particular, it cannot coexist with `[transfer_families]`; the parser
 diagnoses that combination explicitly.
 
-The current parser also rejects unknown fields directly on standalone transfer
-definitions, so a misspelled guard cannot disappear. Nested standalone curve
-fields and unreserved standalone point/legacy NTC model parameters retain their
-previous permissive parsing for compatibility; reserved guard and provenance
-spellings fail closed.
+The current parser also rejects unknown fields directly on standalone curve
+and transfer definitions, so a misspelled `monotonic` flag or guard cannot
+disappear. Unreserved fields nested in standalone point values and legacy NTC
+model parameters retain their previous permissive parsing for compatibility;
+reserved guard and provenance spellings fail closed.
 
 This is a deliberate TOML compatibility tightening shipped in 0.3.0 with the
 observation-guard and provenance host APIs. A broader whole-document version
@@ -349,6 +359,10 @@ stem stays the derived family-plus-selector expansion. `EmissionManifest` and
 report companion-symbol fields are host-only. None of these types enter the
 default-feature runtime path. Generated family-member rustdoc grows two comment
 lines (family name and selector map); standalone transfers are unchanged.
+The family table name is descriptive rather than an emitted symbol, so it may
+match a standalone transfer or curve name through either TOML or programmatic
+construction. Resolved emitted-member stems still share the global generated
+symbol and companion collision checks.
 
 `DefinitionsFile::validate` and the pre-/post-validation insertion APIs build a
 structural graph: they check names and emitted-symbol collisions,
@@ -369,10 +383,11 @@ The 0.3.0 runtime is checked against `msp430-none-elf` with a core-only
 sysroot. The generic curve, transfer, affine, and temporal APIs compile there.
 The `CurveLut65536` and `MonotonicCurveLut65536` convenience aliases are
 conditionally absent when `target_pointer_width = "16"`, because the required
-array length 65,536 cannot be represented by that target's `usize`. Smaller
-generic LUTs remain available only for a custom `UnitValue` whose complete
-domain the table covers; `u8` curves and sparse transfers remain the built-in
-alternatives.
+array length 65,536 cannot be represented by that target's `usize`. The same
+limit applies to generated full-domain `u16` LUTs: generated source containing
+`[T; 65536]` is not consumable by a 16-bit-pointer Rust target. Generate `u8`
+curves or sparse transfers for those targets. Smaller generic LUTs remain
+available only for a custom `UnitValue` whose complete domain the table covers.
 
 This conditional surface is not a regression: earlier releases failed to
 compile on 16-bit-pointer targets at those two aliases. On such targets every

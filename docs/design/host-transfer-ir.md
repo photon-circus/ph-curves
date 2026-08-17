@@ -116,8 +116,11 @@ Extension:
   `DefinitionsFile` or `ValidatedDefinitions` (the latter re-validates) uses
   the same structural pipeline as parsed TOML. These insertion calls are
   transactional and enforce the same names, symbols, selector identities, and
-  description-only collision rules before or after validation. They may run
-  source-specific window derivation/checks (including numerical NTC work), but
+  description-only collision rules before or after validation. A family table
+  name is descriptive and may match a curve or standalone transfer name;
+  actual emitted-member stems still occupy the shared generated-symbol and
+  companion collision set. Insertion may run source-specific window
+  derivation/checks (including numerical NTC work), but
   full-window monotonicity, fitting, error measurement, lowering, and emission
   run only for `emit` members in `generate` / `generate_report`.
 - `ValidatedDefinitions::set_source` overlays truth or knots on a standalone

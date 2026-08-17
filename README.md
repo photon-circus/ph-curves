@@ -93,12 +93,18 @@ domain: `u8` uses exactly 256 entries and `u16` uses exactly 65,536 entries.
 For 16-bit resolution:
 
 ```sh
-ph-curves-gen --input assets/curves.toml --output src/curves.rs \
+ph-curves-gen --input assets/curves-u16.toml --output src/curves.rs \
     --value-type u16 --lut-size 65536
 ```
 
-A full-domain `u16` LUT requires a target whose pointer width is at least 32
-bits: a 16-bit `usize` cannot represent an array length of 65,536. On
+A full-domain `u16` LUT—whether generated directly or named through a
+convenience alias—requires a target whose pointer width is at least 32 bits: a
+16-bit `usize` cannot represent an array length of 65,536. The
+`assets/curves-u16.toml` example deliberately contains only normalized builtins
+and formulas. Point coordinates are absolute LUT indices, so a points document
+must use endpoints appropriate to the selected `--lut-size`.
+
+On
 16-bit-pointer targets, use `u8` curves, a custom `UnitValue` whose complete
 domain fits a smaller generic `CurveLut`, or a sparse
 `PiecewiseLinearTransfer` instead. `CurveLut::new` remains a `const fn` and
@@ -606,18 +612,31 @@ therefore a -120 milli-Celsius output offset.
 use ph_curves::AffineTransform;
 
 // +0.5 % gain, -120 milli-Celsius output offset, from this unit's factory trim.
-let trim = AffineTransform::new(1_005, -120_000, 1_000)?;
-let corrected = trim.apply(milli_celsius)?;
-let original = trim.unapply(corrected)?;
+let trim = AffineTransform::new(1_005, -120_000, 1_000).unwrap();
+let milli_celsius = 25_000;
+let corrected = trim.apply(milli_celsius).unwrap();
+let original = trim.unapply(corrected).unwrap();
+assert!((original - milli_celsius).abs() <= 1);
 ```
 
 ```rust
-use ph_curves::{AffineCalibration, InverseTransferFunction, TransferFunction};
+use ph_curves::{
+    AffineCalibration, InverseTransferFunction, MonotonicDirection,
+    PiecewiseLinearTransfer, TransferFunction,
+};
 
-let trimmed = AffineCalibration::new(NTC_10K_BETA_3950, 1_005, -120_000, 1_000)?;
+static INPUTS: [u16; 2] = [0, 4095];
+static OUTPUTS: [i32; 2] = [-40_000, 125_000];
+let transfer = PiecewiseLinearTransfer::new(
+    &INPUTS,
+    &OUTPUTS,
+    MonotonicDirection::Increasing,
+);
+let trimmed = AffineCalibration::new(transfer, 1_005, -120_000, 1_000).unwrap();
 
-let milli_celsius = trimmed.convert(adc_code)?;   // calibrated reading
-let setpoint_code = trimmed.invert(25_000)?;      // calibrated setpoint
+let milli_celsius = trimmed.convert(2048).unwrap(); // calibrated reading
+let setpoint_code = trimmed.invert(milli_celsius).unwrap();
+assert!((i32::from(setpoint_code) - 2048).abs() <= 1);
 ```
 
 Inversion undoes the affine and then inverts the table, so a calibrated

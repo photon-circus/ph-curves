@@ -161,6 +161,43 @@
 //! latch/reset state and is `O(1)`. Exact byte size and instruction latency are
 //! target-dependent.
 //!
+//! # Runtime affine calibration
+//!
+//! The scalar and wrapper forms are independently fallible, so examples keep
+//! their error boundaries explicit rather than relying on unrelated `From`
+//! conversions:
+//!
+//! ```rust
+//! use ph_curves::AffineTransform;
+//!
+//! let trim = AffineTransform::new(1_005, -120_000, 1_000).unwrap();
+//! let milli_celsius = 25_000;
+//! let corrected = trim.apply(milli_celsius).unwrap();
+//! let original = trim.unapply(corrected).unwrap();
+//! assert!((original - milli_celsius).abs() <= 1);
+//! ```
+//!
+//! ```rust
+//! use ph_curves::{
+//!     AffineCalibration, InverseTransferFunction, MonotonicDirection,
+//!     PiecewiseLinearTransfer, TransferFunction,
+//! };
+//!
+//! static INPUTS: [u16; 2] = [0, 4095];
+//! static OUTPUTS: [i32; 2] = [-40_000, 125_000];
+//! let transfer = PiecewiseLinearTransfer::new(
+//!     &INPUTS,
+//!     &OUTPUTS,
+//!     MonotonicDirection::Increasing,
+//! );
+//! let trimmed =
+//!     AffineCalibration::new(transfer, 1_005, -120_000, 1_000).unwrap();
+//!
+//! let milli_celsius = trimmed.convert(2048).unwrap();
+//! let setpoint_code = trimmed.invert(milli_celsius).unwrap();
+//! assert!((i32::from(setpoint_code) - 2048).abs() <= 1);
+//! ```
+//!
 //! # Physical measurements
 //!
 //! Transfer functions are deliberately separate from normalized curves. The
