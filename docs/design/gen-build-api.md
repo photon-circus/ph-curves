@@ -1,6 +1,8 @@
 # Gen build-script library API (design)
 
-**Status:** Shipped in 0.2.0 — `ph_curves::r#gen` behind the `gen-lib` feature. Design rationale only; the code and its rustdoc are authoritative.
+**Status:** The core `ph_curves::r#gen` API shipped in 0.2.0 behind the
+`gen-lib` feature; the family IR and report APIs shown here ship in 0.3.0.
+Design rationale only; the code and its rustdoc are authoritative.
 
 ## Motivation
 
@@ -73,6 +75,7 @@ impl ValidatedDefinitions {
         name: &str,
         overlay: TransferSourceOverlay,
     ) -> Result<(), Error>;
+    pub fn insert_transfer(&mut self, spec: TransferSpec) -> Result<(), Error>;
     pub fn insert_family(&mut self, spec: FamilySpec) -> Result<(), Error>;
     pub fn emission_manifest(&self) -> EmissionManifest;
     pub fn generate(&self, opts: &GenerateOptions) -> Result<String, Error>;
@@ -99,6 +102,18 @@ identity map (family + typed selectors → stem/symbol/companions).
 Resource totals and aggregate budget enforcement continue to count emitted
 members only. Member and scoped-gap vectors retain declaration order.
 
+`DefinitionsFile::validate` and both `insert_*` paths build and check the
+structural IR: names and generated-symbol collisions, family member capability
+shape, selector identities/universe completeness, domains, and declared source
+mappings. Deriving or checking a source-specific window may perform limited
+numerical work, notably NTC model evaluation. Full-window monotonicity, fitting,
+dense-oracle/error comparison, lowering, emission, and emitted-resource budget
+enforcement run only for `emit` members in `generate` / `generate_report`.
+Inserting into `ValidatedDefinitions`
+transactionally rebuilds the same structural graph as inserting before
+`DefinitionsFile::validate`; it does not promise that later generation will
+succeed.
+
 The overlay citation disposition is mandatory. Use inheritance only when the
 new representation still comes from the already-cited source. It means the
 target's declared, resolved pre-overlay citation and restores that citation
@@ -112,7 +127,7 @@ clear it.
 
 ```toml
 [build-dependencies]
-ph-curves = { version = "0.2", features = ["gen-lib"] }
+ph-curves = { version = "0.3", features = ["gen-lib"] }
 ```
 
 ```rust
@@ -122,7 +137,7 @@ generate_to_path("assets/curves.toml", &out, &GenerateOptions::default())?;
 
 ## Keep-outs / bounds
 
-- No proc-macro DSL (`#[curve(...)]` / derive embedding TOML) in 0.2.0
+- No proc-macro DSL (`#[curve(...)]` / derive embedding TOML) in 0.3.0
 - No firmware API growth from enabling `gen-lib`
 - No separate crates.io `ph-curves-gen` package required for this design
 - No WASM/plugin host ABI, runtime TOML watching, or proc-macro auto-invoke.

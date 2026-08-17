@@ -79,7 +79,9 @@ about the same condition.
 `invert(convert(x))` through a calibration can differ from `x`. What *is*
 guaranteed: anything `convert` produces is invertible. A calibrated value
 within half an uncalibrated quantum of a range endpoint clamps to that endpoint
-rather than range-erroring.
+rather than range-erroring. If undoing the affine at a signed endpoint exceeds
+`i32`, the wrapper may recover only after verifying that endpoint's exact
+calibrated image; do not turn ordinary inverse overflow into saturation.
 
 **`TransferMetadata` cannot be `#[non_exhaustive]`.** The generator emits a
 struct literal into the *consumer's* crate, which the attribute forbids. Adding
@@ -109,6 +111,28 @@ green test suite caught neither — a schedule test that asserts only on
 ## Working on the generator
 
 Host code lives in `src/gen`. `src/bin/gen/main.rs` is a thin CLI over it.
+
+**Family TOML must fail closed across generator versions.** Every document with
+at least one `[transfer_families]` table carries
+`[transfers] requires = ["transfer_families_v1"]`. Released 0.2.1 decoders
+reject the array instead of silently ignoring families. Observation-guard and
+source-provenance capabilities are added to that array only when a
+**standalone transfer** uses those features; family guard/provenance is covered
+by `transfer_families_v1`, and a standalone capability added only for a family
+must fail as unused. The current parser must reject a missing or unused marker.
+Programmatic `FamilySpec` has no wire format and does not use it.
+
+**Validation is structural; generation is semantic.**
+`DefinitionsFile::validate` and both pre-/post-validation `insert_*` paths
+check names/symbol collisions, selector identities and completeness, domains,
+and source-specific mapping shape. Validation may perform the source-specific
+calculation needed to derive or check a member window—notably numerical NTC
+model evaluation—but it does not sweep that window for monotonicity, fit a
+table, measure interpolation error, or enforce emitted-resource budgets.
+`generate` / `generate_report` perform those generation checks for `emit`
+members. Description-only mapped members are source-window validated but never
+fitted, lowered, or emitted. Their stems do not reserve emitted symbols, and
+insertion must apply the same rule before and after validation.
 
 Regenerate the checked-in fixture whenever table generation changes:
 

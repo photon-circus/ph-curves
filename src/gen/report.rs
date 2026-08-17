@@ -421,6 +421,9 @@ mod tests {
 
     fn multi_member_toml() -> &'static str {
         r#"
+[transfers]
+requires = ["transfer_families_v1"]
+
 [transfer_families.front_end]
 provenance = { identity = "report fixture" }
 input_unit = "count"
@@ -562,6 +565,9 @@ domain = [0, 2]
     fn budget_toml(extra: &str) -> String {
         format!(
             r#"
+[transfers]
+requires = ["transfer_families_v1"]
+
 [transfer_families.front_end]
 provenance = {{ identity = "budget fixture" }}
 input_unit = "count"
@@ -636,6 +642,9 @@ applicability = {{ observation = [0, 4] }}
     #[test]
     fn duplicate_tables_count_payload_twice() {
         let toml = r#"
+[transfers]
+requires = ["transfer_families_v1"]
+
 [transfer_families.front_end]
 provenance = { identity = "duplicate fixture" }
 input_unit = "count"
@@ -934,6 +943,9 @@ domain = [1, 3]
     #[test]
     fn family_report_preserves_members_gaps_provenance_and_emit_mapping() {
         let toml = r#"
+[transfers]
+requires = ["transfer_families_v1"]
+
 [transfer_families.front_end]
 provenance = { identity = "family source", revision = "A", locator = "family table" }
 input_unit = "code"

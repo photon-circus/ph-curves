@@ -90,15 +90,46 @@ cargo package --list
 
 ## Publish
 
-Set the version explicitly so the tag, message, and GitHub release cannot drift:
+Start from a clean, current `main`, not whichever branch happens to be checked
+out. The fast-forward-only update refuses a divergent local branch, and the
+explicit equality check proves the tag target is exactly the reviewed commit on
+`origin/main`:
 
 ```bash
+set -eu
 release_version=X.Y.Z
+git fetch --prune --tags origin
+git switch main
+test -z "$(git status --porcelain)" || {
+  echo "refusing to release from a dirty worktree" >&2
+  exit 1
+}
+git pull --ff-only origin main
+test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" || {
+  echo "local main is not exactly origin/main" >&2
+  exit 1
+}
+test -z "$(git status --porcelain)" || {
+  echo "refusing to tag a dirty worktree" >&2
+  exit 1
+}
+case "$(cargo pkgid)" in
+  *@"${release_version}") ;;
+  *)
+    echo "Cargo.toml package version does not match ${release_version}" >&2
+    exit 1
+    ;;
+esac
+git rev-parse -q --verify "refs/tags/v${release_version}" >/dev/null && {
+  echo "tag v${release_version} already exists" >&2
+  exit 1
+}
 git tag -a "v${release_version}" -m "ph-curves ${release_version}"
+test "$(git rev-list -n 1 "v${release_version}")" = "$(git rev-parse origin/main)"
 ```
 
-Push the tag, then publish. The tag must exist first, so the `CHANGELOG.md`
-compare links resolve:
+Push the verified tag, then publish from the same clean `main`. The tag must
+exist first, so the `CHANGELOG.md` compare links resolve:
 
 ```bash
 git push origin "v${release_version}"

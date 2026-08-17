@@ -12,7 +12,7 @@
 builtin = "linear"
 
 [transfers]
-requires = ["observation_guard_v1"]
+requires = ["observation_guard_v1", "transfer_families_v1"]
 
 [transfers.guarded_identity]
 input_unit = "adc_code"

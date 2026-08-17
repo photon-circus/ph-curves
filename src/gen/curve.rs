@@ -39,28 +39,85 @@ use super::{builtin, formula, points, transfer};
 /// ignored for compatibility; reserved
 /// observation-guard and provenance spellings cannot be nested inside source
 /// values.
-#[derive(Debug, Default, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Default, Clone)]
 pub struct DefinitionsFile {
     /// Normalized LUT curves keyed by TOML table name.
-    #[serde(default)]
     pub(crate) curves: BTreeMap<String, CurveDef>,
     /// Sparse physical transfer functions keyed by TOML table name.
-    #[serde(default, deserialize_with = "deserialize_transfers")]
     pub(crate) transfers: BTreeMap<String, transfer::TransferDef>,
     /// Shared-source families expanded into sparse transfers at generation.
-    #[serde(default, deserialize_with = "deserialize_transfer_families")]
     pub(crate) transfer_families: BTreeMap<String, transfer::TransferFamilyDef>,
     /// Channels or procedures that must not be generated as transfers.
-    #[serde(default)]
     pub(crate) gaps: BTreeMap<String, transfer::GapDef>,
     /// Programmatic generation sources keyed by transfer name.
-    #[serde(skip)]
     pub(crate) overlays: BTreeMap<String, transfer::TransferSourceOverlay>,
 }
 
 const OBSERVATION_GUARD_CAPABILITY: &str = "observation_guard_v1";
 const SOURCE_PROVENANCE_CAPABILITY: &str = "source_provenance_v1";
+const TRANSFER_FAMILIES_CAPABILITY: &str = "transfer_families_v1";
+
+#[derive(Default)]
+struct ParsedTransfers {
+    definitions: BTreeMap<String, transfer::TransferDef>,
+    capabilities: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SerializedDefinitionsFile {
+    #[serde(default)]
+    curves: BTreeMap<String, CurveDef>,
+    #[serde(default, deserialize_with = "deserialize_transfers")]
+    transfers: ParsedTransfers,
+    #[serde(default, deserialize_with = "deserialize_transfer_families")]
+    transfer_families: BTreeMap<String, transfer::TransferFamilyDef>,
+    #[serde(default)]
+    gaps: BTreeMap<String, transfer::GapDef>,
+}
+
+impl<'de> Deserialize<'de> for DefinitionsFile {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let parsed = SerializedDefinitionsFile::deserialize(deserializer)?;
+        let has_families = !parsed.transfer_families.is_empty();
+        let has_family_capability = parsed
+            .transfers
+            .capabilities
+            .iter()
+            .any(|capability| capability == TRANSFER_FAMILIES_CAPABILITY);
+
+        if has_families && !has_family_capability {
+            if parsed.transfers.definitions.contains_key("requires") {
+                return Err(de::Error::custom(
+                    "a standalone transfer named `requires` cannot coexist with transfer families; \
+                     rename that transfer before declaring the `[transfers] requires` capability marker",
+                ));
+            }
+            return Err(de::Error::custom(
+                "documents using `[transfer_families]` require \
+                 `[transfers] requires = [\"transfer_families_v1\"]`; \
+                 the marker makes older generators reject the document instead of silently producing empty or incomplete output",
+            ));
+        }
+        if has_family_capability && !has_families {
+            return Err(de::Error::custom(
+                "[transfers] requires `transfer_families_v1`, but no transfer family was declared; \
+                 check the family spelling and TOML table placement",
+            ));
+        }
+
+        Ok(Self {
+            curves: parsed.curves,
+            transfers: parsed.transfers.definitions,
+            transfer_families: parsed.transfer_families,
+            gaps: parsed.gaps,
+            overlays: BTreeMap::new(),
+        })
+    }
+}
 
 fn reject_misplaced_reserved_transfer_fields(
     definition_label: &str,
@@ -209,15 +266,14 @@ where
 }
 
 /// Deserialize the `[transfers]` section while retaining a fail-closed
-/// capability markers for observation guards and source provenance.
+/// capability markers for observation guards, source provenance, and transfer
+/// families.
 ///
 /// The marker is deliberately an array inside `[transfers]`. Generators that
 /// predate this schema deserialize every value in that table as a transfer and
 /// therefore reject the array instead of silently ignoring `saturation` or
 /// `provenance` on a nested transfer definition.
-fn deserialize_transfers<'de, D>(
-    deserializer: D,
-) -> Result<BTreeMap<String, transfer::TransferDef>, D::Error>
+fn deserialize_transfers<'de, D>(deserializer: D) -> Result<ParsedTransfers, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -252,7 +308,9 @@ where
     };
 
     for capability in &capabilities {
-        if capability != OBSERVATION_GUARD_CAPABILITY && capability != SOURCE_PROVENANCE_CAPABILITY
+        if capability != OBSERVATION_GUARD_CAPABILITY
+            && capability != SOURCE_PROVENANCE_CAPABILITY
+            && capability != TRANSFER_FAMILIES_CAPABILITY
         {
             return Err(de::Error::custom(format!(
                 "unsupported [transfers] capability `{capability}`"
@@ -328,7 +386,10 @@ where
         ));
     }
 
-    Ok(transfers)
+    Ok(ParsedTransfers {
+        definitions: transfers,
+        capabilities,
+    })
 }
 
 impl DefinitionsFile {
@@ -738,6 +799,54 @@ monotonic = false
         let defs = DefinitionsFile::from_toml_str("[transfer_families]\n[gaps]\n").unwrap();
         assert!(defs.transfer_families().is_empty());
         assert!(defs.gaps().is_empty());
+    }
+
+    fn transfer_family_toml(include_capability: bool) -> String {
+        let capability = if include_capability {
+            "[transfers]\nrequires = [\"transfer_families_v1\"]\n\n"
+        } else {
+            ""
+        };
+        format!(
+            "{capability}[transfer_families.als]\n\
+             provenance = {{ identity = \"test fixture\" }}\n\
+             input_unit = \"count\"\n\
+             output_unit = \"unit\"\n\
+             output_scale = 1\n\
+             max_interpolation_error = 1\n\
+             formula = \"x\"\n\
+             selector_axes = {{ gain = [\"x1\"] }}\n\n\
+             [[transfer_families.als.members]]\n\
+             selectors = {{ gain = \"x1\" }}\n\
+             status = \"emit\"\n\
+             applicability = {{ observation = [1, 10] }}\n"
+        )
+    }
+
+    #[test]
+    fn transfer_families_require_fail_closed_capability_marker() {
+        let error = DefinitionsFile::from_toml_str(&transfer_family_toml(false))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("requires = [\"transfer_families_v1\"]"),
+            "expected the required marker to be named, got: {error}"
+        );
+    }
+
+    #[test]
+    fn transfer_families_accept_supported_capability_marker() {
+        let defs = DefinitionsFile::from_toml_str(&transfer_family_toml(true)).unwrap();
+        assert!(defs.transfer_families().contains_key("als"));
+    }
+
+    #[test]
+    fn unused_transfer_family_capability_fails_closed() {
+        let error =
+            DefinitionsFile::from_toml_str("[transfers]\nrequires = [\"transfer_families_v1\"]\n")
+                .unwrap_err()
+                .to_string();
+        assert!(error.contains("no transfer family was declared"), "{error}");
     }
 
     fn guarded_standalone_toml(include_capability: bool) -> String {
@@ -1316,6 +1425,9 @@ scale = 42
     #[test]
     fn family_selector_may_be_named_saturation() {
         let toml = r#"
+[transfers]
+requires = ["transfer_families_v1"]
+
 [transfer_families.valid]
 provenance = { identity = "test fixture" }
 input_unit = "count"
@@ -1377,6 +1489,15 @@ applicability = { observation = [1, 10] }
             output_range: Option<[f64; 2]>,
         }
 
+        #[allow(dead_code)]
+        #[derive(Debug, Deserialize)]
+        struct LegacyDefinitionsFile {
+            #[serde(default)]
+            curves: BTreeMap<String, toml::Value>,
+            #[serde(default)]
+            transfers: BTreeMap<String, LegacyTransferDef>,
+        }
+
         let unversioned: toml::Value = guarded_standalone_toml(false).parse().unwrap();
         let silently_unguarded = unversioned
             .get("transfers")
@@ -1418,6 +1539,19 @@ applicability = { observation = [1, 10] }
                 && (error.contains("invalid type") || error.contains("invalid length")),
             "legacy transfer-map decoder unexpectedly accepted the source marker: {error}"
         );
+
+        let silently_ignored: LegacyDefinitionsFile =
+            toml::from_str(&transfer_family_toml(false)).unwrap();
+        assert!(silently_ignored.transfers.is_empty());
+
+        let error = toml::from_str::<LegacyDefinitionsFile>(&transfer_family_toml(true))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("requires")
+                && (error.contains("invalid type") || error.contains("invalid length")),
+            "released transfer-map decoder unexpectedly accepted the family marker: {error}"
+        );
     }
 
     #[test]
@@ -1433,6 +1567,33 @@ domain = [1, 10]
 "#;
         let defs = DefinitionsFile::from_toml_str(toml).unwrap();
         assert!(defs.transfers().contains_key("requires"));
+    }
+
+    #[test]
+    fn requires_transfer_must_be_renamed_before_adding_a_family() {
+        let toml = format!(
+            r#"
+[transfers.requires]
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+formula = "x"
+domain = [1, 10]
+
+{}
+"#,
+            transfer_family_toml(false)
+        );
+        let error = DefinitionsFile::from_toml_str(&toml)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains(
+                "standalone transfer named `requires` cannot coexist with transfer families"
+            ),
+            "{error}"
+        );
     }
 
     #[test]

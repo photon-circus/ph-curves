@@ -845,18 +845,22 @@ where
     /// `AboveRange` and vice versa.
     ///
     /// When `|scale| > |gain|`, undoing the affine can land just outside the
-    /// inner physical range even though `physical` is in the forward image of
-    /// that range (the classic `invert(convert(endpoint))` compression case).
-    /// Those values are clamped to the inner endpoint before the second
-    /// invert attempt so in-domain calibrated setpoints never spuriously
-    /// range-error. Values outside the calibrated forward image still report
-    /// [`InverseTransferError::BelowRange`] /
-    /// [`InverseTransferError::AboveRange`].
+    /// inner physical range, or one integer beyond `i32`, even though
+    /// `physical` is in that range's forward image (the classic
+    /// `invert(convert(endpoint))` compression case). Those values are clamped
+    /// to the verified inner endpoint before the second invert attempt so
+    /// in-domain calibrated setpoints never spuriously range-error or overflow.
+    /// A representable undone value outside the calibrated forward image still
+    /// reports [`InverseTransferError::BelowRange`] /
+    /// [`InverseTransferError::AboveRange`]; a genuinely unrepresentable one
+    /// reports [`InverseTransferError::Overflow`].
     fn invert(&self, physical: i32) -> Result<T::Observation, InverseTransferError<i32>> {
-        let uncalibrated = self
-            .transform
-            .unapply(physical)
-            .map_err(|AffineOverflow::Overflow| InverseTransferError::Overflow)?;
+        let uncalibrated = match self.transform.unapply(physical) {
+            Ok(uncalibrated) => uncalibrated,
+            Err(AffineOverflow::Overflow) => {
+                return self.recover_inverse_overflow(physical);
+            }
+        };
         match self.inner.invert(uncalibrated) {
             Ok(observation) => Ok(observation),
             Err(error) => self.recover_compressed_endpoint(physical, error),
@@ -868,6 +872,56 @@ impl<T> AffineCalibration<T> {
     /// True when the calibration preserves the inner transfer's orientation.
     const fn preserves_orientation(&self) -> bool {
         (self.transform.gain() > 0) == (self.transform.scale() > 0)
+    }
+
+    /// Recover the representable endpoint when inverse rounding crossed the
+    /// `i32` boundary.
+    ///
+    /// [`AffineTransform::unapply`] intentionally reports scalar overflow in
+    /// this case. The wrapper has an additional guarantee, though: every
+    /// value produced by `convert` must remain invertible. A compressed
+    /// transform can map `i32::MAX` or `i32::MIN` to a representable value
+    /// whose nearest inverse is one half-quantum outside `i32`. Saturating
+    /// that mathematical result identifies the only inner endpoint that
+    /// could have produced the value.
+    fn recover_inverse_overflow(
+        &self,
+        physical: i32,
+    ) -> Result<T::Observation, InverseTransferError<i32>>
+    where
+        T: InverseTransferFunction<Physical = i32>,
+    {
+        // These operations cannot overflow i64 for i32 operands. Reuse the
+        // crate's single rounding helper so this classification cannot drift
+        // from AffineTransform::unapply.
+        let numerator = i64::from(physical) * i64::from(self.transform.scale())
+            - i64::from(self.transform.offset());
+        let uncalibrated = div_nearest_ties_away(numerator, i64::from(self.transform.gain()));
+        let endpoint = if uncalibrated > i64::from(i32::MAX) {
+            i32::MAX
+        } else if uncalibrated < i64::from(i32::MIN) {
+            i32::MIN
+        } else {
+            // AffineTransform::unapply returned Overflow, so a representable
+            // rounded result would violate its arithmetic contract.
+            return Err(InverseTransferError::Overflow);
+        };
+
+        // Only recover the exact image of the endpoint. Other physical values
+        // still represent a genuinely unrepresentable inverse and retain the
+        // scalar Overflow contract.
+        let calibrated_endpoint = self
+            .transform
+            .apply(endpoint)
+            .map_err(|AffineOverflow::Overflow| InverseTransferError::Overflow)?;
+        if physical != calibrated_endpoint {
+            return Err(InverseTransferError::Overflow);
+        }
+
+        match self.inner.invert(endpoint) {
+            Ok(observation) => Ok(observation),
+            Err(error) => self.recover_compressed_endpoint(physical, error),
+        }
     }
 
     /// Re-express an inner range error in calibrated units.
@@ -955,6 +1009,9 @@ mod tests {
     static DECREASING: [i32; 3] = [2_000, 0, -1_000];
     static FLAT_OUTPUTS: [i32; 4] = [0, 10, 10, 20];
     static FLAT_INPUTS: [u16; 4] = [0, 10, 20, 30];
+    static FULL_INPUTS: [u16; 2] = [0, u16::MAX];
+    static FULL_INCREASING: [i32; 2] = [i32::MIN, i32::MAX];
+    static FULL_DECREASING: [i32; 2] = [i32::MAX, i32::MIN];
 
     #[test]
     fn exact_knots_and_binary_search() {
@@ -1559,6 +1616,45 @@ mod tests {
                 maximum: 1_333
             })
         );
+    }
+
+    #[test]
+    fn calibrated_inverse_recovers_i32_endpoints_after_scalar_inverse_overflow() {
+        let tables = [
+            (&FULL_INCREASING, MonotonicDirection::Increasing),
+            (&FULL_DECREASING, MonotonicDirection::Decreasing),
+        ];
+
+        // Exercise preserved/reversed affine orientation and offsets that can
+        // push nearest inverse rounding past either signed endpoint.
+        for (outputs, direction) in tables {
+            let base = PiecewiseLinearTransfer::new(&FULL_INPUTS, outputs, direction);
+            for gain in [2, -2] {
+                for scale in [3, -3] {
+                    for offset in [-1, 0, 1] {
+                        let cal = AffineCalibration::new(base, gain, offset, scale).unwrap();
+                        for code in [0, u16::MAX] {
+                            let calibrated = cal.convert(code).unwrap();
+                            assert_eq!(
+                                cal.invert(calibrated),
+                                Ok(code),
+                                "code={code} converted={calibrated} gain={gain} offset={offset} scale={scale} direction={direction:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // Keep the scalar primitive's intentional overflow behavior explicit:
+        // the endpoint recovery belongs only to the transfer wrapper.
+        let scalar = AffineTransform::new(2, 0, 3).unwrap();
+        let converted = scalar.apply(i32::MAX).unwrap();
+        assert_eq!(scalar.unapply(converted), Err(AffineOverflow::Overflow));
+
+        let scalar = AffineTransform::new(2, -1, 3).unwrap();
+        let converted = scalar.apply(i32::MIN).unwrap();
+        assert_eq!(scalar.unapply(converted), Err(AffineOverflow::Overflow));
     }
 
     #[test]

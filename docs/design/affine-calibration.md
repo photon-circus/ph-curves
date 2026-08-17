@@ -93,12 +93,24 @@ offset of -120 milli-Celsius therefore requires `offset = -120_000`.
 - Solves `y = (y' * scale - offset) / gain` with the same nearest, ties-away rounding as the forward path, then delegates to the inner `invert`.
 - `gain == 0` is rejected by `new` with `AffineCalibrationError::ZeroGain`: it collapses every observation onto `offset / scale`, so the affine has no inverse. This is a deliberate tightening of the constructor rather than a deferred failure in `invert`.
 - Inner range errors are re-expressed in **calibrated** units, so `minimum` / `maximum` are comparable with the value the caller passed. When `gain` and `scale` have opposite signs the calibration reverses orientation, and an inner `BelowRange` surfaces as `AboveRange`.
-- `InverseTransferError::Overflow` covers an undone value that does not fit `i32`, and a range bound that cannot be re-expressed.
+- `InverseTransferError::Overflow` covers an ordinary undone value that does
+  not fit `i32`, and a range bound that cannot be re-expressed. At a signed
+  inner endpoint, the wrapper may recover only after verifying that endpoint's
+  calibrated image; standalone `AffineTransform::unapply` has no inner range
+  to verify and continues to report `AffineOverflow`.
 
 ### Round-trip bound
 
 Both directions round, so `invert(convert(x))` through a calibration is bounded, not exact. A calibration that compresses the physical scale cannot restore what the forward quantization discarded.
 
-When `|scale| > |gain|`, undoing the affine can land just outside the inner physical range even though the calibrated value is in the forward image of that range (for example `gain = 2`, `scale = 3` at a table endpoint). `invert` detects that case — the caller's value still compares inside the recalibrated bound — clamps to the inner endpoint, and retries, so `invert(convert(x))` never spuriously range-errors for in-domain `x`. Values outside the calibrated forward image still return `BelowRange` / `AboveRange` (with orientation flip when `gain` and `scale` disagree in sign).
+When `|scale| > |gain|`, undoing the affine can land just outside the inner
+physical range—or one integer beyond `i32`—even though the calibrated value is
+in the forward image of that range (for example `gain = 2`, `scale = 3` at a
+table endpoint). `invert` detects that case, verifies the applicable endpoint's
+calibrated image, and retries with the inner endpoint, so `invert(convert(x))`
+never spuriously range-errors or overflows for in-domain `x`. A representable
+undone value outside the calibrated forward image still returns `BelowRange` /
+`AboveRange` (with orientation flip when `gain` and `scale` disagree in sign);
+a genuinely unrepresentable undone value remains `Overflow`.
 
 `TransferMetadata::achieved_max_inverse_code_error` describes the uncalibrated table only; wrapping in `AffineCalibration` can widen it.

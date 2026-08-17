@@ -1,7 +1,7 @@
 # Executable generator fixture for observation-guard lowering.
 
 [transfers]
-requires = ["observation_guard_v1"]
+requires = ["observation_guard_v1", "transfer_families_v1"]
 
 [transfers.guarded_error]
 input_unit = "count"

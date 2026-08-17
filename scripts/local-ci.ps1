@@ -30,10 +30,16 @@ if (-not (Select-String -Path src/lib.rs -Pattern '^#!\[no_std\]$' -Quiet)) {
 }
 # `std` must be linked only inside src/gen, not at the crate root (and never
 # via `#[macro_use]`, which would put the prelude on the runtime path).
-if (Select-String -Path src/lib.rs -Pattern '^\s*extern crate std' -Quiet) {
+if (Select-String -Path src/lib.rs -Pattern '^\s*(pub(\([^)]*\))?\s+)?extern\s+crate\s+std\b' -Quiet) {
     throw "src/lib.rs: must not link std at the crate root; keep it module-local under src/gen."
 }
-if (-not (Select-String -Path src/gen/mod.rs -Pattern '^\s*extern crate std;' -Quiet)) {
+if (Select-String -Path src/lib.rs -Pattern '^\s*#\s*\[\s*macro_use(?:\s|\]|\()' -Quiet) {
+    throw "src/lib.rs: #[macro_use] is forbidden at the crate root; it can expose allocating macros to runtime modules."
+}
+if (Select-String -Path src/gen/mod.rs -Pattern '^\s*#\s*\[\s*macro_use(?:\s|\]|\()' -Quiet) {
+    throw "src/gen/mod.rs: link std explicitly without #[macro_use]; host modules import only what they use."
+}
+if (-not (Select-String -Path src/gen/mod.rs -Pattern '^\s*extern\s+crate\s+std;\s*$' -Quiet)) {
     throw "src/gen/mod.rs: missing module-local `extern crate std`."
 }
 
@@ -108,11 +114,10 @@ foreach ($target in $xtensaTargets) {
     Invoke-Cargo +esp build --example no_std_generated_fixtures --target $target -Zbuild-std=core
 }
 
-# Dependency policy: advisories, licences, bans, sources.
-if (Get-Command cargo-deny -ErrorAction SilentlyContinue) {
-    Invoke-Cargo deny check
-} else {
-    Write-Warning "cargo-deny not installed; skipping dependency policy. Install with 'cargo install cargo-deny'. CI runs it regardless."
+# Dependency policy is part of the release gate, not an optional convenience.
+if (-not (Get-Command cargo-deny -ErrorAction SilentlyContinue)) {
+    throw "cargo-deny is required. Install it with 'cargo install cargo-deny'."
 }
+Invoke-Cargo deny --all-features check
 
 Invoke-Cargo package --allow-dirty

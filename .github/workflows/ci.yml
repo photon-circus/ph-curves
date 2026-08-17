@@ -75,6 +75,28 @@ jobs:
             exit 1
           fi
 
+      # Linking std at the crate root, or importing its macros there, makes a
+      # host feature capable of hiding an accidental runtime allocation. Keep
+      # the host link explicit and module-local under src/gen.
+      - name: std must remain module-local
+        run: |
+          if grep -nE '^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?extern[[:space:]]+crate[[:space:]]+std([^[:alnum:]_]|$)' src/lib.rs; then
+            echo "::error file=src/lib.rs::std must not be linked at the crate root; keep it module-local under src/gen."
+            exit 1
+          fi
+          if grep -nE '^[[:space:]]*#[[:space:]]*\[[[:space:]]*macro_use([[:space:]]|\]|\()' src/lib.rs; then
+            echo "::error file=src/lib.rs::#[macro_use] is forbidden at the crate root because it can expose allocating macros to runtime modules."
+            exit 1
+          fi
+          if grep -nE '^[[:space:]]*#[[:space:]]*\[[[:space:]]*macro_use([[:space:]]|\]|\()' src/gen/mod.rs; then
+            echo "::error file=src/gen/mod.rs::link std explicitly without #[macro_use]; host modules import only what they use."
+            exit 1
+          fi
+          if ! grep -qE '^[[:space:]]*extern[[:space:]]+crate[[:space:]]+std;[[:space:]]*$' src/gen/mod.rs; then
+            echo "::error file=src/gen/mod.rs::src/gen/mod.rs must link std module-locally."
+            exit 1
+          fi
+
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
           toolchain: nightly

@@ -119,7 +119,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `status = "emit"` members become independent `PiecewiseLinearTransfer`
   constants. Non-`emit` statuses are `unnecessary`, `unsupported`, and
   `forbidden`, each requiring a non-blank `reason`. `unnecessary` and
-  `forbidden` members retain a validated source mapping; `unsupported`
+  `forbidden` members retain a structurally/source-specifically validated
+  mapping. Validation may numerically derive/check its source window (notably
+  for NTC), but description-only members are never swept for full-window
+  monotonicity, fitted, error-measured, lowered, or emitted; `unsupported`
   members have no mapping and therefore set no applicability coordinate or
   input transform. Gaps record
   `status = "undefined"` with a non-blank reason and are not generated.
@@ -196,10 +199,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hysteretic decisions are available.
 - `AffineCalibration` contains an `AffineTransform` and delegates
   gain/offset/scale arithmetic to it. Constructor, accessor, forward, inverse,
-  boundary, and error behavior are unchanged: `AffineCalibrationError` is
-  still the construction error, overflow still surfaces as
-  `TransferError::Overflow` / `InverseTransferError::Overflow`, and
-  compressed-endpoint invertibility still lives on the wrapper.
+  and boundary APIs are unchanged. `AffineCalibrationError` is still the
+  construction error, scalar `AffineTransform::unapply` still reports
+  `AffineOverflow`, and calibrated endpoint recovery remains wrapper policy.
 - Generated rustdoc for family members now includes the family name and typed
   selector map. Host `TransferReport` / `FamilyMemberReport` also list
   `_METADATA` and `_OBSERVATION_GUARD` companion symbol names. Standalone
@@ -216,9 +218,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   family-scoped gaps. Families may share a document with unrelated
   `[curves]`; dense LUT fallback remains curve-only. This is the publish
   shape of `[transfer_families]`, first shipped in 0.3.0 and absent from 0.2.1.
-  Legacy standalone transfers that do not use the new provenance or guard
-  fields remain unchanged. A whole-document `schema_version` field remains a
-  separate decision.
+  Legacy standalone documents that use only documented 0.2.1 fields retain
+  their meaning. Documents that relied on ignored unknown direct transfer
+  fields now fail closed, as described under *Fixed*. A whole-document
+  `schema_version` field remains a separate decision.
 
 - **Breaking (pre-1.0):** `TransferError` gained `RejectedObservation { input }`
   so a deliberately rejected observation code is not an `AboveDomain`.
@@ -237,6 +240,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exited 101 while reporting every test as passing, landing on a different
   feature each run so the failure read as a real, moving defect. CI builds
   fresh and gains nothing from incremental.
+- Family TOML now declares
+  `[transfers] requires = ["transfer_families_v1"]`. Released 0.2.1
+  generators reject that array before they can silently ignore
+  `[transfer_families]` and produce empty or incomplete output. The marker is
+  required exactly when at least one family is present. Family guards and
+  provenance are covered by that marker; `observation_guard_v1` and
+  `source_provenance_v1` are included in the same array only when standalone
+  transfers use those features, and otherwise fail as unused. Programmatic
+  `FamilySpec` construction has no wire format and needs no marker.
 - The README tagline now matches the manifest `description`, covering inverse
   transfers, calibration, and temporal filters. It had drifted the other way
   from the case `RELEASING.md` warns about — the manifest was the stale copy
@@ -254,15 +266,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Affine calibration examples now scale numerator offsets correctly: with
   `scale = 1_000`, a correction of -120 in the integer output scale is
   `offset = -120_000`, not `-120`.
+- `AffineCalibration::invert` now preserves the documented rule that anything
+  produced by `convert` is invertible even when undoing the affine at a signed
+  endpoint would exceed `i32`. It recovers only after verifying the applicable
+  inner endpoint's exact calibrated image. An arbitrary unrepresentable inverse
+  still reports overflow; ordinary representable values outside the image keep
+  their range errors, and scalar `AffineTransform::unapply` is unchanged.
+- `CurveLut` and `MonotonicCurveLut` now state their full-domain table-size
+  precondition and deterministic lookup panic explicitly. Their `const`
+  constructors remain unchanged; indexed assertions and regressions cover
+  undersized forward and inverse tables. The README no longer suggests that an
+  undersized `u16` LUT is a valid 16-bit-target alternative.
 - The default-feature runtime now builds against a core-only MSP430 sysroot.
   On 16-bit-pointer targets, the `u32` moving-average window cap no longer
   truncates to zero, and the two impossible 65,536-entry convenience aliases
-  are omitted while smaller generic LUTs and the remaining runtime APIs stay
-  available.
+  are omitted while smaller-domain generic LUTs whose custom `UnitValue` domain
+  is completely covered, and the remaining runtime APIs, stay available.
 - `ValidatedDefinitions::insert_transfer` now rebuilds the validated graph
   transactionally, matching `insert_family`. Normalized Rust-identifier and
   companion-symbol collisions are rejected by the insertion call without
   leaving the previously validated definitions partially mutated.
+- Pre- and post-validation transfer insertion now apply the same emitted-name
+  collision rules: a description-only family-member stem does not reserve a
+  generated symbol and therefore does not block a standalone emitted transfer.
+- Family selector keys and string values must contain at least one non-whitespace
+  character. Non-blank selector identities remain exact—leading or trailing
+  whitespace is preserved rather than silently canonicalized.
+- Prefitted generation now validates scaled dense truth as monotonic and
+  requires its direction to match the supplied knots before measuring error or
+  emitting accuracy metadata.
 - Generated rustdoc now escapes Markdown/HTML syntax in every user-derived
   documentation string (names, representation, units, and citations), so text
   such as `[missing]` cannot become a broken intra-doc link under `-D warnings`.
@@ -293,6 +325,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   docs.rs feature set. The previous default-features-only invocation never
   compiled `src/gen`, so a broken intra-doc link in the host generator could
   not fail the gate.
+- GitHub's runtime-purity job now enforces the same module-local `std` link as
+  the local release gate: crate-root `extern crate std` is rejected through
+  private/public, restricted-visibility, and aliased forms; bare and named
+  `#[macro_use(...)]` forms are rejected; and `src/gen/mod.rs` must retain its
+  explicit, unaliased host-only link.
+- The local release gate now fails when `cargo-deny` is unavailable and runs
+  its all-features dependency graph, rather than warning and silently skipping
+  a required dependency-policy check.
+- Release tagging instructions now fetch and fast-forward `main`, require a
+  clean worktree, prove `HEAD == origin/main`, reject an existing version tag,
+  and verify the annotated tag target before it can be pushed or published.
 - The host generator now rejects unknown top-level definition tables instead
   of succeeding with header-only output. A misspelled `[tranfsers…]` table
   previously parsed as empty `curves`/`transfers` maps and looked like a
