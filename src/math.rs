@@ -107,6 +107,9 @@ impl UnitValue for u8 {
         if a == b {
             return 255;
         }
+        // A quantized target can sit outside `[a, b]` (Ceil/Nearest step larger
+        // than the span). Invert the nearest endpoint rather than extrapolating.
+        let target = target.clamp(a.min(b), a.max(b));
         let delta = I32F32::from_num(b) - I32F32::from_num(a);
         let numer = I32F32::from_num(target) - I32F32::from_num(a);
         let frac = numer / delta;
@@ -170,11 +173,14 @@ impl UnitValue for u16 {
         if a == b {
             return 65535;
         }
-        let delta = I32F32::from_num(b) - I32F32::from_num(a);
-        let numer = I32F32::from_num(target) - I32F32::from_num(a);
-        let frac = numer / delta;
-        let w = (frac * I32F32::from_num(65535)).ceil();
-        w.to_num::<i64>().clamp(0, 65535) as u16
+        // Clamp first: a legal quantized target can sit outside `[a, b]`, and
+        // `I32F32` overflows on `((target - a) / (b - a)) * 65535` for a span
+        // of 1 and a target near `u16::MAX` (debug panic, release wrap).
+        let target = target.clamp(a.min(b), a.max(b));
+        let numer = u64::from(target.abs_diff(a));
+        let denom = u64::from(a.abs_diff(b));
+        let w = numer.saturating_mul(65535).div_ceil(denom);
+        w.min(65535) as u16
     }
 }
 
@@ -244,6 +250,10 @@ pub fn quantize(value: u16, step: u16, rounding: Rounding) -> u16 {
 ///
 /// If `increasing` is `true` the value advances upward; otherwise downward.
 /// The result is clamped so it never overshoots `end`.
+///
+/// This is the next *grid point*, not the raw input at which [`quantize`]
+/// actually changes. Tickless deadlines search the forward quantized path
+/// instead of inverting this value.
 pub fn next_target_value(current: u16, end: u16, step: u16, increasing: bool) -> u16 {
     if increasing {
         let next = current.saturating_add(step);
@@ -251,5 +261,53 @@ pub fn next_target_value(current: u16, end: u16, step: u16, increasing: bool) ->
     } else {
         let next = current.saturating_sub(step);
         next.max(end)
+    }
+}
+
+/// First raw `r` at which `quantize(r, step, rounding)` satisfies `pred`.
+///
+/// `quantize` is monotonically non-decreasing (including the `u16::MAX` cap),
+/// so a binary search over `0..=u16::MAX` is exact.
+#[cfg(test)]
+fn first_raw_where(step: u16, rounding: Rounding, pred: impl Fn(u16) -> bool) -> Option<u16> {
+    if pred(quantize(0, step, rounding)) {
+        return Some(0);
+    }
+    if !pred(quantize(u16::MAX, step, rounding)) {
+        return None;
+    }
+    let mut lo = 0u16;
+    let mut hi = u16::MAX;
+    while lo + 1 < hi {
+        let mid = lo + (hi - lo) / 2;
+        if pred(quantize(mid, step, rounding)) {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    Some(hi)
+}
+
+/// Raw input at which [`quantize`] next produces a different output than
+/// `current_val`.
+///
+/// Sweeping toward `u16::MAX` (`increasing`) this is the first raw whose
+/// quantized value is strictly greater than `current_val`, or `u16::MAX` if
+/// none exists. Sweeping toward `0` it is one below the first raw that
+/// quantizes to at least `current_val` (saturating at `0`).
+#[cfg(test)]
+pub(crate) fn next_raw_quantization_boundary(
+    current_val: u16,
+    step: u16,
+    rounding: Rounding,
+    increasing: bool,
+) -> u16 {
+    if increasing {
+        first_raw_where(step, rounding, |q| q > current_val).unwrap_or(u16::MAX)
+    } else {
+        first_raw_where(step, rounding, |q| q >= current_val)
+            .unwrap_or(0)
+            .saturating_sub(1)
     }
 }
