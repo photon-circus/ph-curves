@@ -1613,7 +1613,7 @@ requires = ["observation_guard_v1", "source_provenance_v1"]
 
 [transfers."[transfer_name]"]
 input_unit = "[input_unit] https://example.com/units `````"
-output_unit = "<output_unit> http://example.org/output `literal`"
+output_unit = "<kPa>"
 output_scale = 1
 max_interpolation_error = 1
 provenance = { identity = "[missing]", url = "https://example.com/datasheet.pdf", note = "`code` ````` <tag> & http://example.org/note" }
@@ -1629,13 +1629,12 @@ domain = [1, 10]
         assert!(out.contains(r#"formula y = x \* 0.5"#), "{out}");
         let provenance_url = rustdoc_debug("https://example.com/datasheet.pdf");
         let input_unit = rustdoc_debug("[input_unit] https://example.com/units `````");
-        let output_unit = rustdoc_debug("<output_unit> http://example.org/output `literal`");
+        let output_unit = rustdoc_debug("<kPa>");
         let note = rustdoc_debug("`code` ````` <tag> & http://example.org/note");
         assert_eq!(provenance_url, r#"`"https://example.com/datasheet.pdf"`"#);
         assert!(input_unit.starts_with("``````\""), "{input_unit}");
         assert!(input_unit.ends_with("\"``````"), "{input_unit}");
-        assert!(output_unit.starts_with("``\""), "{output_unit}");
-        assert!(output_unit.ends_with("\"``"), "{output_unit}");
+        assert_eq!(output_unit, r#""&lt;kPa&gt;""#);
         for rendered in [&provenance_url, &input_unit, &output_unit, &note] {
             assert!(out.contains(rendered), "missing {rendered:?} in:\n{out}");
         }
