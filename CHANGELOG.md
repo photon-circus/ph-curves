@@ -274,6 +274,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   source with a different observation domain.
 - Generated Rust files end with exactly one newline, so regenerated fixtures
   no longer introduce a blank line at end of file.
+- Tickless Ceil and Nearest deadlines are the first millisecond the forward
+  quantized output actually changes, rather than the millisecond an inverted
+  grid point would be reached. The search walks elapsed time so it agrees
+  with `from_time_frac` / `lerp_u16` truncation; a closed-form `inv_lerp` of
+  either the next grid point or the raw rounding boundary wakes early.
+- `u16::inv_lerp_u16` clamps the target into the endpoint span and uses
+  integer `ceil` arithmetic, so a quantized target outside `[a, b]` no
+  longer overflows `I32F32` (debug panic, or a wrapped zero-length sleep
+  in release).
+- `TicklessIter` in `Once` mode emits the terminal quantized value before
+  finishing. A cycle whose next deadline is the segment end while the
+  current value is still pre-end is not treated as complete.
+- Zero-duration `Repeat` / `PingPong` schedules terminate after the due-now
+  end value instead of spinning on a zero-length cycle.
 
 - Documentation CI now runs rustdoc with `--features gen-lib`, matching the
   docs.rs feature set. The previous default-features-only invocation never

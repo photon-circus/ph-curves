@@ -6,8 +6,8 @@ extern crate std;
 use alloc::vec::Vec;
 
 use crate::{
-    Curve, CurveLut, CurveLut256, MonotonicCurveLut256, RepeatMode, Rounding, Tickless,
-    TicklessDeadline, UnitValue,
+    Curve, CurveLut, CurveLut256, MonotonicCurve, MonotonicCurveLut256, RepeatMode, Rounding,
+    Tickless, TicklessDeadline, UnitValue,
 };
 
 // ---------------------------------------------------------------------------
@@ -28,6 +28,23 @@ static LINEAR_LUT: [u8; 256] = identity_lut();
 
 const fn linear_curve() -> MonotonicCurveLut256 {
     MonotonicCurveLut256::new(&LINEAR_LUT, &LINEAR_LUT)
+}
+
+/// Identity `u16` curve for tickless tests that need a 16-bit unit interval
+/// without a 65,536-entry LUT.
+#[derive(Copy, Clone, Debug)]
+struct IdentityU16;
+
+impl Curve<u16, u16> for IdentityU16 {
+    fn eval(&self, u: u16) -> u16 {
+        u
+    }
+}
+
+impl MonotonicCurve<u16, u16> for IdentityU16 {
+    fn inv(&self, w: u16) -> u16 {
+        w
+    }
 }
 
 const fn ease_in_lut() -> [u8; 256] {
@@ -170,6 +187,89 @@ fn tickless_iter_covers_segment() {
         assert!(window[1].deadline_ms >= window[0].deadline_ms);
     }
     assert!(deadlines.last().unwrap().deadline_ms >= 1000);
+}
+
+/// Deadlines must be the first millisecond the quantized output actually
+/// changes, not the millisecond the raw lerp reaches the next grid point.
+#[test]
+fn tickless_deadline_is_the_first_quantized_change() {
+    let curve = linear_curve();
+    let duration = 1000u32;
+    let roundings = [Rounding::Floor, Rounding::Ceil, Rounding::Nearest];
+
+    for rounding in roundings {
+        for (start, end) in [(0u16, 255u16), (255, 0)] {
+            let schedule = curve.tickless_schedule(0, duration, start, end, 10, rounding, 0);
+            let end_q = crate::quantize(end, 10, rounding);
+
+            for now in [0u32, 1, 3, 19, 20, 40, 100, 500, 996] {
+                let dl = schedule.next_deadline(now);
+                let current = dl.current_val;
+                if current == end_q {
+                    assert_eq!(
+                        dl.deadline_ms, duration,
+                        "{rounding:?} {start}→{end} now={now}: already at end, deadline should be end_ms"
+                    );
+                    continue;
+                }
+
+                let mut first_change = duration;
+                for t in (now + 1)..=duration {
+                    if schedule.next_deadline(t).current_val != current {
+                        first_change = t;
+                        break;
+                    }
+                }
+                assert_eq!(
+                    dl.deadline_ms, first_change,
+                    "{rounding:?} {start}→{end} now={now}: current={current}, \
+                     expected first change at {first_change}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn tickless_iter_emits_terminal_quantized_value() {
+    let curve = linear_curve();
+    let schedule = curve.tickless_schedule(0, 1000, 0, 255, 10, Rounding::Nearest, 0);
+    let values: Vec<u16> = schedule.iter(0).map(|d| d.current_val).collect();
+    assert_eq!(
+        *values.last().unwrap(),
+        crate::quantize(255, 10, Rounding::Nearest),
+        "Once iterator dropped the terminal quantized value: {values:?}"
+    );
+}
+
+#[test]
+fn tickless_zero_duration_repeat_terminates() {
+    let curve = linear_curve();
+    let n = curve
+        .tickless_schedule(0, 0, 0, 255, 10, Rounding::Nearest, 0)
+        .with_repeat(RepeatMode::Repeat)
+        .iter(0)
+        .take(8)
+        .count();
+    assert_eq!(n, 1, "zero-duration Repeat must not spin");
+
+    let n = curve
+        .tickless_schedule(0, 0, 0, 255, 10, Rounding::Nearest, 0)
+        .with_repeat(RepeatMode::PingPong)
+        .iter(0)
+        .take(8)
+        .count();
+    assert_eq!(n, 1, "zero-duration PingPong must not spin");
+}
+
+#[test]
+fn tickless_u16_narrow_span_large_step_does_not_panic() {
+    let schedule = IdentityU16.tickless_schedule(0, 100, 0, 1, 65535, Rounding::Ceil, 0);
+    let dl = schedule.next_deadline(0);
+    assert_eq!(dl.current_val, 0);
+    assert!(dl.deadline_ms <= 100);
+    let deadlines: Vec<TicklessDeadline> = schedule.iter(0).collect();
+    assert!(!deadlines.is_empty());
 }
 
 #[test]
@@ -680,6 +780,17 @@ fn u16_inv_lerp_u16_equal_endpoints() {
     assert_eq!(u16::inv_lerp_u16(500, 500, 500), 65535);
 }
 
+/// A quantized target outside `[a, b]` used to overflow `I32F32` on the
+/// `((target - a) / (b - a)) * 65535` path (debug panic, release wrap).
+#[test]
+fn u16_inv_lerp_u16_out_of_span_does_not_overflow() {
+    assert_eq!(u16::inv_lerp_u16(0, 1, 65535), 65535);
+    assert_eq!(u16::inv_lerp_u16(0, 1, 0), 0);
+    assert_eq!(u16::inv_lerp_u16(1, 0, 65535), 0);
+    assert_eq!(u16::inv_lerp_u16(100, 200, 50), 0);
+    assert_eq!(u16::inv_lerp_u16(100, 200, 250), 65535);
+}
+
 // ---------------------------------------------------------------------------
 // Free-function lerp_u8
 // ---------------------------------------------------------------------------
@@ -891,6 +1002,48 @@ fn next_target_increasing_saturates() {
 fn next_target_decreasing_saturates() {
     // Should not underflow below 0.
     assert_eq!(crate::next_target_value(5, 0, 10, false), 0);
+}
+
+#[test]
+fn next_raw_quantization_boundary_matches_quantize() {
+    let steps = [1u16, 10, 2000, 65535];
+    let roundings = [Rounding::Floor, Rounding::Ceil, Rounding::Nearest];
+
+    for step in steps {
+        for rounding in roundings {
+            let mut r = 0u32;
+            while r <= u32::from(u16::MAX) {
+                let current = crate::quantize(r as u16, step, rounding);
+                let start = r;
+                r += 1;
+                while r <= u32::from(u16::MAX)
+                    && crate::quantize(r as u16, step, rounding) == current
+                {
+                    r += 1;
+                }
+
+                let expected_inc = if r > u32::from(u16::MAX) {
+                    u16::MAX
+                } else {
+                    r as u16
+                };
+                let expected_dec = (start as u16).saturating_sub(1);
+
+                let inc =
+                    crate::math::next_raw_quantization_boundary(current, step, rounding, true);
+                let dec =
+                    crate::math::next_raw_quantization_boundary(current, step, rounding, false);
+                assert_eq!(
+                    inc, expected_inc,
+                    "increasing step={step} rounding={rounding:?} current={current}"
+                );
+                assert_eq!(
+                    dec, expected_dec,
+                    "decreasing step={step} rounding={rounding:?} current={current}"
+                );
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1269,9 +1422,12 @@ fn tickless_long_duration_iter_walks_the_whole_ramp() {
     // A short segment establishes the grid the ramp should walk; segment length
     // must not change which values are emitted, only when.
     let baseline = values(100_000);
-    assert_eq!(baseline.len(), 26, "baseline grid changed: {baseline:?}");
+    assert_eq!(baseline.len(), 27, "baseline grid changed: {baseline:?}");
     assert_eq!(baseline[0], 0);
-    assert_eq!(*baseline.last().unwrap(), 250);
+    assert_eq!(
+        *baseline.last().unwrap(),
+        crate::quantize(255, 10, Rounding::Nearest)
+    );
 
     for duration in [2_000_000_000u32, 3_000_000_000, u32::MAX - 1, u32::MAX] {
         assert_eq!(
@@ -1335,7 +1491,7 @@ fn tickless_min_dt_before_segment_start() {
     );
 
     // 10 ms before the segment: 40 ms of the window is left, and the first
-    // transition lands 8 ms in, so `min_dt` governs.
+    // Nearest change is 4 ms in, so `min_dt` still governs.
     let dl_near = schedule.next_deadline(t0 - 10);
     assert_eq!(
         dl_near.deadline_ms,
