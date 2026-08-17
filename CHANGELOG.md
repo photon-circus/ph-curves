@@ -5,13 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0] - 2026-08-17
 
 ### Added
 
 - `TemporalSample` for `u32`, so moving average, median, exponential smoother,
-  stability detection, and hysteresis accept already-converted unsigned
-  measurements without a downcast. On targets with pointer width at least 32,
+  and stability detection accept already-converted unsigned measurements
+  without a downcast; `Hysteresis<u32>::new` adds unsigned decision thresholds.
+  On targets with pointer width at least 32,
   the moving-average window cap is
   `floor(i64::MAX / u32::MAX) = 2_147_483_648`; admitting a larger window would
   overflow the `i64` running sum. On 16-bit-pointer targets every addressable
@@ -203,7 +204,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   selector map. Host `TransferReport` / `FamilyMemberReport` also list
   `_METADATA` and `_OBSERVATION_GUARD` companion symbol names. Standalone
   transfer rustdoc is unchanged.
-- **Unreleased host schema:** transfer-family member fields are source-aware.
+- **0.3.0 host schema:** transfer-family member fields are source-aware.
   Accepted-but-inert `scale` / `applicability.model_input` on formula, points,
   and NTC members are rejected. `interpolate_selectors` is removed (discreteness
   is an invariant). Member statuses are `emit`, `unnecessary`, `unsupported`,
@@ -211,12 +212,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `unsupported` represents a selector combination without a source mapping,
   while the other three statuses require the source-specific mapping. Families
   declare a selector universe (`selector_axes` or
-  `expected_selectors`) and proves completeness with members and
+  `expected_selectors`) and prove completeness with members and
   family-scoped gaps. Families may share a document with unrelated
   `[curves]`; dense LUT fallback remains curve-only. This is the publish
-  shape of `[transfer_families]`, which has not shipped in 0.2.1. Legacy
-  standalone transfers that do not use the new provenance or guard fields
-  remain unchanged. A whole-document `schema_version` field remains a
+  shape of `[transfer_families]`, first shipped in 0.3.0 and absent from 0.2.1.
+  Legacy standalone transfers that do not use the new provenance or guard
+  fields remain unchanged. A whole-document `schema_version` field remains a
   separate decision.
 
 - **Breaking (pre-1.0):** `TransferError` gained `RejectedObservation { input }`
@@ -229,7 +230,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for unguarded transfers. A document containing both `foo` and
   `foo_observation_guard` must rename one transfer. The uniform `Option`
   companion keeps symbol presence stable when guard policy changes; this and
-  the runtime API break require the next pre-1.0 minor release.
+  the runtime API break are part of the 0.3.0 pre-1.0 minor release.
 - `scripts/local-ci.ps1` sets `CARGO_INCREMENTAL=0`. Incremental compilation
   made the gate flaky on Windows: rustc could fail to finalize
   `target/debug/incremental` ("Access is denied", os error 5) and `cargo test`
@@ -251,8 +252,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Affine calibration examples now scale numerator offsets correctly: with
-  `scale = 1_000`, a -120 output-unit offset is `offset = -120_000`, not
-  `-120`.
+  `scale = 1_000`, a correction of -120 in the integer output scale is
+  `offset = -120_000`, not `-120`.
 - The default-feature runtime now builds against a core-only MSP430 sysroot.
   On 16-bit-pointer targets, the `u32` moving-average window cap no longer
   truncates to zero, and the two impossible 65,536-entry convenience aliases
@@ -541,7 +542,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 14 built-in easing curves plus legacy aliases.
 - 16-bit LUT support (`--value-type u16 --lut-size 65536`).
 
-[Unreleased]: https://github.com/photon-circus/ph-curves/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/photon-circus/ph-curves/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/photon-circus/ph-curves/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/photon-circus/ph-curves/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/photon-circus/ph-curves/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/photon-circus/ph-curves/compare/v0.1.1...v0.1.2

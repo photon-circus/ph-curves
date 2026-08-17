@@ -530,7 +530,7 @@ this by building the default feature set against a `core`-only sysroot
 
 ```toml
 [build-dependencies]
-ph-curves = { version = "0.2", features = ["gen-lib"] }
+ph-curves = { version = "0.3", features = ["gen-lib"] }
 ```
 
 ```rust
