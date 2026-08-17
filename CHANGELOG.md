@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.3.0] - 2026-08-17
 
+ph-curves 0.3.0 expands the crate from lookup and scheduling primitives into a
+coherent, device-neutral measurement pipeline for firmware. Teams can describe
+source-backed sensor families once, prove selector coverage, gaps, provenance,
+and resource bounds on the host, generate deterministic lookup tables, and then
+carry converted measurements through calibration, filtering, stability
+classification, and hysteretic decisions without `std` or allocation.
+
+The release is designed to make what ships predictable: schema and generator
+version mismatches fail closed; manifests and structured reports expose the
+symbols, policies, provenance, accuracy, and table bytes destined for firmware;
+and shared checked arithmetic keeps host generation and runtime conversion in
+agreement. The expanded embedded matrix, including core-only 16-bit-pointer
+coverage, makes those guarantees portable rather than platform assumptions.
+
 ### Added
 
 - `TemporalSample` for `u32`, so moving average, median, exponential smoother,
