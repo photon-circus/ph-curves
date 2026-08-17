@@ -36,21 +36,32 @@ and the full validation gate on the release branch. The pull request must expose
 the complete aggregate release diff, identify the issue it closes, and state
 which tag/publish steps remain owner-only after merge. Review the aggregate
 diff, require the pull request's `ci` check to pass on the merge result, and
-resolve every review conversation before merging it. The current head commit
-must also have an explicit approving review from a human reviewer. Automated
-review, an AI/agent audit, green CI, and resolved bot conversations are useful
-evidence but never count as that human approval; until it is recorded, the
-release gate is unsatisfied.
+resolve every review conversation before merging it.
+
+When the repository has another trusted collaborator with write or admin
+access, the current head commit must also have an approving review from someone
+other than the pull request author. At that transition, update the `main` and
+`release/**` protection rules to require one approval, dismiss stale approvals,
+and require approval of the latest push by someone other than its author. While
+the repository has only one trusted collaborator, branch protection instead
+requires zero approvals because GitHub does not permit an author to approve
+their own pull request. In that phase, the sole maintainer must record an
+explicit review attestation on the current head: the aggregate diff was
+reviewed, automated findings were dispositioned, and the release checklist is
+complete. Automated review and green CI remain evidence, but are not represented
+as independent human approval.
 
 Only after the release pull request merges and `main` CI is green may the owner
 create the annotated tag, publish to crates.io, and create the GitHub release.
 
 ## Pre-release checklist
 
-- [ ] The dedicated non-draft `release/x.y.z` -> `main` pull request has been
-      explicitly approved by a human reviewer on its current head commit, its
-      required `ci` check is green, and every review conversation is resolved.
-      Bot/AI review does not satisfy this item.
+- [ ] The dedicated non-draft `release/x.y.z` -> `main` pull request has a green
+      required `ci` check and every review conversation is resolved. If another
+      trusted collaborator is available, that person approved the current head.
+      Otherwise, the sole maintainer recorded the current head SHA and an
+      explicit review attestation covering the aggregate diff, automated
+      findings, and this checklist.
 - [ ] That pull request is merged; `main` contains the release commit, and CI is
       green on it.
 - [ ] `Cargo.toml` `version` is the version being released.
