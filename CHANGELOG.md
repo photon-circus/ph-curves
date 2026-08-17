@@ -7,11 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- TOML-derived angle brackets in generated rustdoc now render literally through
-  HTML entities instead of relying on Markdown backslash escaping.
-
 ## [0.3.0] - 2026-08-17
 
 ph-curves 0.3.0 expands the crate from lookup and scheduling primitives into a
@@ -308,6 +303,8 @@ coverage, makes those guarantees portable rather than platform assumptions.
 
 ### Fixed
 
+- TOML-derived angle brackets in generated rustdoc now render literally through
+  HTML entities instead of relying on Markdown backslash escaping.
 - Affine calibration examples now scale numerator offsets correctly: with
   `scale = 1_000`, a correction of -120 in the integer output scale is
   `offset = -120_000`, not `-120`. The scalar and wrapper examples are now
