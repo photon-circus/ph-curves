@@ -13,7 +13,9 @@ pub(crate) fn markdown_debug(value: &str) -> String {
     for character in debug.chars() {
         match character {
             '&' => escaped.push_str("&amp;"),
-            '`' | '*' | '_' | '{' | '}' | '[' | ']' | '<' | '>' => {
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '`' | '*' | '_' | '{' | '}' | '[' | ']' => {
                 escaped.push('\\');
                 escaped.push(character);
             }
@@ -46,5 +48,19 @@ pub(crate) fn rustdoc_debug(value: &str) -> String {
         format!("{fence}{debug}{fence}")
     } else {
         markdown_debug(value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{markdown_debug, rustdoc_debug};
+
+    #[test]
+    fn angle_brackets_use_html_entities() {
+        assert_eq!(
+            markdown_debug("<kPa> & <tag>"),
+            r#""&lt;kPa&gt; &amp; &lt;tag&gt;""#
+        );
+        assert_eq!(rustdoc_debug("<kPa>"), r#""&lt;kPa&gt;""#);
     }
 }

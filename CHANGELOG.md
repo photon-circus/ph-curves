@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- TOML-derived angle brackets in generated rustdoc now render literally through
+  HTML entities instead of relying on Markdown backslash escaping.
+
 ## [0.3.0] - 2026-08-17
 
 ph-curves 0.3.0 expands the crate from lookup and scheduling primitives into a
