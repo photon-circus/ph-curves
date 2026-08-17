@@ -193,11 +193,11 @@ published artifact.
       default features only.
 - [ ] Confirm the README badges resolve on crates.io — version, docs.rs, CI,
       license, MSRV, `no_std`.
-- [ ] Confirm the empty `## [Unreleased]` heading remains first in
-      `CHANGELOG.md`; future changes go there rather than into the frozen
-      release section.
-- [ ] Confirm the crates.io publication activated `SECURITY.md`'s support
-      transition: the new minor is supported and the preceding minor is not.
+- [ ] Open a focused post-release pull request that confirms the empty
+      `## [Unreleased]` heading remains first in `CHANGELOG.md` and updates
+      `SECURITY.md` from its pre-publication transition wording to the actual
+      published support state. Future changes go under `Unreleased`, never
+      into the frozen release section.
 - [ ] Refresh the GitHub repository description and topics if the release
       changed what the crate does. Unlike the manifest description, these are
       mutable at any time — but they drift for the same reason, so check them

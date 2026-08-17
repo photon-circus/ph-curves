@@ -2,17 +2,16 @@
 
 ## Supported versions
 
-Only the newest published minor line receives security fixes.
+Only the newest published minor line receives security fixes. The table records
+the current publication state; preparing a release branch, changelog section,
+tag, or pull request does not change support until the release is published to
+crates.io.
 
-Support changes when a release is actually published to crates.io, not when a
-release branch, changelog section, tag candidate, or pull request exists. This
-makes the transition precise before and after a release:
-
-| Version | Support rule |
-|---------|--------------|
-| 0.3.x   | Supported once 0.3.0 is published; pre-release branches are not supported releases. |
-| 0.2.x   | Supported until 0.3.0 is published; unsupported afterward. |
-| 0.1.x   | Unsupported. |
+| Version | Supported |
+|---------|-----------|
+| 0.3.x   | Yes       |
+| 0.2.x   | No        |
+| 0.1.x   | No        |
 
 ## Reporting a vulnerability
 
