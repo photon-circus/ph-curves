@@ -190,9 +190,10 @@ mod transfer;
 
 pub use affine::{AffineOverflow, AffineTransform, AffineTransformError};
 pub use curve::{
-    Curve, CurveLut, CurveLut256, CurveLut65536, MonotonicCurve, MonotonicCurveLut,
-    MonotonicCurveLut256, MonotonicCurveLut65536,
+    Curve, CurveLut, CurveLut256, MonotonicCurve, MonotonicCurveLut, MonotonicCurveLut256,
 };
+#[cfg(not(target_pointer_width = "16"))]
+pub use curve::{CurveLut65536, MonotonicCurveLut65536};
 pub use math::{
     Rounding, UnitValue, lerp_u8, lerp_u16, map_u8_to_u16, next_target_value, quantize,
 };

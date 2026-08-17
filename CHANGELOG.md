@@ -11,11 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `TemporalSample` for `u32`, so moving average, median, exponential smoother,
   stability detection, and hysteresis accept already-converted unsigned
-  measurements without a downcast. The moving-average window cap is
-  `floor(i64::MAX / u32::MAX) = 2_147_483_648`. Unlike `u16` and `i32`, that
-  bound is smaller than 32-bit `usize::MAX`, so the existing 32-bit shortcut
-  is not used — it would admit windows whose running sum overflows `i64`. The
-  cap is accumulator safety, not a practical size: storage is still `[T; N]`.
+  measurements without a downcast. On targets with pointer width at least 32,
+  the moving-average window cap is
+  `floor(i64::MAX / u32::MAX) = 2_147_483_648`; admitting a larger window would
+  overflow the `i64` running sum. On 16-bit-pointer targets every addressable
+  window fits, so the cap is `usize::MAX`. This is accumulator safety, not a
+  practical size: storage is still `[T; N]`.
 - `AffineTransform`, a standalone invertible `i32` affine map
   `y' = (y * gain + offset) / scale`. It reuses the crate's nearest/ties-away
   rounding and checked `i64` arithmetic, rejects `scale == 0` and `gain == 0`
@@ -243,6 +244,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The default-feature runtime now builds against a core-only MSP430 sysroot.
+  On 16-bit-pointer targets, the `u32` moving-average window cap no longer
+  truncates to zero, and the two impossible 65,536-entry convenience aliases
+  are omitted while smaller generic LUTs and the remaining runtime APIs stay
+  available.
 - `ValidatedDefinitions::insert_transfer` now rebuilds the validated graph
   transactionally, matching `insert_family`. Normalized Rust-identifier and
   companion-symbol collisions are rejected by the insertion call without

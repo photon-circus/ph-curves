@@ -21,10 +21,11 @@ mod sealed {
 /// [`MovingAverage`] keeps an `i64` running sum, so each type declares the
 /// largest `N` for which `N` copies of its widest sample still fit. For `u16`
 /// and `i32` that bound is at least `usize::MAX` on 32-bit targets, so those
-/// implementations cap at `usize::MAX` there. For `u32` the bound is
+/// implementations cap at `usize::MAX` there. Every addressable window also
+/// fits for `u32` on 16-bit-pointer targets. On wider targets its bound is
 /// `floor(i64::MAX / u32::MAX) = 2_147_483_648`, which is *smaller* than
-/// 32-bit `usize::MAX`; reusing that shortcut would admit windows whose sum
-/// overflows `i64`.
+/// 32-bit `usize::MAX`; reusing that shortcut there would admit windows whose
+/// sum overflows `i64`.
 ///
 /// The bound is an accumulator-safety ceiling, not a recommended window.
 /// Storage is `[T; N]` plus the `i64` sum — `2_147_483_648` `u32` samples
@@ -89,9 +90,14 @@ impl sealed::Sealed for u32 {}
 
 impl TemporalSample for u32 {
     const ZERO: Self = 0;
-    // Unlike `u16` / `i32`, this is smaller than 32-bit `usize::MAX`, so the
-    // `usize::BITS <= 32` shortcut used by those impls would overflow `i64`.
-    const MAX_WINDOW: usize = (i64::MAX / u32::MAX as i64) as usize;
+    // Every window representable by a 16-bit `usize` fits the accumulator. On
+    // 32/64-bit targets the mathematical cap is representable and smaller
+    // than 32-bit `usize::MAX`, so using `usize::MAX` would permit overflow.
+    const MAX_WINDOW: usize = if usize::BITS < 32 {
+        usize::MAX
+    } else {
+        (i64::MAX / u32::MAX as i64) as usize
+    };
 
     fn to_i64(self) -> i64 {
         i64::from(self)
@@ -102,6 +108,11 @@ impl TemporalSample for u32 {
         value as u32
     }
 }
+
+// This is deliberately a compile-time target guard: host unit tests cannot
+// execute the 16-bit branch, while the MSP430 core-only CI build can.
+#[cfg(target_pointer_width = "16")]
+const _: () = assert!(<u32 as TemporalSample>::MAX_WINDOW == usize::MAX);
 
 /// Output from a temporal filter.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]

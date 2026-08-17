@@ -88,7 +88,8 @@ foreach ($target in $targets) {
 $coreOnlyTargets = @(
     "thumbv7em-none-eabi",
     "thumbv6m-none-eabi",
-    "riscv32imc-unknown-none-elf"
+    "riscv32imc-unknown-none-elf",
+    "msp430-none-elf"
 )
 
 foreach ($target in $coreOnlyTargets) {

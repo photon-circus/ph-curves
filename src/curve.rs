@@ -61,6 +61,10 @@ pub struct CurveLut<I: UnitValue, V: UnitValue, const N: usize, const M: usize =
 pub type CurveLut256 = CurveLut<u8, u8, 256>;
 
 /// A 65536-entry curve lookup table (u16 domain and range).
+///
+/// This alias is unavailable on 16-bit-pointer targets, where the array length
+/// cannot be represented by `usize`.
+#[cfg(not(target_pointer_width = "16"))]
 pub type CurveLut65536 = CurveLut<u16, u16, 65536>;
 
 impl<I: UnitValue, V: UnitValue, const N: usize, const M: usize> CurveLut<I, V, N, M> {
@@ -128,6 +132,10 @@ pub struct MonotonicCurveLut<I: UnitValue, V: UnitValue, const N: usize, const M
 pub type MonotonicCurveLut256 = MonotonicCurveLut<u8, u8, 256>;
 
 /// A 65536-entry monotonic curve lookup table (u16 domain and range).
+///
+/// This alias is unavailable on 16-bit-pointer targets, where the array length
+/// cannot be represented by `usize`.
+#[cfg(not(target_pointer_width = "16"))]
 pub type MonotonicCurveLut65536 = MonotonicCurveLut<u16, u16, 65536>;
 
 impl<I: UnitValue, V: UnitValue, const N: usize, const M: usize> MonotonicCurveLut<I, V, N, M> {
