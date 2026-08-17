@@ -40,13 +40,16 @@ resolve every review conversation before merging it.
 
 When the repository has another trusted collaborator with write or admin
 access, the current head commit must also have an approving review from someone
-other than the pull request author. While the repository has only one trusted
-collaborator, branch protection instead requires zero approvals because GitHub
-does not permit an author to approve their own pull request. In that phase, the
-sole maintainer must record an explicit review attestation on the current head:
-the aggregate diff was reviewed, automated findings were dispositioned, and the
-release checklist is complete. Automated review and green CI remain evidence,
-but are not represented as independent human approval.
+other than the pull request author. At that transition, update the `main` and
+`release/**` protection rules to require one approval, dismiss stale approvals,
+and require approval of the latest push by someone other than its author. While
+the repository has only one trusted collaborator, branch protection instead
+requires zero approvals because GitHub does not permit an author to approve
+their own pull request. In that phase, the sole maintainer must record an
+explicit review attestation on the current head: the aggregate diff was
+reviewed, automated findings were dispositioned, and the release checklist is
+complete. Automated review and green CI remain evidence, but are not represented
+as independent human approval.
 
 Only after the release pull request merges and `main` CI is green may the owner
 create the annotated tag, publish to crates.io, and create the GitHub release.
