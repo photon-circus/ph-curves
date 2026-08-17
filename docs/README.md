@@ -11,6 +11,7 @@ you need the detailed contract or the reasoning behind it.
 | --- | --- |
 | Install the crate or run a first example | [README quick starts](../README.md#quick-starts) |
 | Understand a runtime type, error, panic, or invariant | [Public API documentation](https://docs.rs/ph-curves) |
+| Go beyond a quick start with practical workflow guidance | [User-guide index](guides/README.md) |
 | Migrate between releases or assess a deliberate break | [Compatibility policy and release history](compatibility.md) |
 | Understand the host generator and build-script API | [Generator build API](design/gen-build-api.md) |
 | Inspect or extend validated transfer definitions | [Host transfer IR](design/host-transfer-ir.md) |

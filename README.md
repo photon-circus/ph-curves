@@ -104,6 +104,10 @@ Monotonic curves also emit inverse data. See the checked-in
 [curve definitions](https://github.com/photon-circus/ph-curves/blob/main/assets/curves.toml)
 for complete examples.
 
+The [curve-generation guide](https://github.com/photon-circus/ph-curves/blob/main/docs/guides/curve-generation.md)
+lists every built-in curve, the formula language, naming rules, and LUT target
+constraints.
+
 ### Quick start: convert an ADC observation
 
 Generate the reference NTC transfer:
@@ -130,6 +134,9 @@ scaled `i32` result. Formula, physical-point, and supported model fitting are
 host-only; generated firmware uses binary search and checked `i64`
 interpolation. Start from
 [the transfer examples](https://github.com/photon-circus/ph-curves/blob/main/assets/custom-transfers.toml).
+
+The [physical-transfer guide](https://github.com/photon-circus/ph-curves/blob/main/docs/guides/physical-transfer-generation.md)
+covers source selection, fitting, guards, accuracy scope, and non-goals.
 
 ### Quick start: calibrate a measurement
 
@@ -183,6 +190,10 @@ Warm-up, missing samples, invalid samples, reset behavior, cadence, and whether
 to hold or clear a decision during instability are caller policy. The filters
 own fixed, const-generic state only.
 
+The [measurement-pipeline guide](https://github.com/photon-circus/ph-curves/blob/main/docs/guides/measurement-pipelines.md)
+compares the primitives, their fixed state and update cost, warm-up behavior,
+and caller-owned reset policy.
+
 ### Quick start: schedule without polling
 
 Any monotonic curve can produce deadlines for its quantized output changes:
@@ -210,6 +221,10 @@ for deadline in schedule.iter(0) {
 
 Timestamps are wrapping `u32` milliseconds. Compare deadlines with wrapping
 remaining time rather than absolute numeric ordering across clock rollover.
+
+The [tickless-scheduling guide](https://github.com/photon-circus/ph-curves/blob/main/docs/guides/tickless-scheduling.md)
+explains rollover-safe comparisons, duration bounds, quantization, and repeat
+modes.
 
 ### Quick start: generate from build.rs
 
