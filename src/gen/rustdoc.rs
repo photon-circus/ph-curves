@@ -22,3 +22,29 @@ pub(crate) fn markdown_debug(value: &str) -> String {
     }
     escaped
 }
+
+/// Debug-format user text for generated rustdoc without creating Markdown.
+///
+/// Ordinary punctuation uses backslash/HTML escaping to keep the historical
+/// output stable. URLs and literal backticks use an inline-code fence longer
+/// than every backtick run in the debug string; this also satisfies
+/// `rustdoc::bare_urls` when warnings are denied.
+pub(crate) fn rustdoc_debug(value: &str) -> String {
+    if value.contains("://") || value.contains('`') {
+        let debug = format!("{value:?}");
+        let mut longest_run = 0;
+        let mut current_run = 0;
+        for character in debug.chars() {
+            if character == '`' {
+                current_run += 1;
+                longest_run = longest_run.max(current_run);
+            } else {
+                current_run = 0;
+            }
+        }
+        let fence = "`".repeat(longest_run + 1);
+        format!("{fence}{debug}{fence}")
+    } else {
+        markdown_debug(value)
+    }
+}

@@ -10,7 +10,7 @@ extern crate std;
 use std::prelude::v1::*;
 use std::{format, vec};
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Deserialize;
 use serde::de::{self, Deserializer};
@@ -33,10 +33,10 @@ use super::{builtin, formula, points, transfer};
 ///
 /// Unknown top-level keys are rejected so a misspelled table cannot succeed
 /// as empty output. Unknown fields directly on standalone transfer definitions
-/// and nested fields on families, their point and NTC sources, members,
-/// applicability, and gaps are also rejected. Nested unknown fields on
-/// standalone curves, point values, and legacy NTC model parameters are still
-/// ignored for compatibility; reserved
+/// and nested fields on curves, families, their point and NTC sources,
+/// members, applicability, and gaps are also rejected. Nested unknown fields
+/// on point values and legacy NTC model parameters are still ignored for
+/// compatibility; reserved
 /// observation-guard and provenance spellings cannot be nested inside source
 /// values.
 #[derive(Debug, Default, Clone)]
@@ -241,6 +241,91 @@ fn reject_unknown_family_source_fields(
     Ok(())
 }
 
+fn reject_datetime_selector_values(family_name: &str, value: &toml::Value) -> Result<(), String> {
+    let toml::Value::Table(fields) = value else {
+        return Ok(());
+    };
+
+    if let Some(toml::Value::Table(axes)) = fields.get("selector_axes") {
+        for (axis, values) in axes {
+            let toml::Value::Array(values) = values else {
+                continue;
+            };
+            for (index, value) in values.iter().enumerate() {
+                if matches!(value, toml::Value::Datetime(_)) {
+                    return Err(format!(
+                        "transfer family `{family_name}`: selector at \
+                         `selector_axes.{axis}[{index}]` must be a string or integer; \
+                         TOML date/time values are not selector strings"
+                    ));
+                }
+            }
+        }
+    }
+
+    if let Some(toml::Value::Array(identities)) = fields.get("expected_selectors") {
+        reject_datetime_selector_maps(family_name, "expected_selectors", identities)?;
+    }
+    if let Some(toml::Value::Array(members)) = fields.get("members") {
+        reject_datetime_nested_selectors(family_name, "members", members)?;
+    }
+    if let Some(toml::Value::Array(gaps)) = fields.get("gaps") {
+        reject_datetime_nested_selectors(family_name, "gaps", gaps)?;
+    }
+    Ok(())
+}
+
+fn reject_datetime_selector_maps(
+    family_name: &str,
+    collection: &str,
+    entries: &[toml::Value],
+) -> Result<(), String> {
+    for (index, entry) in entries.iter().enumerate() {
+        let toml::Value::Table(selectors) = entry else {
+            continue;
+        };
+        reject_datetime_selector_map(family_name, &format!("{collection}[{index}]"), selectors)?;
+    }
+    Ok(())
+}
+
+fn reject_datetime_nested_selectors(
+    family_name: &str,
+    collection: &str,
+    entries: &[toml::Value],
+) -> Result<(), String> {
+    for (index, entry) in entries.iter().enumerate() {
+        let toml::Value::Table(fields) = entry else {
+            continue;
+        };
+        let Some(toml::Value::Table(selectors)) = fields.get("selectors") else {
+            continue;
+        };
+        reject_datetime_selector_map(
+            family_name,
+            &format!("{collection}[{index}].selectors"),
+            selectors,
+        )?;
+    }
+    Ok(())
+}
+
+fn reject_datetime_selector_map(
+    family_name: &str,
+    path: &str,
+    selectors: &toml::map::Map<String, toml::Value>,
+) -> Result<(), String> {
+    for (key, value) in selectors {
+        if matches!(value, toml::Value::Datetime(_)) {
+            return Err(format!(
+                "transfer family `{family_name}`: selector at `{path}.{key}` must be a string or \
+                 integer; TOML date/time values are not selector strings"
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn deserialize_transfer_families<'de, D>(
     deserializer: D,
 ) -> Result<BTreeMap<String, transfer::TransferFamilyDef>, D::Error>
@@ -250,6 +335,7 @@ where
     let raw = BTreeMap::<String, toml::Value>::deserialize(deserializer)?;
     let mut families = BTreeMap::new();
     for (name, value) in raw {
+        reject_datetime_selector_values(&name, &value).map_err(de::Error::custom)?;
         reject_misplaced_reserved_transfer_fields(
             &format!("transfer family `{name}`"),
             &format!("[transfer_families.{name}]"),
@@ -281,9 +367,17 @@ where
     let capabilities = match raw.remove("requires") {
         Some(toml::Value::Array(values)) => {
             let mut capabilities = Vec::with_capacity(values.len());
+            let mut seen = BTreeSet::new();
             for value in values {
                 match value {
-                    toml::Value::String(capability) => capabilities.push(capability),
+                    toml::Value::String(capability) => {
+                        if !seen.insert(capability.clone()) {
+                            return Err(de::Error::custom(format!(
+                                "[transfers] requires repeats capability `{capability}`"
+                            )));
+                        }
+                        capabilities.push(capability);
+                    }
                     other => {
                         return Err(de::Error::custom(format!(
                             "[transfers] requires entries must be strings, got {other}"
@@ -479,6 +573,7 @@ impl DefinitionsFile {
 
 /// One normalized curve definition from the TOML `[curves]` map.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CurveDef {
     /// Name of a built-in curve (e.g. "linear", "ease_in_quad").
     pub builtin: Option<String>,
@@ -508,6 +603,11 @@ pub struct CurveData {
 /// [`CurveDef`].
 ///
 pub fn build(name: &str, def: &CurveDef, lut_size: usize) -> Result<CurveData, String> {
+    if lut_size < 2 {
+        return Err(format!(
+            "curve `{name}`: LUT size must contain at least two entries"
+        ));
+    }
     let set_count =
         def.builtin.is_some() as u8 + def.formula.is_some() as u8 + def.points.is_some() as u8;
     if set_count != 1 {
@@ -701,6 +801,16 @@ mod tests {
         assert!(build("double", &def, 256).is_err());
     }
 
+    #[test]
+    fn build_rejects_lut_sizes_that_cannot_form_a_domain() {
+        for lut_size in [0, 1] {
+            let error = build("too_short", &linear_def(), lut_size)
+                .err()
+                .expect("undersized LUT must fail");
+            assert!(error.contains("at least two entries"), "{error}");
+        }
+    }
+
     // ── validate ───────────────────────────────────────────────────
 
     #[test]
@@ -784,6 +894,16 @@ monotonic = false
     }
 
     #[test]
+    fn standalone_curve_unknown_fields_fail_closed() {
+        let error = DefinitionsFile::from_toml_str(
+            "[curves.wave]\nbuiltin = \"linear\"\nmonotinic = false\n",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("unknown field `monotinic`"), "{error}");
+    }
+
+    #[test]
     fn from_toml_str_rejects_unknown_top_level_table() {
         let error = DefinitionsFile::from_toml_str("[invented]\n")
             .unwrap_err()
@@ -838,6 +958,53 @@ monotonic = false
     fn transfer_families_accept_supported_capability_marker() {
         let defs = DefinitionsFile::from_toml_str(&transfer_family_toml(true)).unwrap();
         assert!(defs.transfer_families().contains_key("als"));
+    }
+
+    #[test]
+    fn duplicate_capability_markers_fail_closed() {
+        let toml = transfer_family_toml(true).replace(
+            "requires = [\"transfer_families_v1\"]",
+            "requires = [\"transfer_families_v1\", \"transfer_families_v1\"]",
+        );
+        let error = DefinitionsFile::from_toml_str(&toml)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("repeats capability `transfer_families_v1`"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn toml_datetime_selector_axis_values_are_not_coerced_to_strings() {
+        let toml = transfer_family_toml(true).replace(
+            "selector_axes = { gain = [\"x1\"] }",
+            "selector_axes = { gain = [1979-05-27] }",
+        );
+        let error = DefinitionsFile::from_toml_str(&toml)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("selector_axes.gain[0]")
+                && error.contains("TOML date/time values are not selector strings"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn toml_datetime_member_selectors_are_not_coerced_to_strings() {
+        let toml = transfer_family_toml(true).replace(
+            "selectors = { gain = \"x1\" }",
+            "selectors = { gain = 1979-05-27 }",
+        );
+        let error = DefinitionsFile::from_toml_str(&toml)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("members[0].selectors.gain")
+                && error.contains("TOML date/time values are not selector strings"),
+            "{error}"
+        );
     }
 
     #[test]

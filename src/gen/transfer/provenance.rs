@@ -9,7 +9,7 @@ use std::{format, vec};
 
 use serde::Deserialize;
 
-use super::super::rustdoc::markdown_debug;
+use super::super::rustdoc::rustdoc_debug;
 use super::{BoundaryDef, ObservationGuardBehaviorDef, ObservationGuardDef};
 
 /// Caller-declared source citation.
@@ -132,18 +132,18 @@ impl SourceProvenance {
 
     /// Debug-formatted citation fields for generated rustdoc.
     pub(crate) fn rustdoc_clause(&self) -> String {
-        let mut parts = vec![format!("identity {}", markdown_debug(&self.identity))];
+        let mut parts = vec![format!("identity {}", rustdoc_debug(&self.identity))];
         if let Some(revision) = &self.revision {
-            parts.push(format!("revision {}", markdown_debug(revision)));
+            parts.push(format!("revision {}", rustdoc_debug(revision)));
         }
         if let Some(locator) = &self.locator {
-            parts.push(format!("locator {}", markdown_debug(locator)));
+            parts.push(format!("locator {}", rustdoc_debug(locator)));
         }
         if let Some(url) = &self.url {
-            parts.push(format!("url {}", markdown_debug(url)));
+            parts.push(format!("url {}", rustdoc_debug(url)));
         }
         if let Some(note) = &self.note {
-            parts.push(format!("note {}", markdown_debug(note)));
+            parts.push(format!("note {}", rustdoc_debug(note)));
         }
         parts.join("; ")
     }
@@ -505,14 +505,18 @@ mod tests {
     }
 
     #[test]
-    fn rustdoc_clause_escapes_markdown_and_html() {
+    fn rustdoc_clause_escapes_markdown_html_urls_and_backtick_runs() {
         let clause = SourceProvenance::new("[datasheet]")
-            .with_note("`code` <tag> & text")
+            .with_url("https://example.com/datasheet.pdf")
+            .with_note("`code` ````` <tag> & http://example.org/note")
             .rustdoc_clause();
         assert!(clause.contains(r#"identity "\[datasheet\]""#), "{clause}");
-        assert!(clause.contains(r#"\`code\`"#), "{clause}");
-        assert!(clause.contains(r#"\<tag\>"#), "{clause}");
-        assert!(clause.contains("&amp;"), "{clause}");
+        assert!(
+            clause.contains(r#"url `"https://example.com/datasheet.pdf"`"#),
+            "{clause}"
+        );
+        assert!(clause.contains("note ``````\""), "{clause}");
+        assert!(clause.ends_with("\"``````"), "{clause}");
     }
 
     #[test]

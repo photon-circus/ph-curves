@@ -49,7 +49,10 @@ gen-cli = ["gen-lib", "dep:clap"]
 gen = ["gen-cli"]
 
 [dependencies]
-fixed = { version = "1", default-features = false }
+# `fixed` 1.31 raises its MSRV to 1.93. Keep fresh resolver-2 consumers on a
+# release that satisfies this crate's documented Rust 1.92 baseline; relying on
+# this repository's lockfile would not protect downstream libraries.
+fixed = { version = ">=1, <1.31", default-features = false }
 
 # Host-only deps for the `gen` / `gen-cli` features.
 serde = { version = "1", features = ["derive"], optional = true }

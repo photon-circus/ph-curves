@@ -17,7 +17,7 @@
 
 use std::fs;
 use std::path::PathBuf;
-use std::process;
+use std::process::ExitCode;
 
 use clap::Parser;
 use ph_curves::r#gen::{Error, GenerateOptions, ValueType, generate_from_toml};
@@ -43,17 +43,26 @@ struct Cli {
     lut_size: usize,
 }
 
-fn main() {
+fn main() -> ExitCode {
     let cli = Cli::parse();
 
+    match run(cli) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run(cli: Cli) -> Result<(), String> {
     let value_type = match ValueType::parse(&cli.value_type) {
         Ok(value_type) => value_type,
         Err(_) => {
-            eprintln!(
+            return Err(format!(
                 "unsupported --value-type `{}` (expected `u8` or `u16`)",
                 cli.value_type
-            );
-            process::exit(1);
+            ));
         }
     };
 
@@ -65,23 +74,82 @@ fn main() {
     let output = match generate_from_toml(&cli.input, &opts) {
         Ok(output) => output,
         Err(Error::Io(error)) => {
-            panic!("failed to read {}: {error}", cli.input.display());
+            return Err(format!("failed to read {}: {error}", cli.input.display()));
         }
         Err(Error::Toml(error)) => {
-            panic!("invalid TOML: {error}");
+            return Err(format!("invalid TOML: {error}"));
         }
         Err(Error::Validation(message)) => {
-            eprintln!("{message}");
-            process::exit(1);
+            return Err(message);
         }
     };
 
     match cli.output {
         Some(path) => {
             fs::write(&path, &output)
-                .unwrap_or_else(|e| panic!("failed to write {}: {e}", path.display()));
+                .map_err(|error| format!("failed to write {}: {error}", path.display()))?;
             eprintln!("wrote {}", path.display());
         }
         None => print!("{output}"),
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_input_is_a_clean_error_instead_of_a_panic() {
+        let missing = std::env::temp_dir().join(format!(
+            "ph-curves-definitely-missing-{}-{}.toml",
+            std::process::id(),
+            line!()
+        ));
+        let error = run(Cli {
+            input: missing.clone(),
+            output: None,
+            value_type: "u8".into(),
+            lut_size: 256,
+        })
+        .unwrap_err();
+        assert!(error.contains("failed to read"), "{error}");
+        assert!(error.contains(&missing.display().to_string()), "{error}");
+    }
+
+    #[test]
+    fn invalid_value_type_is_a_clean_error_instead_of_exiting() {
+        let error = run(Cli {
+            input: PathBuf::from("unused.toml"),
+            output: None,
+            value_type: "u32".into(),
+            lut_size: 256,
+        })
+        .unwrap_err();
+        assert_eq!(
+            error,
+            "unsupported --value-type `u32` (expected `u8` or `u16`)"
+        );
+    }
+
+    #[test]
+    fn invalid_toml_is_a_clean_error_instead_of_a_panic() {
+        let path = std::env::temp_dir().join(format!(
+            "ph-curves-invalid-toml-{}-{}.toml",
+            std::process::id(),
+            line!()
+        ));
+        fs::write(&path, "[unterminated").unwrap();
+        let result = run(Cli {
+            input: path.clone(),
+            output: None,
+            value_type: "u8".into(),
+            lut_size: 256,
+        });
+        fs::remove_file(path).unwrap();
+
+        let error = result.unwrap_err();
+        assert!(error.starts_with("invalid TOML:"), "{error}");
+        assert!(!error.contains("panicked"), "{error}");
     }
 }

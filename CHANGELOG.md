@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
 ## [0.3.0] - 2026-08-17
 
 ### Added
@@ -29,15 +31,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   synthetic multi-range ADC family: two selector axes, three emitted members
   with distinct input transforms and applicability windows, a forbidden
   mapped member, a selector-addressed family gap, an unsupported combination,
-  ordinary boundaries plus an observation guard, an unrelated normalized
-  curve, and a document-level gap. Runtime tests exhaustively check conversion
-  against an independent quadratic oracle. Host tests prove TOML/`FamilySpec`
+  ordinary boundaries plus a family observation guard, a guarded standalone
+  transfer, an unrelated normalized curve, and a document-level gap. Runtime
+  tests exhaustively check conversion against an independent quadratic oracle.
+  Host tests prove TOML/`FamilySpec`
   parity, evaluated-truth overlays, fail-closed completeness/provenance/budget
   checks, structured reports, and rustdoc family/selector/provenance mapping.
   Representative generated fixtures compile on the no-std and core-only
   target matrix via `examples/no_std_generated_fixtures.rs`. The README
   worked example is this ADC front end; VEML remains a downstream integration
   concern.
+- A packaged `assets/curves-u16.toml` generator example whose normalized
+  builtins and formulas are valid for a complete 65,536-entry `u16` LUT. The
+  CLI invocation and target pointer-width requirement are documented next to
+  the asset; point-based sources still need coordinates that match the chosen
+  LUT size.
 - Complete host family IR, programmatic family construction, and stable
   emitted member identity. `ValidatedFamily` exposes units, output scale,
   its exact `FamilySource` through `ValidatedFamily::source` (including the
@@ -73,8 +81,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Array payload is six bytes per knot (`u16` input + `i32` output);
   `PiecewiseLinearTransfer` fields, `_METADATA`, `_OBSERVATION_GUARD`,
   and symbol overhead are excluded. Optional family
-  `max_total_knots` / `max_table_bytes` fail closed after every member
-  has fitted, naming the family, requested limit, and achieved amount.
+  `max_total_knots` / `max_table_bytes` are checked after each emitted member
+  is fitted and before the next; impossible minimum budgets fail before any
+  emitted-member table is fitted. Diagnostics name the family, requested
+  limit, and achieved amount.
   Per-member `max_knots` is unchanged. Existing `String`-returning
   helpers call the report path and cannot bypass a budget. No report
   type enters the default-feature runtime path.
@@ -189,6 +199,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rejected. A legacy transfer named `requires` must be renamed before opting
   into the capability.
 
+### Breaking
+
+- `TransferError` gained `RejectedObservation { input }`, so a deliberately
+  rejected observation code is not an `AboveDomain`. Exhaustive downstream
+  matches need a new arm. `PiecewiseLinearTransfer` stores an optional guard
+  and its layout may grow (the verified 32-bit layout does); exact `size_of`
+  remains target/ABI-dependent. Unguarded construction keeps the previous
+  convert/invert behavior.
+- Every generated transfer now emits and reserves
+  `<NAME>_OBSERVATION_GUARD`, including a `None` constant for unguarded
+  transfers. A document containing both `foo` and `foo_observation_guard` must
+  rename one transfer. The uniform `Option` companion keeps symbol presence
+  stable when guard policy changes.
+- Host TOML parsing now fails closed on unknown top-level definition tables and
+  on unknown direct fields in standalone `[curves.*]` and `[transfers.*]`
+  entries. Documents that depended on those fields being ignored must remove
+  or correct them. Unreserved nested fields in legacy standalone point values
+  and NTC model parameters retain their 0.2.1 compatibility behavior.
+
 ### Changed
 
 - README now mirrors executable crate-level rustdoc examples for
@@ -219,21 +248,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[curves]`; dense LUT fallback remains curve-only. This is the publish
   shape of `[transfer_families]`, first shipped in 0.3.0 and absent from 0.2.1.
   Legacy standalone documents that use only documented 0.2.1 fields retain
-  their meaning. Documents that relied on ignored unknown direct transfer
-  fields now fail closed, as described under *Fixed*. A whole-document
-  `schema_version` field remains a separate decision.
-
-- **Breaking (pre-1.0):** `TransferError` gained `RejectedObservation { input }`
-  so a deliberately rejected observation code is not an `AboveDomain`.
-  Exhaustive downstream matches need a new arm. `PiecewiseLinearTransfer`
-  stores an optional guard and is larger by that field; unguarded construction
-  keeps the previous convert/invert behavior.
-- **Breaking (pre-1.0 generated namespace):** every generated transfer now
-  emits and reserves `<NAME>_OBSERVATION_GUARD`, including a `None` constant
-  for unguarded transfers. A document containing both `foo` and
-  `foo_observation_guard` must rename one transfer. The uniform `Option`
-  companion keeps symbol presence stable when guard policy changes; this and
-  the runtime API break are part of the 0.3.0 pre-1.0 minor release.
+  their meaning. A whole-document `schema_version` field remains a separate
+  decision.
 - `scripts/local-ci.ps1` sets `CARGO_INCREMENTAL=0`. Incremental compilation
   made the gate flaky on Windows: rustc could fail to finalize
   `target/debug/incremental` ("Access is denied", os error 5) and `cargo test`
@@ -249,6 +265,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `source_provenance_v1` are included in the same array only when standalone
   transfers use those features, and otherwise fail as unused. Programmatic
   `FamilySpec` construction has no wire format and needs no marker.
+- The `fixed` dependency is bounded to `>=1, <1.31`, because `fixed` 1.31 raises
+  its MSRV above this crate's Rust 1.92 baseline. CI and the local release gate
+  build a fresh edition-2021, resolver-2 downstream crate on Rust 1.92 and
+  require it to resolve `fixed` 1.30.x instead of relying on this repository's
+  lockfile.
+- Release validation treats warnings from every compilation step as errors,
+  compiles the headline runtime APIs in the no-std fixture matrix, and checks
+  the package list for the `u16` example and all generated fixtures needed by
+  packaged examples.
 - The README tagline now matches the manifest `description`, covering inverse
   transfers, calibration, and temporal filters. It had drifted the other way
   from the case `RELEASING.md` warns about — the manifest was the stale copy
@@ -257,15 +282,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   does.
 - `[transfer_families]` and `[gaps]` are now known top-level definition
   tables. Nested unknown fields on those types, on family point and NTC model
-  sources, and on family members and applicability are rejected. Standalone
-  curve definitions and unreserved fields in legacy standalone point/NTC
-  source values retain their permissive compatibility behavior.
+  sources, and on family members and applicability are rejected. Unreserved
+  fields in legacy standalone point/NTC source values retain their permissive
+  compatibility behavior; direct standalone curve fields fail closed as
+  described under *Breaking*.
 
 ### Fixed
 
 - Affine calibration examples now scale numerator offsets correctly: with
   `scale = 1_000`, a correction of -120 in the integer output scale is
-  `offset = -120_000`, not `-120`.
+  `offset = -120_000`, not `-120`. The scalar and wrapper examples are now
+  self-contained, executable demonstrations with their separate fallible
+  boundaries visible.
 - `AffineCalibration::invert` now preserves the documented rule that anything
   produced by `convert` is invertible even when undoing the affine at a signed
   endpoint would exceed `i32`. It recovers only after verifying the applicable
@@ -298,6 +326,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Generated rustdoc now escapes Markdown/HTML syntax in every user-derived
   documentation string (names, representation, units, and citations), so text
   such as `[missing]` cannot become a broken intra-doc link under `-D warnings`.
+  Provenance URLs and arbitrary runs of backticks use variable-length code
+  fences, preserving the literal value without creating autolinks or ending a
+  code span early.
+- Generated curve modules import and define only the LUT types used by that
+  document, so monotonic-only and non-monotonic-only output compiles under
+  `-D warnings`. Generator requests for LUT sizes below two now fail validation
+  instead of reaching invalid curve construction.
+- Transfer-family validation rejects duplicate capability markers and TOML
+  datetime selector values instead of silently accepting or coercing them.
+  Derived member names preserve the sign of negative integer and dash-prefixed
+  string selector values, so negative and positive identities cannot collapse
+  onto the same emitted symbol.
+- Programmatic family insertion now matches TOML by treating a family table
+  name as descriptive: it may match a standalone transfer or curve name while
+  emitted member symbols remain subject to the common collision checks.
+  Aggregate family budgets that cannot fit the minimum two knots per emitted
+  member fail before emitted-member table fitting; feasible budgets are then
+  enforced incrementally before later members are fitted.
+- CLI input, TOML, validation, and output-write failures now return concise
+  diagnostics and a failure exit status instead of panicking.
+- The public inverse-error audit now documents and asserts its table-shape,
+  strictly increasing-input, and declared-direction preconditions before
+  indexing or interpolating malformed host input.
 - Family source fields now fail closed: unknown keys in family point entries
   or NTC model tables are rejected with the family and source path instead of
   being accepted and discarded.
@@ -320,7 +371,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   current value is still pre-end is not treated as complete.
 - Zero-duration `Repeat` / `PingPong` schedules terminate after the due-now
   end value instead of spinning on a zero-length cycle.
-
 - Documentation CI now runs rustdoc with `--features gen-lib`, matching the
   docs.rs feature set. The previous default-features-only invocation never
   compiled `src/gen`, so a broken intra-doc link in the host generator could
@@ -336,16 +386,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release tagging instructions now fetch and fast-forward `main`, require a
   clean worktree, prove `HEAD == origin/main`, reject an existing version tag,
   and verify the annotated tag target before it can be pushed or published.
-- The host generator now rejects unknown top-level definition tables instead
-  of succeeding with header-only output. A misspelled `[tranfsers…]` table
-  previously parsed as empty `curves`/`transfers` maps and looked like a
-  compatible `build.rs` run while omitting every expected symbol. Parse now
-  returns `Error::Toml` and names the unrecognized field.
-- Standalone transfer definitions now reject unknown direct fields. A typo such
-  as `saturaton`, or the unsupported runtime-oriented name
-  `observation_guard`, therefore fails TOML parsing instead of producing an
-  unguarded table. Other, unreserved nested legacy NTC model parameters remain
-  permissive.
 
 ## [0.2.1] - 2026-08-10
 

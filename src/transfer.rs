@@ -275,8 +275,9 @@ pub struct TransferMetadata {
 /// binary-searches the same output knots — no dense physical→input LUT.
 ///
 /// An optional [`ObservationGuard`] is stored on the table itself. A transfer
-/// constructed without one keeps the previous convert/invert behavior; the
-/// struct is larger by that optional field.
+/// constructed without one keeps the previous convert/invert behavior; its
+/// layout may grow by that optional field. Exact `size_of` is
+/// target/ABI-dependent.
 #[derive(Copy, Clone, Debug)]
 pub struct PiecewiseLinearTransfer<const N: usize> {
     inputs: &'static [u16; N],

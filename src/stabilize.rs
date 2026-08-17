@@ -23,9 +23,10 @@ mod sealed {
 /// and `i32` that bound is at least `usize::MAX` on 32-bit targets, so those
 /// implementations cap at `usize::MAX` there. Every addressable window also
 /// fits for `u32` on 16-bit-pointer targets. On wider targets its bound is
-/// `floor(i64::MAX / u32::MAX) = 2_147_483_648`, which is *smaller* than
-/// 32-bit `usize::MAX`; reusing that shortcut there would admit windows whose
-/// sum overflows `i64`.
+/// `floor(i64::MAX / u32::MAX) = 2_147_483_648`. On a 32-bit target, arrays
+/// near that formal ceiling are already too large for a usable Rust value;
+/// the explicit arithmetic bound nevertheless keeps the accumulator contract
+/// target-independent instead of relying on a separate layout rejection.
 ///
 /// The bound is an accumulator-safety ceiling, not a recommended window.
 /// Storage is `[T; N]` plus the `i64` sum — `2_147_483_648` `u32` samples
@@ -91,8 +92,8 @@ impl sealed::Sealed for u32 {}
 impl TemporalSample for u32 {
     const ZERO: Self = 0;
     // Every window representable by a 16-bit `usize` fits the accumulator. On
-    // 32/64-bit targets the mathematical cap is representable and smaller
-    // than 32-bit `usize::MAX`, so using `usize::MAX` would permit overflow.
+    // 32/64-bit targets, preserve the exact mathematical accumulator cap even
+    // though a 32-bit target cannot materialize arrays near that size.
     const MAX_WINDOW: usize = if usize::BITS < 32 {
         usize::MAX
     } else {

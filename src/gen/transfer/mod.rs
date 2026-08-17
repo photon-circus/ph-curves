@@ -759,11 +759,38 @@ fn validate_monotonic(name: &str, truth: &[f64]) -> Result<MonotonicDirection, S
 /// runtime and asserts it matches the value recorded here, which is what
 /// catches any drift between this search and
 /// `PiecewiseLinearTransfer::invert`.
+///
+/// # Panics
+///
+/// Panics if the slices do not describe a valid sparse transfer table: at
+/// least two equally sized knots, strictly increasing inputs, and outputs
+/// monotonic in `direction`. Generator-produced tables satisfy these
+/// preconditions before this audit runs.
 pub fn measure_inverse_code_error(
     inputs: &[u16],
     outputs: &[i32],
     direction: MonotonicDirection,
 ) -> u16 {
+    assert!(
+        inputs.len() >= 2,
+        "inverse audit requires at least two knots"
+    );
+    assert_eq!(
+        inputs.len(),
+        outputs.len(),
+        "inverse audit requires equally sized input and output tables"
+    );
+    assert!(
+        inputs.windows(2).all(|pair| pair[0] < pair[1]),
+        "inverse audit requires strictly increasing inputs"
+    );
+    assert!(
+        outputs.windows(2).all(|pair| match direction {
+            MonotonicDirection::Increasing => pair[0] <= pair[1],
+            MonotonicDirection::Decreasing => pair[0] >= pair[1],
+        }),
+        "inverse audit requires outputs monotonic in the declared direction"
+    );
     let mut worst = 0u16;
     for code in inputs[0]..=inputs[inputs.len() - 1] {
         let physical = convert_code(inputs, outputs, code);
@@ -787,7 +814,7 @@ fn convert_code(inputs: &[u16], outputs: &[i32], code: u16) -> i32 {
         inputs[left + 1],
         outputs[left + 1],
     )
-    .unwrap_or_else(|error| panic!("internal interpolation error: {error:?}"))
+    .unwrap_or_else(|error| core::panic!("internal interpolation error: {error:?}"))
 }
 
 /// Invert one in-range physical value, mirroring the runtime search.
@@ -828,12 +855,13 @@ fn invert_physical(
         inputs[low + 1],
         outputs[low + 1],
     )
-    .unwrap_or_else(|error| panic!("internal inversion error: {error:?}"))
+    .unwrap_or_else(|error| core::panic!("internal inversion error: {error:?}"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{InverseTransferFunction, TransferFunction};
     use model::{DividerTopology, ModelDef};
     use std::vec;
 
@@ -880,6 +908,72 @@ mod tests {
             measure_inverse_code_error(&inputs, &outputs, MonotonicDirection::Increasing),
             10
         );
+    }
+
+    #[test]
+    fn inverse_code_error_matches_the_runtime_search_exhaustively() {
+        static INPUTS: [u16; 5] = [7, 19, 91, 503, 997];
+        static OUTPUTS: [i32; 5] = [-30, -4, -4, 81, 160];
+        let table =
+            crate::PiecewiseLinearTransfer::new(&INPUTS, &OUTPUTS, MonotonicDirection::Increasing);
+        let mut runtime_worst = 0;
+        for code in INPUTS[0]..=INPUTS[INPUTS.len() - 1] {
+            let physical = table.convert(code).unwrap();
+            let recovered = table.invert(physical).unwrap();
+            runtime_worst = runtime_worst.max(recovered.abs_diff(code));
+        }
+        assert_eq!(
+            measure_inverse_code_error(&INPUTS, &OUTPUTS, MonotonicDirection::Increasing),
+            runtime_worst
+        );
+    }
+
+    #[test]
+    fn inverse_lookup_stays_in_bounds_for_small_monotonic_tables() {
+        for middle_input in 1..6 {
+            for last_input in (middle_input + 1)..=6 {
+                let inputs = [0, middle_input, last_input];
+                for first in -2..=2 {
+                    for middle in first..=2 {
+                        for last in middle..=2 {
+                            let increasing = [first, middle, last];
+                            let _ = measure_inverse_code_error(
+                                &inputs,
+                                &increasing,
+                                MonotonicDirection::Increasing,
+                            );
+                            let decreasing = [-first, -middle, -last];
+                            let _ = measure_inverse_code_error(
+                                &inputs,
+                                &decreasing,
+                                MonotonicDirection::Decreasing,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn inverse_code_error_rejects_malformed_tables_at_the_boundary() {
+        let mismatch = std::panic::catch_unwind(|| {
+            measure_inverse_code_error(&[0, 1], &[0], MonotonicDirection::Increasing)
+        });
+        assert!(mismatch.is_err());
+
+        let non_monotonic = std::panic::catch_unwind(|| {
+            measure_inverse_code_error(&[0, 1, 2], &[0, 2, 1], MonotonicDirection::Increasing)
+        });
+        assert!(non_monotonic.is_err());
+    }
+
+    #[test]
+    fn scaled_input_integer_product_stays_below_f64_exact_integer_limit() {
+        let product = u64::from(u16::MAX) * u64::from(u32::MAX);
+        assert!(product < (1u64 << 53));
+        assert_eq!((product as f64) as u64, product);
+        assert_eq!(model::scaled_input(u16::MAX, u32::MAX, 1), product as f64);
     }
 
     fn base_def() -> TransferDef {
@@ -1179,6 +1273,25 @@ mod tests {
         let error = build_with_source("prefitted", &def, Some(&source)).unwrap_err();
         assert!(error.contains("knot direction Increasing"), "{error}");
         assert!(error.contains("truth direction Decreasing"), "{error}");
+    }
+
+    #[test]
+    fn evaluated_truth_overlays_reject_every_non_finite_value() {
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let source = TransferSource::evaluated_truth(0, vec![0.0, value]);
+            let error = build_with_source("evaluated", &base_def(), Some(&source)).unwrap_err();
+            assert!(error.contains("non-finite output"), "{error}");
+        }
+    }
+
+    #[test]
+    fn prefitted_truth_rejects_every_non_finite_value_before_error_measurement() {
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let truth = EvaluatedTruth::new(0, vec![0.0, value]);
+            let source = TransferSource::prefitted_knots_verified(vec![0, 1], vec![0, 1], truth);
+            let error = build_with_source("prefitted", &base_def(), Some(&source)).unwrap_err();
+            assert!(error.contains("non-finite output"), "{error}");
+        }
     }
 
     #[test]

@@ -386,11 +386,9 @@ fn check_insert_name(defs: &DefinitionsFile, name: &str) -> Result<(), Error> {
             "transfer `{name}` collides with a [transfers] entry"
         )));
     }
-    if defs.transfer_families.contains_key(name) {
-        return Err(Error::Validation(format!(
-            "transfer `{name}` collides with a [transfer_families] entry"
-        )));
-    }
+    // A family table name is descriptive, not an emitted symbol. TOML permits
+    // a standalone transfer to share it; validation still rejects collisions
+    // with actual emitted member names.
     if defs.gaps.contains_key(name) {
         return Err(Error::Validation(format!(
             "transfer `{name}` collides with a [gaps] entry"
@@ -403,16 +401,9 @@ fn check_insert_family_name(defs: &DefinitionsFile, name: &str) -> Result<(), Er
     if name.trim().is_empty() {
         return Err(Error::Validation("family name must not be blank".into()));
     }
-    if defs.curves.contains_key(name) {
-        return Err(Error::Validation(format!(
-            "family `{name}` collides with a [curves] entry"
-        )));
-    }
-    if defs.transfers.contains_key(name) {
-        return Err(Error::Validation(format!(
-            "family `{name}` collides with a [transfers] entry"
-        )));
-    }
+    // A family table name is descriptive, not an emitted symbol. Match the
+    // TOML path by allowing it to share a curve or standalone-transfer name;
+    // resolved member symbols are checked by the common validation pipeline.
     if defs.transfer_families.contains_key(name) {
         return Err(Error::Validation(format!(
             "family `{name}` collides with a [transfer_families] entry"
@@ -2861,6 +2852,53 @@ applicability = { physical = [-20.0, 80.0] }
             after.families()[0].members()[1].emitted_name(),
             "als_gain_x1"
         );
+    }
+
+    #[test]
+    fn family_table_name_may_match_a_standalone_transfer_before_or_after_validation() {
+        fn standalone() -> TransferSpec {
+            TransferSpec::new(
+                "als",
+                "code",
+                "unit",
+                1,
+                1,
+                TransferSource::points(vec![
+                    PhysicalPoint::new(0, 0.0),
+                    PhysicalPoint::new(1, 1.0),
+                ]),
+            )
+        }
+
+        let mut before = DefinitionsFile::default();
+        before.insert_transfer(standalone()).unwrap();
+        before.insert_family(formula_family_spec()).unwrap();
+        let before = before.validate().unwrap();
+
+        let mut after_defs = DefinitionsFile::default();
+        after_defs.insert_family(formula_family_spec()).unwrap();
+        let mut after = after_defs.validate().unwrap();
+        after.insert_transfer(standalone()).unwrap();
+
+        assert_eq!(
+            before.emitted_transfer_names().collect::<Vec<_>>(),
+            ["als", "als_gain_div4"]
+        );
+        assert_eq!(
+            before.generate(&GenerateOptions::transfers_only()).unwrap(),
+            after.generate(&GenerateOptions::transfers_only()).unwrap()
+        );
+    }
+
+    #[test]
+    fn family_table_name_may_match_a_curve_like_the_toml_path() {
+        let mut defs =
+            DefinitionsFile::from_toml_str("[curves.als]\nbuiltin = \"linear\"\n").unwrap();
+        defs.insert_family(formula_family_spec()).unwrap();
+        let validated = defs.validate().unwrap();
+        let output = validated.generate(&GenerateOptions::default()).unwrap();
+        assert!(output.contains("static ALS_FWD:"));
+        assert!(output.contains("pub const ALS_GAIN_DIV4:"));
     }
 
     #[test]

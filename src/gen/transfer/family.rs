@@ -345,6 +345,10 @@ impl<'de> Deserialize<'de> for SelectorValue {
 impl SelectorValue {
     fn token(&self) -> String {
         match self {
+            Self::Integer(value) if *value < 0 => format!("minus_{}", value.unsigned_abs()),
+            Self::String(value) if value.starts_with('-') => {
+                format!("minus_{}", &value['-'.len_utf8()..])
+            }
             Self::Integer(value) => value.to_string(),
             Self::String(value) => value.clone(),
         }
@@ -2076,6 +2080,21 @@ applicability = { observation = [1, 10] }
         families.insert("als".into(), family);
         let error = expand_families(&families).unwrap_err();
         assert!(error.contains("max_knots must be in 2..=256"));
+    }
+
+    #[test]
+    fn leading_minus_is_preserved_in_derived_names() {
+        let negative_integer = BTreeMap::from([("offset".into(), SelectorValue::Integer(-2))]);
+        assert_eq!(
+            expanded_name("sensor", &negative_integer).unwrap(),
+            "sensor_offset_minus_2"
+        );
+
+        let dash_prefixed = BTreeMap::from([("mode".into(), SelectorValue::String("-eco".into()))]);
+        assert_eq!(
+            expanded_name("sensor", &dash_prefixed).unwrap(),
+            "sensor_mode_minus_eco"
+        );
     }
 
     #[test]

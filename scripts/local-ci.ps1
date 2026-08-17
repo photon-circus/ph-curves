@@ -8,6 +8,9 @@ $ErrorActionPreference = "Continue"
 # reports red trains you to re-run it instead of read it. CI builds fresh and
 # gains nothing from incremental anyway.
 $env:CARGO_INCREMENTAL = "0"
+# Match CI for every compilation step, not only clippy. A warning that appears
+# in a test, example, target build, or packaged source is a release failure.
+$env:RUSTFLAGS = "-Dwarnings"
 
 function Invoke-Cargo {
     param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
@@ -52,17 +55,13 @@ Invoke-Cargo test --features gen-cli
 # `gen` is the 0.1.x compatibility alias and must keep building the CLI.
 Invoke-Cargo test --features gen
 # Mirror CI `feature-compat`: the 0.1.x `gen` alias still runs the binary.
-Invoke-Cargo run --features gen --bin ph-curves-gen -- --help
+# Quote the separator: PowerShell otherwise consumes a bare `--` while binding
+# this function call and accidentally asks Cargo itself for help.
+Invoke-Cargo run --features gen --bin ph-curves-gen '--' --help
 
-$previousRustFlags = $env:RUSTFLAGS
-try {
-    $env:RUSTFLAGS = "-Dwarnings"
-    Invoke-Cargo clippy --all-targets
-    Invoke-Cargo clippy --all-targets --features gen-lib
-    Invoke-Cargo clippy --all-targets --features gen-cli
-} finally {
-    $env:RUSTFLAGS = $previousRustFlags
-}
+Invoke-Cargo clippy --all-targets
+Invoke-Cargo clippy --all-targets --features gen-lib
+Invoke-Cargo clippy --all-targets --features gen-cli
 
 $previousRustdocFlags = $env:RUSTDOCFLAGS
 try {
@@ -118,6 +117,64 @@ foreach ($target in $xtensaTargets) {
 if (-not (Get-Command cargo-deny -ErrorAction SilentlyContinue)) {
     throw "cargo-deny is required. Install it with 'cargo install cargo-deny'."
 }
+
+# A library consumer on Cargo resolver 2 does not use this repository's
+# Cargo.lock and may otherwise select a dependency whose MSRV is newer than the
+# crate's. Build a fresh edition-2021 consumer with Rust 1.92 to prove the
+# published dependency bounds remain satisfiable.
+$tempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
+$msrvProbe = Join-Path $tempRoot ("ph-curves-msrv-" + [guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Path (Join-Path $msrvProbe "src") -Force | Out-Null
+$repositoryRoot = (Resolve-Path -LiteralPath ".").Path.Replace("\", "/")
+@"
+[package]
+name = "ph-curves-msrv-probe"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.92.0"
+resolver = "2"
+publish = false
+
+[dependencies]
+ph-curves = { path = "$repositoryRoot" }
+"@ | Set-Content -LiteralPath (Join-Path $msrvProbe "Cargo.toml") -Encoding utf8
+@"
+#![no_std]
+use ph_curves::AffineTransform;
+pub const IDENTITY: AffineTransform = match AffineTransform::new(1, 0, 1) {
+    Ok(value) => value,
+    Err(_) => panic!("identity coefficients are valid"),
+};
+"@ | Set-Content -LiteralPath (Join-Path $msrvProbe "src/lib.rs") -Encoding utf8
+try {
+    Invoke-Cargo +1.92.0 build --manifest-path (Join-Path $msrvProbe "Cargo.toml") --target thumbv7em-none-eabi
+    $resolvedFixed = & cargo +1.92.0 tree --manifest-path (Join-Path $msrvProbe "Cargo.toml") -i fixed
+    if ($LASTEXITCODE -ne 0 -or -not ($resolvedFixed -match '^fixed v1\.30\.')) {
+        throw "fresh Rust 1.92 consumer did not resolve an MSRV-compatible fixed 1.30.x release"
+    }
+} finally {
+    $resolvedProbe = [System.IO.Path]::GetFullPath($msrvProbe)
+    if (-not $resolvedProbe.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "refusing to clean unexpected MSRV probe path: $resolvedProbe"
+    }
+    if (Test-Path -LiteralPath $resolvedProbe) {
+        Remove-Item -LiteralPath $resolvedProbe -Recurse -Force
+    }
+}
 Invoke-Cargo deny --all-features check
 
+$packageFiles = & cargo package --list --allow-dirty
+if ($LASTEXITCODE -ne 0) {
+    throw "cargo package --list failed with exit code $LASTEXITCODE"
+}
+foreach ($required in @(
+    "assets/curves-u16.toml",
+    "tests/fixtures/family_acceptance_generated.rs",
+    "tests/fixtures/ntc_generated.rs",
+    "tests/fixtures/observation_guards_generated.rs"
+)) {
+    if ($packageFiles -notcontains $required) {
+        throw "packaged example dependency is missing: $required"
+    }
+}
 Invoke-Cargo package --allow-dirty
