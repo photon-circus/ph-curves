@@ -20,9 +20,30 @@ them, it is not ready.
    for the standard: a break earns its cost only when it removes a footgun that
    cannot be fixed additively. Ergonomics does not qualify.
 
+## Release integration
+
+An active `release/x.y.z` branch may enter `main` only through a dedicated,
+non-draft pull request whose head is that release branch and whose base is
+`main`. Do not push or merge the branch into `main` out of band, and do not tag
+or publish from the release branch.
+
+Before opening that pull request, complete version/changelog/security metadata
+and the full validation gate on the release branch. The pull request must expose
+the complete aggregate release diff, identify the issue it closes, and state
+which tag/publish steps remain owner-only after merge. Review the aggregate
+diff, require the pull request's `ci` check to pass on the merge result, and
+resolve every review conversation before merging it.
+
+Only after the release pull request merges and `main` CI is green may the owner
+create the annotated tag, publish to crates.io, and create the GitHub release.
+
 ## Pre-release checklist
 
-- [ ] `main` contains the release commit, and CI is green on it.
+- [ ] The dedicated non-draft `release/x.y.z` -> `main` pull request has been
+      reviewed, its required `ci` check is green, and every review conversation
+      is resolved.
+- [ ] That pull request is merged; `main` contains the release commit, and CI is
+      green on it.
 - [ ] `Cargo.toml` `version` is the version being released.
 - [ ] **`Cargo.toml` `description` still describes the crate.** This is the
       text crates.io shows, and it is frozen into the published version — it
@@ -69,15 +90,18 @@ cargo package --list
 
 ## Publish
 
+Set the version explicitly so the tag, message, and GitHub release cannot drift:
+
 ```bash
-git tag -a v0.2.0 -m "ph-curves 0.2.0"
+release_version=X.Y.Z
+git tag -a "v${release_version}" -m "ph-curves ${release_version}"
 ```
 
 Push the tag, then publish. The tag must exist first, so the `CHANGELOG.md`
 compare links resolve:
 
 ```bash
-git push origin v0.2.0
+git push origin "v${release_version}"
 ```
 
 ```bash
@@ -88,7 +112,10 @@ Then create the GitHub release from the tag. `--verify-tag` refuses to invent
 a tag if you mistyped it:
 
 ```bash
-gh release create v0.2.0 --title "v0.2.0 — short summary" --notes-file notes.md --verify-tag
+gh release create "v${release_version}" \
+  --title "v${release_version} — short summary" \
+  --notes-file notes.md \
+  --verify-tag
 ```
 
 Build `notes.md` from that version's `CHANGELOG.md` section. Lead with a few

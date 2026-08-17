@@ -1,9 +1,29 @@
-# 0.2.0 baseline compatibility
+# Compatibility policy and release history
+
+This document records compatibility decisions for published releases and the
+standard a future breaking change must meet.
+
+## 0.3.0 result
+
+**0.3.0 is a deliberate pre-1.0 minor release with documented breaks against
+0.2.1.** It adds `TransferError::RejectedObservation` to a public exhaustive
+enum, reserves and emits the generated `<NAME>_OBSERVATION_GUARD` companion,
+and tightens standalone transfer TOML by rejecting formerly ignored unknown
+direct fields and requiring localized capability markers so guard and
+provenance features fail closed across generator-version skew. These changes
+remove safety and schema footguns that could not be fixed additively. The
+transfer-family schema is new in 0.3.0 and therefore does not break a previously
+published family document.
+
+The release also adds device-neutral transfer families, structured provenance
+and generation reports, standalone affine transforms, `u32` temporal
+primitives, and 16-bit-pointer target support. The sections below record the
+exact compatibility boundaries and migration requirements.
+
+## 0.2.0 result
 
 Assessment of every 0.2.0 change that could break the 0.1.2 baseline, what was
 done about it, and whether breaking would have been worth it.
-
-## Result
 
 **0.2.0 has no breaking changes against 0.1.2.** A 0.1.2 dependency
 declaration, a 0.1.2 `cargo run --features gen` invocation, and 0.1.2 firmware
@@ -144,7 +164,7 @@ still ignore unknown direct fields. Standalone transfers reject unknown direct
 fields, while other, unreserved fields nested in standalone point values and
 legacy standalone NTC model parameters remain permissive for compatibility.
 
-The family member schema in this unreleased tree is source-aware: every
+The family member schema published in 0.3.0 is source-aware: every
 accepted field must change validation, fitting, emission, metadata, or
 documentation, and a field unsupported by the selected source fails closed.
 Mapped `emit`, `unnecessary`, and `forbidden` members require exactly the
@@ -170,14 +190,13 @@ shape is now evidenced by the device-neutral acceptance fixture
 `tests/family_acceptance_gen.rs`): two selector axes, distinct member
 transforms, an explicit gap and description-only statuses, observation-guard
 parity, TOML/`FamilySpec`/overlay convergence, and mixed curve/family
-emission. The first release that publishes families must keep that capability
-matrix, required provenance, and declared universe; do not ship
-accepted-but-inert member fields or undeclared selector spaces. That release
-is the next pre-1.0 minor, together with the observation-guard and provenance
-breaks already recorded below.
+emission. 0.3.0 is the first release that publishes families and keeps that
+capability matrix, required provenance, and declared universe; it does not ship
+accepted-but-inert member fields or undeclared selector spaces. The
+observation-guard and provenance breaks recorded below ship in the same minor.
 
-No runtime API is involved. The version that ships a TOML tightening is a
-release decision, not part of the behaviour change. A broader whole-document
+No runtime API is involved. 0.3.0 ships the TOML tightening as a release
+decision, not as part of runtime behaviour. A broader whole-document
 `schema_version` field remains a separate schema decision.
 
 ## Host TOML: fail-closed standalone guards and provenance
@@ -207,8 +226,8 @@ provenance = { identity = "device data sheet", locator = "Table 1" }
 ```
 
 List both capability strings in the same array when both features are present.
-This is deliberately localized: family provenance is part of the new,
-previously unreleased `[transfer_families]` shape and needs no compatibility
+This is deliberately localized: family provenance is part of the
+first-published 0.3.0 `[transfer_families]` shape and needs no compatibility
 marker; programmatic `TransferSpec` construction has no wire format.
 
 The location and shape are intentional. Released 0.2.x generators model
@@ -237,9 +256,9 @@ fields and unreserved standalone point/legacy NTC model parameters retain their
 previous permissive parsing for compatibility; reserved guard and provenance
 spellings fail closed.
 
-This is a deliberate TOML compatibility tightening and must ship with the same
-next pre-1.0 minor release as the observation-guard and provenance host APIs. A
-broader whole-document version policy remains a separate schema decision.
+This is a deliberate TOML compatibility tightening shipped in 0.3.0 with the
+observation-guard and provenance host APIs. A broader whole-document version
+policy remains a separate schema decision.
 
 ## Generated namespace: observation-guard companions
 
@@ -252,7 +271,7 @@ contract without changing `TransferMetadata` struct literals.
 The cost is a new generated-name collision: a previously valid pair such as
 `foo` and `foo_observation_guard` is now rejected. Rename one transfer before
 regenerating. This is an intentional pre-1.0 generated-namespace break and is
-part of the next minor-release decision, not a patch-release change.
+part of the 0.3.0 minor release, not a patch-release change.
 
 ## Host `GenerateOptions` on transfer-only documents
 
@@ -281,7 +300,7 @@ member/gap provenance overrides remain distinct from their effective resolved
 citations. Totals and aggregate budgets continue to count emitted tables only.
 
 Optional family keys `max_total_knots` and `max_table_bytes` are part of the
-unreleased `[transfer_families]` publish shape, not a 0.2.1 document break.
+first-published 0.3.0 `[transfer_families]` shape, not a 0.2.1 document break.
 Omitted keys mean no aggregate cap. Payload accounting includes only the
 emitted `_INPUTS` and `_OUTPUTS` arrays (six bytes per knot). It excludes
 `PiecewiseLinearTransfer` fields, `_METADATA`, `_OBSERVATION_GUARD`, and
@@ -301,7 +320,7 @@ source inspection includes formula text, points, scaled-polynomial
 coefficients, or all NTC Beta-divider parameters; `ModelDef` remains private.
 `FamilySpec` / `FamilySource` and `insert_family` are additive `gen-lib` APIs
 equivalent to TOML family construction. Optional member `emitted_name` is an
-opt-in key on the unreleased `[transfer_families]` publish shape; omitted, the
+opt-in key on the first-published 0.3.0 `[transfer_families]` shape; omitted, the
 stem stays the derived family-plus-selector expansion. `EmissionManifest` and
 report companion-symbol fields are host-only. None of these types enter the
 default-feature runtime path. Generated family-member rustdoc grows two comment
