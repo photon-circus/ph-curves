@@ -33,10 +33,14 @@ cargo build --features gen-cli --bin ph-curves-gen
 3. Make sure CI passes (formatting, clippy, tests).
 
 An active release branch enters `main` only through its own dedicated,
-non-draft release pull request. That aggregate pull request must be explicitly
-approved by a human reviewer on its current head, pass the required `ci` check,
-and have every review conversation resolved. Automated review does not replace
-that approval; do not integrate a release branch into `main` directly.
+non-draft release pull request. That aggregate pull request must pass the
+required `ci` check and have every review conversation resolved. When another
+trusted collaborator with write or admin access is available, that person must
+approve the current head. In a single-maintainer phase, required approvals stay
+at zero because an author cannot approve their own pull request; the maintainer
+instead records a current-head review attestation covering the aggregate diff,
+automated findings, and release checklist. Do not integrate a release branch
+into `main` directly.
 
 ## Reporting bugs
 
