@@ -242,9 +242,14 @@ resistance, illuminance, position, calibrated voltage, tank level, or a rough
 user-facing battery charge estimate. The same primitives work for any unit;
 the crate does not attach sensor-specific behavior to unit labels.
 
-The strongest supported pipeline is:
+The primitives support a caller-composed path:
 
-`one integer observation -> one monotonic physical result -> optional temporal stabilization`
+`u16 observation -> monotonic i32 measurement -> optional affine calibration -> optional smoothing -> stability classification -> optional hysteretic/debounced decision`
+
+Already-converted `i32` measurements may enter at affine calibration, while
+already-converted `u16`, `i32`, or `u32` measurements may enter at smoothing.
+The crate supplies the individual operations and fixed state; it does not own
+or execute the pipeline.
 
 ### Honest limitations
 
@@ -254,10 +259,12 @@ The transfer layer does **not** currently provide:
 - Nonmonotonic forward maps.
 - Dense physical-domain inverse LUTs (inverse uses runtime search on the forward knots).
 - Multidimensional compensation such as measurement by temperature or load.
-- Runtime/factory gain-and-offset calibration wrappers.
+- Automatic calibration discovery, coefficient persistence, or device-specific
+  calibration policy. `AffineTransform` and `AffineCalibration` only apply
+  caller-supplied coefficients.
 - Automatic chaining or unit conversion between transfer functions.
-- Sensor fusion, state estimation, hysteretic application decisions, or
-  general missing/invalid-sample policy beyond the single explicit
+- Sensor fusion, state estimation, hardware actuation, or automatic cadence,
+  reset, and general missing/invalid-sample policy beyond the single explicit
   observation-code guard.
 - A plugin interface for arbitrary host model code. Dedicated crates inspect
   the validated transfer graph and supply evaluated truth or prefitted knots
@@ -555,11 +562,15 @@ rounding as the table itself. It never reads NVM, regenerates knots, or edits
 `AffineCalibration` contains the same primitive and runs it after an inner
 transfer.
 
+`offset` is added in the numerator before division. To express an output-space
+offset `d`, pass `offset = d * scale`; the example's `-120_000 / 1_000` is
+therefore a -120 milli-Celsius output offset.
+
 ```rust
 use ph_curves::AffineTransform;
 
-// +0.5 % gain, -120 milli-Celsius offset, from this unit's factory trim.
-let trim = AffineTransform::new(1_005, -120, 1_000)?;
+// +0.5 % gain, -120 milli-Celsius output offset, from this unit's factory trim.
+let trim = AffineTransform::new(1_005, -120_000, 1_000)?;
 let corrected = trim.apply(milli_celsius)?;
 let original = trim.unapply(corrected)?;
 ```
@@ -567,7 +578,7 @@ let original = trim.unapply(corrected)?;
 ```rust
 use ph_curves::{AffineCalibration, InverseTransferFunction, TransferFunction};
 
-let trimmed = AffineCalibration::new(NTC_10K_BETA_3950, 1_005, -120, 1_000)?;
+let trimmed = AffineCalibration::new(NTC_10K_BETA_3950, 1_005, -120_000, 1_000)?;
 
 let milli_celsius = trimmed.convert(adc_code)?;   // calibrated reading
 let setpoint_code = trimmed.invert(25_000)?;      // calibrated setpoint
@@ -641,6 +652,92 @@ Window sizes count caller-supplied valid samples. Sampling cadence, invalid
 sample policy, transfer errors, and whether instability resets application
 state remain caller responsibilities. The crate does not read timestamps or
 silently assume a sample rate.
+
+### Post-conversion integer pipelines
+
+An already-converted unsigned measurement can enter directly at the temporal
+stages. This example smooths micro-lux, classifies the independent filtered
+window, and updates the high-light latch only after the signal is stable:
+
+```rust
+use ph_curves::{
+    Hysteresis, MovingAverage, Stability, StabilityDetector, TemporalFilter,
+};
+
+let mut average = MovingAverage::<u32, 4>::new();
+let mut settled = StabilityDetector::<u32, 3>::new(5_000);
+let mut high = Hysteresis::<u32>::new(900_000, 1_000_000);
+let mut high_light = false;
+
+// Already-converted micro-lux values supplied by the caller.
+for micro_lux in [
+    1_010_000, 1_006_000, 1_004_000, 1_002_000, 1_001_000, 999_000,
+] {
+    let Some(smoothed) = average.update(micro_lux).ready() else {
+        continue;
+    };
+    if matches!(settled.update(smoothed), Stability::Stable { .. }) {
+        high_light = high.update(smoothed);
+    }
+}
+
+assert!(high_light);
+```
+
+For a signed measurement, apply caller-supplied calibration before mutating
+temporal state. An affine overflow can then be handled without inserting a
+sample into either window:
+
+```rust
+use ph_curves::{
+    AffineTransform, Hysteresis, MovingAverage, Stability, StabilityDetector,
+    TemporalFilter,
+};
+
+let trim = AffineTransform::new(1_005, -120_000, 1_000).unwrap();
+let mut average = MovingAverage::<i32, 3>::new();
+let mut settled = StabilityDetector::<i32, 3>::new(100);
+let mut fan = Hysteresis::<i32>::new(55_000, 60_000);
+let mut fan_on = false;
+
+// Already-converted, untrimmed milli-Celsius values.
+for untrimmed in [60_100, 60_080, 60_090, 60_070, 60_080] {
+    let corrected = trim.apply(untrimmed).unwrap();
+    let Some(smoothed) = average.update(corrected).ready() else {
+        continue;
+    };
+    if matches!(settled.update(smoothed), Stability::Stable { .. }) {
+        fan_on = fan.update(smoothed);
+    }
+}
+
+assert!(fan_on);
+```
+
+The order is deliberate: optional affine correction, smoothing, independent
+stability classification, then a hysteretic decision. A moving average changes
+the numerical value; a stability detector classifies a separate recent window;
+and hysteresis changes its Boolean latch only when called. With filter window
+`F` and detector window `S`, the first classification needs `F + S - 1`
+caller-accepted samples. These examples choose to hold the latch during warm-up
+or instability; resetting it instead is application policy.
+
+Filtering and mapping do not generally commute. The nonlinear-transfer warning
+above always applies, and even affine correction can disagree across the two
+orders because each integer stage rounds. Choose the order whose units should
+define the filter window and thresholds.
+
+All state is fixed and allocation-free. `AffineTransform` stores three `i32`
+coefficients and is `O(1)`. `MovingAverage<T, N>` stores `[T; N]`, an `i64`
+running sum, and indices and is `O(1)` per sample. `StabilityDetector<T, N>`
+has its own `[T; N]`, threshold, and indices and scans in `O(N)` per filtered
+sample. `Hysteresis<T>` stores two thresholds and its latch/reset state and is
+`O(1)`. Exact byte size and instruction latency depend on target layout.
+
+Each loop iteration represents one valid sample accepted by the caller. Units,
+cadence, missing/invalid-sample handling, affine errors, and whether a gap or
+error calls each component's `reset` remain caller-owned. No stage acquires
+data, persists coefficients, reads a clock, or drives hardware.
 
 ### Decision primitives
 

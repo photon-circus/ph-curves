@@ -223,7 +223,7 @@ mod tests {
         assert_eq!(transform(2, 0, -1).apply(10), Ok(-20));
         assert_eq!(transform(-2, 0, -1).apply(10), Ok(20));
 
-        // Factory-style +0.5 % / -120 offset.
+        // Factory-style +0.5% gain with a -120 numerator offset.
         let trim = transform(1_005, -120, 1_000);
         // (-500 * 1005 + -120) / 1000 = -502.62 → -503
         assert_eq!(trim.apply(-500), Ok(-503));

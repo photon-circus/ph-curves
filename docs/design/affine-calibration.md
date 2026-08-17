@@ -83,9 +83,12 @@ Identity: `gain = scale`, `offset = 0` → passthrough (modulo rounding when `|s
 `AffineCalibration<T>` implements `InverseTransferFunction` whenever `T` does, closing the composition gap between this companion and `feature/0.2.0-inverse-transfer`. Without it, a calibrated setpoint required the caller to hand-roll the affine inverse and get the rounding right.
 
 ```rust
-let trimmed = AffineCalibration::new(NTC_10K_BETA_3950, 1_005, -120, 1_000)?;
+let trimmed = AffineCalibration::new(NTC_10K_BETA_3950, 1_005, -120_000, 1_000)?;
 let code = trimmed.invert(25_000)?;   // calibrated setpoint -> ADC code
 ```
+
+Here `offset` is the numerator term. With `scale = 1_000`, an output-space
+offset of -120 milli-Celsius therefore requires `offset = -120_000`.
 
 - Solves `y = (y' * scale - offset) / gain` with the same nearest, ties-away rounding as the forward path, then delegates to the inner `invert`.
 - `gain == 0` is rejected by `new` with `AffineCalibrationError::ZeroGain`: it collapses every observation onto `offset / scale`, so the affine has no inverse. This is a deliberate tightening of the constructor rather than a deferred failure in `invert`.

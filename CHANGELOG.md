@@ -187,6 +187,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- README now mirrors executable crate-level rustdoc examples for
+  device-neutral post-conversion pipelines over already-converted `u32` and
+  affine-calibrated `i32` measurements. They make composition order,
+  caller-owned cadence/error/reset/unit policy, and fixed storage/runtime costs
+  explicit, and correct the scope discussion now that affine calibration and
+  hysteretic decisions are available.
 - `AffineCalibration` contains an `AffineTransform` and delegates
   gain/offset/scale arithmetic to it. Constructor, accessor, forward, inverse,
   boundary, and error behavior are unchanged: `AffineCalibrationError` is
@@ -244,6 +250,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Affine calibration examples now scale numerator offsets correctly: with
+  `scale = 1_000`, a -120 output-unit offset is `offset = -120_000`, not
+  `-120`.
 - The default-feature runtime now builds against a core-only MSP430 sysroot.
   On 16-bit-pointer targets, the `u32` moving-average window cap no longer
   truncates to zero, and the two impossible 65,536-entry convenience aliases
