@@ -33,7 +33,7 @@ full multi-member schema.
 | --- | --- |
 | [Hysteresis and debounce](decision-primitives.md) | Fixed-memory decision state, cadence assumptions, bounds, and non-goals |
 
-The root [README pipeline quick start](../../README.md#stabilize-and-decide)
+The root [README pipeline quick start](../../README.md#quick-start-stabilize-and-decide)
 shows how the shipped temporal and decision primitives compose. The design
 record explains the boundary between reusable state machines and caller-owned
 device policy.
