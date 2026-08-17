@@ -14,7 +14,7 @@ body:
     attributes:
       label: ph-curves version
       description: From `Cargo.toml`, or `cargo tree -p ph-curves`.
-      placeholder: "0.2.1"
+      placeholder: "0.3.0"
     validations:
       required: true
 
@@ -43,6 +43,7 @@ body:
         - thumbv7em-none-eabi
         - riscv32imc-unknown-none-elf
         - riscv32imac-unknown-none-elf
+        - msp430-none-elf
         - xtensa-esp32-none-elf
         - xtensa-esp32s2-none-elf
         - xtensa-esp32s3-none-elf

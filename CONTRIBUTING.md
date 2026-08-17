@@ -26,9 +26,21 @@ cargo build --features gen-cli --bin ph-curves-gen
 
 ## Submitting a pull request
 
-1. Push your branch and open a PR against `main`.
+1. Push your branch and normally open a PR against `main`. When a maintainer has
+   named an active `release/x.y.z` branch, changes explicitly scoped to that
+   release may target it instead.
 2. Describe **what** you changed and **why**.
 3. Make sure CI passes (formatting, clippy, tests).
+
+An active release branch enters `main` only through its own dedicated,
+non-draft release pull request. That aggregate pull request must pass the
+required `ci` check and have every review conversation resolved. When another
+trusted collaborator with write or admin access is available, that person must
+approve the current head. In a single-maintainer phase, required approvals stay
+at zero because an author cannot approve their own pull request; the maintainer
+instead records a current-head review attestation covering the aggregate diff,
+automated findings, and release checklist. Do not integrate a release branch
+into `main` directly.
 
 ## Reporting bugs
 

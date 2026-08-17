@@ -1,0 +1,89 @@
+# Device-neutral acceptance fixture for source-backed transfer families.
+#
+# Synthetic multi-range ADC front end: two selector axes, three emitted
+# members with distinct input transforms and applicability windows, one
+# forbidden mapped member, one selector-addressed family gap, one unsupported
+# combination, ordinary below/above policy plus an observation guard, an
+# unrelated normalized curve, a standalone guarded transfer, and a
+# document-level gap. Independently computable: y = u + 1e-4 u^2 with
+# u = count * numerator / denominator. No vendor document or network resource.
+
+[curves.linear]
+builtin = "linear"
+
+[transfers]
+requires = ["observation_guard_v1", "transfer_families_v1"]
+
+[transfers.guarded_identity]
+input_unit = "adc_code"
+output_unit = "millivolt"
+output_scale = 1
+max_interpolation_error = 1
+max_knots = 8
+below = "error"
+above = "clamp"
+saturation = { code = 65535, behavior = "error" }
+formula = "x"
+domain = [1, 10]
+
+[transfer_families.front_end]
+provenance = { identity = "synthetic multi-range ADC note", locator = "Table 1" }
+input_unit = "adc_code"
+output_unit = "millivolt"
+output_scale = 1000
+max_interpolation_error = 1
+max_knots = 32
+max_total_knots = 8
+max_table_bytes = 48
+below = "error"
+above = "clamp"
+saturation = { code = 65535, behavior = "error", provenance = { locator = "§4 saturation" } }
+selector_axes = { range = ["low", "mid", "high"], coupling = ["dc", "ac"] }
+
+[transfer_families.front_end.model]
+kind = "scaled_polynomial"
+coefficients = [0.0, 1.0, 1.0e-4]
+
+[[transfer_families.front_end.members]]
+selectors = { range = "low", coupling = "dc" }
+status = "emit"
+emitted_name = "front_end_low_dc"
+input_transform = { numerator = 2000, denominator = 1000000 }
+applicability = { model_input = [0.2, 1.0] }
+
+[[transfer_families.front_end.members]]
+selectors = { range = "mid", coupling = "dc" }
+status = "emit"
+emitted_name = "front_end_mid_dc"
+input_transform = { numerator = 8000, denominator = 1000000 }
+applicability = { model_input = [0.8, 3.2] }
+
+[[transfer_families.front_end.members]]
+selectors = { range = "high", coupling = "dc" }
+status = "emit"
+emitted_name = "front_end_high_dc"
+input_transform = { numerator = 32000, denominator = 1000000 }
+applicability = { model_input = [3.2, 8.0] }
+
+[[transfer_families.front_end.members]]
+selectors = { range = "low", coupling = "ac" }
+status = "forbidden"
+reason = "AC coupling saturates the low-range front end"
+input_transform = { numerator = 2000, denominator = 1000000 }
+applicability = { model_input = [0.2, 1.0] }
+
+[[transfer_families.front_end.members]]
+selectors = { range = "high", coupling = "ac" }
+status = "unsupported"
+reason = "high-range AC path has no source mapping"
+
+[[transfer_families.front_end.gaps]]
+selectors = { range = "mid", coupling = "ac" }
+status = "undefined"
+reason = "AC coupling on the mid range is not characterized"
+provenance = { locator = "Table 1, omitted row" }
+
+[gaps.digital_flag]
+status = "undefined"
+reason = "auxiliary digital flag; no conversion"
+provenance = { identity = "synthetic multi-range ADC note", locator = "§9" }

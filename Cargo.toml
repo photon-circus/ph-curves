@@ -1,6 +1,6 @@
 [package]
 name = "ph-curves"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.92.0"
 description = "no-std, no-alloc Rust for embedded: curve lookup tables, ADC-to-measurement transfer functions with inverse and calibration, temporal filters, and tickless scheduling"
@@ -49,7 +49,10 @@ gen-cli = ["gen-lib", "dep:clap"]
 gen = ["gen-cli"]
 
 [dependencies]
-fixed = { version = "1", default-features = false }
+# `fixed` 1.31 raises its MSRV to 1.93. Keep fresh resolver-2 consumers on a
+# release that satisfies this crate's documented Rust 1.92 baseline; relying on
+# this repository's lockfile would not protect downstream libraries.
+fixed = { version = ">=1, <1.31", default-features = false }
 
 # Host-only deps for the `gen` / `gen-cli` features.
 serde = { version = "1", features = ["derive"], optional = true }
@@ -60,3 +63,17 @@ clap = { version = "4", features = ["derive"], optional = true }
 name = "ph-curves-gen"
 path = "src/bin/gen/main.rs"
 required-features = ["gen-cli"]
+
+[[test]]
+name = "generation_report"
+path = "tests/generation_report.rs"
+required-features = ["gen-lib"]
+
+[[test]]
+name = "family_acceptance_gen"
+path = "tests/family_acceptance_gen.rs"
+required-features = ["gen-lib"]
+
+[[example]]
+name = "no_std_generated_fixtures"
+crate-type = ["lib"]

@@ -19,10 +19,51 @@ them, it is not ready.
    [docs/compatibility.md](https://github.com/photon-circus/ph-curves/blob/main/docs/compatibility.md)
    for the standard: a break earns its cost only when it removes a footgun that
    cannot be fixed additively. Ergonomics does not qualify.
+4. **The published dependency graph respects the documented Rust 1.92 MSRV.**
+   The `downstream-msrv` CI job builds a fresh edition-2021, resolver-2 crate
+   for `thumbv7em-none-eabi` and verifies that it selects `fixed` 1.30.x. The
+   repository lockfile is not evidence for a downstream library consumer.
+
+## Release integration
+
+An active `release/x.y.z` branch may enter `main` only through a dedicated,
+non-draft pull request whose head is that release branch and whose base is
+`main`. Do not push or merge the branch into `main` out of band, and do not tag
+or publish from the release branch.
+
+Before opening that pull request, complete version/changelog/security metadata
+and the full validation gate on the release branch. The pull request must expose
+the complete aggregate release diff, identify the issue it closes, and state
+which tag/publish steps remain owner-only after merge. Review the aggregate
+diff, require the pull request's `ci` check to pass on the merge result, and
+resolve every review conversation before merging it.
+
+When the repository has another trusted collaborator with write or admin
+access, the current head commit must also have an approving review from someone
+other than the pull request author. At that transition, update the `main` and
+`release/**` protection rules to require one approval, dismiss stale approvals,
+and require approval of the latest push by someone other than its author. While
+the repository has only one trusted collaborator, branch protection instead
+requires zero approvals because GitHub does not permit an author to approve
+their own pull request. In that phase, the sole maintainer must record an
+explicit review attestation on the current head: the aggregate diff was
+reviewed, automated findings were dispositioned, and the release checklist is
+complete. Automated review and green CI remain evidence, but are not represented
+as independent human approval.
+
+Only after the release pull request merges and `main` CI is green may the owner
+create the annotated tag, publish to crates.io, and create the GitHub release.
 
 ## Pre-release checklist
 
-- [ ] `main` contains the release commit, and CI is green on it.
+- [ ] The dedicated non-draft `release/x.y.z` -> `main` pull request has a green
+      required `ci` check and every review conversation is resolved. If another
+      trusted collaborator is available, that person approved the current head.
+      Otherwise, the sole maintainer recorded the current head SHA and an
+      explicit review attestation covering the aggregate diff, automated
+      findings, and this checklist.
+- [ ] That pull request is merged; `main` contains the release commit, and CI is
+      green on it.
 - [ ] `Cargo.toml` `version` is the version being released.
 - [ ] **`Cargo.toml` `description` still describes the crate.** This is the
       text crates.io shows, and it is frozen into the published version — it
@@ -34,15 +75,18 @@ them, it is not ready.
 - [ ] `keywords` and `categories` are still accurate, and `categories` are
       valid crates.io slugs — an invalid slug fails the upload, not the
       dry run.
-- [ ] `CHANGELOG.md` has a dated `## [x.y.z] - YYYY-MM-DD` section — no
-      entries left under `## [Unreleased]`. **Date it in UTC**, using the day
-      you actually publish. crates.io records the publish time in UTC and the
-      GitHub release displays UTC, so a local-time date reads as off by one
-      against both whenever you release in the evening west of Greenwich.
+- [ ] `CHANGELOG.md` starts with a real, empty `## [Unreleased]` heading,
+      followed by a dated `## [x.y.z] - YYYY-MM-DD` section. No change entry or
+      subsection remains under `Unreleased`. **Date the release in UTC**, using
+      the day you actually publish. crates.io records the publish time in UTC
+      and the GitHub release displays UTC, so a local-time date reads as off by
+      one against both whenever you release in the evening west of Greenwich.
       Check with `date -u +%F`, not the clock on the wall.
 - [ ] `CHANGELOG.md` has a `[x.y.z]:` compare link at the bottom, and
       `[Unreleased]:` compares from the new tag.
-- [ ] `SECURITY.md` lists the new minor line as supported.
+- [ ] `SECURITY.md` keeps the currently published minor supported until the
+      new release is actually published and states the publication-triggered
+      transition to the new minor precisely.
 - [ ] Public API additions carry rustdoc; `#![deny(missing_docs)]` enforces this
       but does not judge quality.
 - [ ] Any new host-only module links `std` **module-locally**, never at the
@@ -61,23 +105,63 @@ pwsh -File scripts/local-ci.ps1
 ```
 
 Confirm the packaged file list contains no development-only paths. `docs/` and
-`scripts/` are excluded in `Cargo.toml`:
+`scripts/` are excluded in `Cargo.toml`. It must include the documented `u16`
+input and the three generated fixtures consumed by packaged examples:
 
 ```bash
 cargo package --list
 ```
 
+Required paths are `assets/curves-u16.toml`,
+`tests/fixtures/family_acceptance_generated.rs`,
+`tests/fixtures/ntc_generated.rs`, and
+`tests/fixtures/observation_guards_generated.rs`; CI checks each exact entry.
+
 ## Publish
 
+Start from a clean, current `main`, not whichever branch happens to be checked
+out. The fast-forward-only update refuses a divergent local branch, and the
+explicit equality check proves the tag target is exactly the reviewed commit on
+`origin/main`:
+
 ```bash
-git tag -a v0.2.0 -m "ph-curves 0.2.0"
+set -eu
+release_version=X.Y.Z
+git fetch --prune --tags origin
+git switch main
+test -z "$(git status --porcelain)" || {
+  echo "refusing to release from a dirty worktree" >&2
+  exit 1
+}
+git pull --ff-only origin main
+test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" || {
+  echo "local main is not exactly origin/main" >&2
+  exit 1
+}
+test -z "$(git status --porcelain)" || {
+  echo "refusing to tag a dirty worktree" >&2
+  exit 1
+}
+case "$(cargo pkgid)" in
+  *@"${release_version}") ;;
+  *)
+    echo "Cargo.toml package version does not match ${release_version}" >&2
+    exit 1
+    ;;
+esac
+git rev-parse -q --verify "refs/tags/v${release_version}" >/dev/null && {
+  echo "tag v${release_version} already exists" >&2
+  exit 1
+}
+git tag -a "v${release_version}" -m "ph-curves ${release_version}"
+test "$(git rev-list -n 1 "v${release_version}")" = "$(git rev-parse origin/main)"
 ```
 
-Push the tag, then publish. The tag must exist first, so the `CHANGELOG.md`
-compare links resolve:
+Push the verified tag, then publish from the same clean `main`. The tag must
+exist first, so the `CHANGELOG.md` compare links resolve:
 
 ```bash
-git push origin v0.2.0
+git push origin "v${release_version}"
 ```
 
 ```bash
@@ -88,7 +172,10 @@ Then create the GitHub release from the tag. `--verify-tag` refuses to invent
 a tag if you mistyped it:
 
 ```bash
-gh release create v0.2.0 --title "v0.2.0 — short summary" --notes-file notes.md --verify-tag
+gh release create "v${release_version}" \
+  --title "v${release_version} — short summary" \
+  --notes-file notes.md \
+  --verify-tag
 ```
 
 Build `notes.md` from that version's `CHANGELOG.md` section. Lead with a few
@@ -106,7 +193,11 @@ published artifact.
       default features only.
 - [ ] Confirm the README badges resolve on crates.io — version, docs.rs, CI,
       license, MSRV, `no_std`.
-- [ ] Add a fresh empty `## [Unreleased]` section to `CHANGELOG.md`.
+- [ ] Confirm the empty `## [Unreleased]` heading remains first in
+      `CHANGELOG.md`; future changes go there rather than into the frozen
+      release section.
+- [ ] Confirm the crates.io publication activated `SECURITY.md`'s support
+      transition: the new minor is supported and the preceding minor is not.
 - [ ] Refresh the GitHub repository description and topics if the release
       changed what the crate does. Unlike the manifest description, these are
       mutable at any time — but they drift for the same reason, so check them

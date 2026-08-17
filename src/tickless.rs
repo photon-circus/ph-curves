@@ -28,7 +28,7 @@
 //! segment longer than ~24.85 days as already finished.
 
 use crate::MonotonicCurve;
-use crate::math::{Rounding, UnitValue, next_target_value, quantize};
+use crate::math::{Rounding, UnitValue, quantize};
 
 /// Half the `u32` range. Deltas larger than this are treated as negative under
 /// the signed wrapping convention used by free-running embedded clocks.
@@ -122,6 +122,11 @@ where
     /// - `curve` — the monotonic curve that shapes the transition.
     /// - `t0_ms` — wall-clock start time of the segment in milliseconds.
     /// - `duration_ms` — total duration of the segment in milliseconds.
+    ///   A zero duration is treated as already finished: [`Self::next_deadline`]
+    ///   returns the quantized end value due immediately.
+    ///   [`RepeatMode::Repeat`] and [`RepeatMode::PingPong`] do not cycle a
+    ///   zero-length segment, so [`Self::iter`] terminates after that single
+    ///   due-now deadline instead of spinning.
     /// - `start_val` — raw output value at `t = 0` (before quantization).
     /// - `end_val` — raw output value at `t = 1` (before quantization).
     /// - `step` — quantization step size (clamped to a minimum of 1).
@@ -208,11 +213,6 @@ where
             };
         }
 
-        let increasing = self.end_val >= self.start_val;
-        let target_val = next_target_value(current_val, end_val_q, self.step, increasing);
-        let w_target = T::inv_lerp_u16(self.start_val, self.end_val, target_val);
-        let u_target = self.curve.inv(w_target);
-
         // Clamp in offset-from-`t0` space. `PastEnd` already returned above, so
         // `now` is either inside the segment or ahead of it, and every offset
         // below is bounded by `duration_ms` — plain `u32` comparisons hold even
@@ -232,7 +232,11 @@ where
             SegmentProgress::PastEnd => (self.duration_ms, self.duration_ms),
         };
 
-        let mut dl_off = u_target.to_time_offset(self.duration_ms);
+        // Search elapsed time, not inverted grid points. `inv_lerp` of a raw
+        // quantization boundary disagrees with forward `lerp_u16` truncation,
+        // so a closed-form inverse wakes early and the iterator then sees a
+        // due-now deadline at the same quantized value.
+        let mut dl_off = self.first_quantized_change_offset(now_off, current_val);
         if dl_off < min_off {
             dl_off = min_off;
         }
@@ -247,6 +251,37 @@ where
             deadline_ms: self.t0_ms.wrapping_add(dl_off),
             current_val,
         }
+    }
+
+    /// Quantized output at offset `elapsed_ms` from `t0`, using the same
+    /// `from_time_frac` / eval / lerp / quantize path as [`Self::next_deadline`].
+    fn quantized_at_offset(&self, elapsed_ms: u32) -> u16 {
+        let t = if elapsed_ms == 0 {
+            T::zero()
+        } else {
+            T::from_time_frac(elapsed_ms, self.duration_ms)
+        };
+        let raw = self.curve.eval(t).lerp_u16(self.start_val, self.end_val);
+        quantize(raw, self.step, self.rounding)
+    }
+
+    /// First offset `> now_off` at which [`Self::quantized_at_offset`] differs
+    /// from `current_val`, or `duration_ms` if it never does.
+    fn first_quantized_change_offset(&self, now_off: u32, current_val: u16) -> u32 {
+        let mut lo = now_off;
+        let mut hi = self.duration_ms;
+        if self.quantized_at_offset(hi) == current_val {
+            return hi;
+        }
+        while lo + 1 < hi {
+            let mid = lo + (hi - lo) / 2;
+            if self.quantized_at_offset(mid) != current_val {
+                hi = mid;
+            } else {
+                lo = mid;
+            }
+        }
+        hi
     }
 
     /// Return an iterator that yields successive [`TicklessDeadline`] values
@@ -302,6 +337,9 @@ where
 
     /// Advance to the next cycle, returning `true` if the iterator continues.
     fn advance_cycle(&mut self) -> bool {
+        if self.schedule.duration_ms == 0 {
+            return false;
+        }
         match self.schedule.repeat {
             RepeatMode::Once => false,
             RepeatMode::Repeat => {
@@ -334,19 +372,22 @@ where
         let end_ms = cycle.end_ms();
         let end_val_q = quantize(self.end_val, self.schedule.step, self.schedule.rounding);
 
-        // Offset space again: comparing `deadline_ms` against `end_ms` under the
-        // half-range convention reports "finished" on the first iteration of any
-        // segment longer than ~24.85 days.
-        let duration_ms = self.schedule.duration_ms;
-        let cycle_finished =
-            dl.deadline_ms.wrapping_sub(self.t0_ms) >= duration_ms || dl.current_val == end_val_q;
-
-        if cycle_finished {
+        // Finish a cycle only once the emitted value is the terminal quantized
+        // end. A deadline that lands on `end_ms` while `current_val` is still
+        // pre-end must yield a follow-up PastEnd item so callers who apply
+        // `current_val` at each deadline actually reach the endpoint.
+        //
+        // If the next change is due *now* but we are not at the terminal value,
+        // jump to `end_ms` rather than parking `now` on the same timestamp —
+        // otherwise Once never terminates and Repeat/PingPong spin.
+        if dl.current_val == end_val_q {
             if !self.advance_cycle() {
                 self.done = true;
             } else {
                 self.now_ms = end_ms;
             }
+        } else if dl.deadline_ms == self.now_ms {
+            self.now_ms = end_ms;
         } else {
             self.now_ms = dl.deadline_ms;
         }

@@ -1,8 +1,9 @@
 //! Shared integer rounding used by transfer and stabilization paths.
 //!
-//! Transfer interpolation (forward and inverse), affine calibration, and the
-//! temporal filters all round the same way — nearest, ties away from zero —
-//! via [`div_nearest_ties_away`]. Curve LUT lookup does not use this helper;
+//! Transfer interpolation (forward and inverse), affine calibration, the
+//! standalone [`crate::AffineTransform`], and the temporal filters all round
+//! the same way — nearest, ties away from zero — via
+//! [`div_nearest_ties_away`]. Curve LUT lookup does not use this helper;
 //! it has its own quantization path.
 
 /// Divide with nearest rounding, ties away from zero.
@@ -18,9 +19,12 @@
 /// is representable. The single unrepresentable case is
 /// `numerator == i64::MIN` with `denominator.unsigned_abs() == 1`, where the
 /// exact quotient is `2^63` and does not fit `i64`. No call site in this crate
-/// can reach it: transfer and stabilization numerators are bounded by products
-/// of `u16` and `i32` operands, far below `i64::MIN`. Release builds return a
-/// wrapped value rather than aborting on the audio- and control-path callers.
+/// can reach it: transfer numerators are products of `u16` and `i32`
+/// operands. The widest stabilization numerator is the moving-average running
+/// sum; its const-generic window limit proves `N * T::MAX <= i64::MAX` before
+/// construction. The exponential smoother's product is at most
+/// `u32::MAX * u16::MAX`, also well inside `i64`. Release builds therefore
+/// cannot reach the wrapped cast through any validated crate call site.
 pub(crate) const fn div_nearest_ties_away(numerator: i64, denominator: i64) -> i64 {
     debug_assert!(denominator != 0);
 

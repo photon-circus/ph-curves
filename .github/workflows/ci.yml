@@ -57,6 +57,7 @@ jobs:
           - thumbv7em-none-eabi
           - thumbv6m-none-eabi
           - riscv32imc-unknown-none-elf
+          - msp430-none-elf
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -74,10 +75,31 @@ jobs:
             exit 1
           fi
 
+      # Linking std at the crate root, or importing its macros there, makes a
+      # host feature capable of hiding an accidental runtime allocation. Keep
+      # the host link explicit and module-local under src/gen.
+      - name: std must remain module-local
+        run: |
+          if grep -nE '^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?extern[[:space:]]+crate[[:space:]]+std([^[:alnum:]_]|$)' src/lib.rs; then
+            echo "::error file=src/lib.rs::std must not be linked at the crate root; keep it module-local under src/gen."
+            exit 1
+          fi
+          if grep -nE '^[[:space:]]*#[[:space:]]*\[[[:space:]]*macro_use([[:space:]]|\]|\()' src/lib.rs; then
+            echo "::error file=src/lib.rs::#[macro_use] is forbidden at the crate root because it can expose allocating macros to runtime modules."
+            exit 1
+          fi
+          if grep -nE '^[[:space:]]*#[[:space:]]*\[[[:space:]]*macro_use([[:space:]]|\]|\()' src/gen/mod.rs; then
+            echo "::error file=src/gen/mod.rs::link std explicitly without #[macro_use]; host modules import only what they use."
+            exit 1
+          fi
+          if ! grep -qE '^[[:space:]]*extern[[:space:]]+crate[[:space:]]+std;[[:space:]]*$' src/gen/mod.rs; then
+            echo "::error file=src/gen/mod.rs::src/gen/mod.rs must link std module-locally."
+            exit 1
+          fi
+
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
           toolchain: nightly
-          targets: ${{ matrix.target }}
           components: rust-src
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
@@ -89,8 +111,12 @@ jobs:
       # `+nightly` is required, not stylistic: rust-toolchain.toml pins 1.92.0
       # and a rustup file override outranks whatever the setup action selected,
       # so a bare `cargo` here resolves to stable and rejects `-Z`.
+      # Do not request a prebuilt target from rustup: tier-3 MSP430 has none,
+      # and `-Z build-std=core` builds it from the rust-src component.
       - name: Build against core only
         run: cargo +nightly build --target ${{ matrix.target }} -Z build-std=core
+      - name: Generated fixtures compile against core only
+        run: cargo +nightly build --example no_std_generated_fixtures --target ${{ matrix.target }} -Z build-std=core
 
   clippy:
     name: Clippy
@@ -137,6 +163,60 @@ jobs:
       - name: 'cargo run --features gen still produces the CLI'
         run: cargo run --features gen --bin ph-curves-gen -- --help
 
+  # Cargo.lock does not constrain a library dependency in a downstream crate.
+  # Resolve from scratch under the documented toolchain so an upstream MSRV
+  # bump cannot make a nominally compatible ph-curves release unbuildable.
+  downstream-msrv:
+    name: Fresh downstream (Rust 1.92, resolver 2)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: "1.92.0"
+          targets: thumbv7em-none-eabi
+      - name: Build a fresh edition-2021 resolver-2 consumer
+        shell: bash
+        run: |
+          set -euo pipefail
+          probe="$(mktemp -d "${RUNNER_TEMP}/ph-curves-msrv.XXXXXX")"
+          trap 'rm -rf -- "$probe"' EXIT
+          mkdir -p "$probe/src"
+          cat >"$probe/Cargo.toml" <<EOF
+          [package]
+          name = "ph-curves-msrv-probe"
+          version = "0.0.0"
+          edition = "2021"
+          rust-version = "1.92.0"
+          resolver = "2"
+          publish = false
+
+          [dependencies]
+          ph-curves = { path = "${GITHUB_WORKSPACE}" }
+          EOF
+          cat >"$probe/src/lib.rs" <<'EOF'
+          #![no_std]
+          use ph_curves::AffineTransform;
+
+          pub const IDENTITY: AffineTransform = match AffineTransform::new(1, 0, 1) {
+              Ok(value) => value,
+              Err(_) => panic!("identity coefficients are valid"),
+          };
+          EOF
+
+          cargo +1.92.0 build \
+            --manifest-path "$probe/Cargo.toml" \
+            --target thumbv7em-none-eabi
+          resolved="$(cargo +1.92.0 tree \
+            --manifest-path "$probe/Cargo.toml" \
+            -i fixed \
+            --prefix none)"
+          printf '%s\n' "$resolved"
+          if ! grep -qE '^fixed v1\.30\.[0-9]+$' <<<"$resolved"; then
+            echo "::error::fresh Rust 1.92 consumer did not resolve fixed v1.30.x"
+            exit 1
+          fi
+
   build-no-std:
     name: Build (no_std)
     runs-on: ubuntu-latest
@@ -156,6 +236,7 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: cargo build --target ${{ matrix.target }}
+      - run: cargo build --example no_std_generated_fixtures --target ${{ matrix.target }}
 
   build-esp-xtensa:
     name: Build (ESP32 Xtensa)
@@ -180,6 +261,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: cargo +esp build --target ${{ matrix.target }} -Zbuild-std=core
+      - run: cargo +esp build --example no_std_generated_fixtures --target ${{ matrix.target }} -Zbuild-std=core
 
   doc:
     name: Docs
@@ -217,6 +299,23 @@ jobs:
         with:
           toolchain: "1.92.0"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Required examples and fixtures are packaged
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_files="${RUNNER_TEMP}/ph-curves-package-files.txt"
+          cargo package --list >"$package_files"
+          for required in \
+            assets/curves-u16.toml \
+            tests/fixtures/family_acceptance_generated.rs \
+            tests/fixtures/ntc_generated.rs \
+            tests/fixtures/observation_guards_generated.rs
+          do
+            if ! grep -Fqx "$required" "$package_files"; then
+              echo "::error::$required is missing from the published package"
+              exit 1
+            fi
+          done
       - run: cargo package
 
   # Branch protection requires one stable check name instead of depending on
@@ -230,6 +329,7 @@ jobs:
       - clippy
       - test
       - feature-compat
+      - downstream-msrv
       - build-no-std
       - build-esp-xtensa
       - doc

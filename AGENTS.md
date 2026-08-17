@@ -79,7 +79,9 @@ about the same condition.
 `invert(convert(x))` through a calibration can differ from `x`. What *is*
 guaranteed: anything `convert` produces is invertible. A calibrated value
 within half an uncalibrated quantum of a range endpoint clamps to that endpoint
-rather than range-erroring.
+rather than range-erroring. If undoing the affine at a signed endpoint exceeds
+`i32`, the wrapper may recover only after verifying that endpoint's exact
+calibrated image; do not turn ordinary inverse overflow into saturation.
 
 **`TransferMetadata` cannot be `#[non_exhaustive]`.** The generator emits a
 struct literal into the *consumer's* crate, which the attribute forbids. Adding
@@ -110,17 +112,46 @@ green test suite caught neither — a schedule test that asserts only on
 
 Host code lives in `src/gen`. `src/bin/gen/main.rs` is a thin CLI over it.
 
+**Family TOML must fail closed across generator versions.** Every document with
+at least one `[transfer_families]` table carries
+`[transfers] requires = ["transfer_families_v1"]`. Released 0.2.1 decoders
+reject the array instead of silently ignoring families. Observation-guard and
+source-provenance capabilities are added to that array only when a
+**standalone transfer** uses those features; family guard/provenance is covered
+by `transfer_families_v1`, and a standalone capability added only for a family
+must fail as unused. The current parser must reject a missing or unused marker.
+Programmatic `FamilySpec` has no wire format and does not use it.
+
+**Validation is structural; generation is semantic.**
+`DefinitionsFile::validate` and both pre-/post-validation `insert_*` paths
+check names/symbol collisions, selector identities and completeness, domains,
+and source-specific mapping shape. Validation may perform the source-specific
+calculation needed to derive or check a member window—notably numerical NTC
+model evaluation—but it does not sweep that window for monotonicity, fit a
+table, measure interpolation error, or enforce emitted-resource budgets.
+`generate` / `generate_report` perform those generation checks for `emit`
+members. Description-only mapped members are source-window validated but never
+fitted, lowered, or emitted. Their stems do not reserve emitted symbols, and
+insertion must apply the same rule before and after validation.
+
 Regenerate the checked-in fixture whenever table generation changes:
 
 ```bash
 cargo run --features gen-cli --bin ph-curves-gen -- --input assets/transfers.toml --output tests/fixtures/ntc_generated.rs
+cargo run --features gen-cli --bin ph-curves-gen -- --input assets/observation-guards.toml --output tests/fixtures/observation_guards_generated.rs
+cargo run --features gen-cli --bin ph-curves-gen -- --input assets/family-acceptance.toml --output tests/fixtures/family_acceptance_generated.rs
 ```
 
 `tests/ntc_transfer.rs` re-measures the emitted table at runtime and asserts it
 matches the generator's recorded metadata. That cross-check is what catches
 drift between host and runtime arithmetic — if you change one side's rounding,
-it fails. Host audits should reuse `interpolate_segment` / `invert_segment`
-rather than reimplementing the math.
+it fails. `tests/observation_guards.rs` compiles standalone and family guard
+fixtures and executes their policy matrix. `tests/family_acceptance.rs` and
+`tests/family_acceptance_gen.rs` prove the device-neutral family pack: an
+independent quadratic oracle, TOML/`FamilySpec`/overlay parity, completeness
+and budget fail-closed checks, and mixed curve/family emission. Host audits
+should reuse
+`interpolate_segment` / `invert_segment` rather than reimplementing the math.
 
 ## Validating
 
@@ -194,3 +225,6 @@ building, testing, and running.
   ph-curves-gen -- --input assets/curves.toml --output /tmp/out.rs` exercises the
   headline generator path. Regenerating the checked-in fixture with the
   `assets/transfers.toml` command above should leave `git diff` empty.
+  Regenerating `assets/family-acceptance.toml` into
+  `tests/fixtures/family_acceptance_generated.rs` should also leave `git diff`
+  empty.

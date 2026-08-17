@@ -7,43 +7,401 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-17
+
+ph-curves 0.3.0 expands the crate from lookup and scheduling primitives into a
+coherent, device-neutral measurement pipeline for firmware. Teams can describe
+source-backed sensor families once, prove selector coverage, gaps, provenance,
+and resource bounds on the host, generate deterministic lookup tables, and then
+carry converted measurements through calibration, filtering, stability
+classification, and hysteretic decisions without `std` or allocation.
+
+The release is designed to make what ships predictable: schema and generator
+version mismatches fail closed; manifests and structured reports expose the
+symbols, policies, provenance, accuracy, and table bytes destined for firmware;
+and shared checked arithmetic keeps host generation and runtime conversion in
+agreement. The expanded embedded matrix, including core-only 16-bit-pointer
+coverage, makes those guarantees portable rather than platform assumptions.
+
 ### Added
 
+- `TemporalSample` for `u32`, so moving average, median, exponential smoother,
+  and stability detection accept already-converted unsigned measurements
+  without a downcast; `Hysteresis<u32>::new` adds unsigned decision thresholds.
+  On targets with pointer width at least 32,
+  the moving-average window cap is
+  `floor(i64::MAX / u32::MAX) = 2_147_483_648`; admitting a larger window would
+  overflow the `i64` running sum. On 16-bit-pointer targets every addressable
+  window fits, so the cap is `usize::MAX`. This is accumulator safety, not a
+  practical size: storage is still `[T; N]`.
+- `AffineTransform`, a standalone invertible `i32` affine map
+  `y' = (y * gain + offset) / scale`. It reuses the crate's nearest/ties-away
+  rounding and checked `i64` arithmetic, rejects `scale == 0` and `gain == 0`
+  at construction, and reports overflow through `AffineOverflow` rather than
+  transfer domain/range errors. Use it on an already-converted measurement;
+  `AffineCalibration` still wraps a transfer and now contains this primitive.
+- Device-neutral transfer-family acceptance fixtures and documentation. A
+  mixed definitions document (`assets/family-acceptance.toml`) proves a
+  synthetic multi-range ADC family: two selector axes, three emitted members
+  with distinct input transforms and applicability windows, a forbidden
+  mapped member, a selector-addressed family gap, an unsupported combination,
+  ordinary boundaries plus a family observation guard, a guarded standalone
+  transfer, an unrelated normalized curve, and a document-level gap. Runtime
+  tests exhaustively check conversion against an independent quadratic oracle.
+  Host tests prove TOML/`FamilySpec`
+  parity, evaluated-truth overlays, fail-closed completeness/provenance/budget
+  checks, structured reports, and rustdoc family/selector/provenance mapping.
+  Representative generated fixtures compile on the no-std and core-only
+  target matrix via `examples/no_std_generated_fixtures.rs`. The README
+  worked example is this ADC front end; VEML remains a downstream integration
+  concern.
+- A packaged `assets/curves-u16.toml` generator example whose normalized
+  builtins and formulas are valid for a complete 65,536-entry `u16` LUT. The
+  CLI invocation and target pointer-width requirement are documented next to
+  the asset; point-based sources still need coordinates that match the chosen
+  LUT size.
+- Complete host family IR, programmatic family construction, and stable
+  emitted member identity. `ValidatedFamily` exposes units, output scale,
+  its exact `FamilySource` through `ValidatedFamily::source` (including the
+  scaled-polynomial coefficients or complete NTC Beta-divider parameters),
+  aggregate budgets, and the existing
+  policy/provenance/universe graph. `ValidatedMember` exposes the resolved
+  observation-code domain, the selector-derived stem, and an optional explicit
+  `emitted_name`. `FamilySpec` / `FamilySource` construct a family without TOML;
+  `insert_family` feeds the same validate/generate pipeline. An optional member
+  `emitted_name` keeps the generated stem stable when selector display spelling
+  changes; explicit and derived stems share one collision set whose diagnostics
+  identify both origin families and exact typed selector maps.
+  `ValidatedDefinitions::emission_manifest` maps family plus typed selectors to
+  the table stem, symbol, and `_METADATA` / `_OBSERVATION_GUARD` companions
+  before fitting. Generated rustdoc for family members names the family and the
+  exact selector map. Description-only members and gaps stay inspectable and
+  have no runtime symbol. No builder or manifest type enters the default-feature
+  runtime path.
+- Host-only generation reports and optional family aggregate resource
+  budgets. `generate_report`, `generate_from_str_report`, and
+  `generate_from_toml_report` return the generated source together with
+  per-transfer metrics (identity, symbol, domain/range, requested and
+  achieved error, worst-case input, knot count, array-payload bytes,
+  fitting path, observation-guard metadata, citation-free generation policy,
+  effective source provenance, and separately resolved guard provenance).
+  Family reports retain their citation, guard citation, policy, compact
+  selector universe/completeness, aggregate-budget declarations, every member
+  including description-only statuses, and family-scoped gaps. Member and gap
+  records expose effective provenance separately from declared overrides;
+  emitted members map directly to generated table and symbol names. Named
+  document-level gaps are also reported. Family and document totals count
+  every emitted table only; duplicate payload is not coalesced.
+  Array payload is six bytes per knot (`u16` input + `i32` output);
+  `PiecewiseLinearTransfer` fields, `_METADATA`, `_OBSERVATION_GUARD`,
+  and symbol overhead are excluded. Optional family
+  `max_total_knots` / `max_table_bytes` are checked after each emitted member
+  is fitted and before the next; impossible minimum budgets fail before any
+  emitted-member table is fitted. Diagnostics name the family, requested
+  limit, and achieved amount.
+  Per-member `max_knots` is unchanged. Existing `String`-returning
+  helpers call the report path and cannot bypass a budget. No report
+  type enters the default-feature runtime path.
 - Issue forms for bug reports and feature requests, and a pull request
   template. Blank issues are disabled so the chooser always renders, which is
   what puts the private disclosure route in front of someone about to paste a
   vulnerability into a public issue. The bug form asks which surface is
   involved — runtime, `gen-lib`, or `gen-cli` — because the `no_std` runtime
   and the host generator fail in unrelated ways.
+- Host-only structured source provenance, separate from generation policy.
+  A `provenance` table records identity plus optional revision, locator, URL,
+  and note. Source-backed families require `provenance.identity`; members
+  inherit the family citation unless they declare an override. Overrides can
+  explicitly clear optional fields, and replacing `identity` resets every
+  unspecified optional field so citations from two documents cannot be
+  combined accidentally. Family-scoped gaps inherit the family citation and
+  may override it with the same set/clear rules; validated gap IR exposes the
+  effective citation and declared override. Document-level gaps may carry
+  their own independent citation.
+  `TransferSpec::with_provenance` and source overlays supply the same type as
+  TOML. Each overlay explicitly inherits, replaces, or clears the target
+  citation; emitted family-member overlays cannot clear it. Inheritance means
+  the target's declared, resolved pre-overlay citation, so it restores that
+  citation when replacing an earlier overlay. Standalone TOML
+  provenance requires `[transfers] requires = ["source_provenance_v1"]`, whose
+  shape makes 0.2.1 readers reject instead of silently discarding the citation.
+  Provenance nested inside a model or point value is rejected as misplaced.
+  Host inspection exposes `SourceProvenance` and a citation-free
+  `GenerationPolicy` as distinct values; generated rustdoc labels source provenance,
+  representation (the selected formula/points/model), and policy separately.
+  Observation-guard classification remains consumer/device policy unless the
+  `saturation` table cites a source, in which case rustdoc names that citation
+  and still applies the classification as declared policy. A family guard's
+  citation always resolves against family provenance, even when a member has
+  its own citation. A standalone guard citation resolves against the declared
+  transfer citation before an overlay, so replacing or clearing source
+  provenance does not rewrite or remove the guard citation. URLs are stored
+  and never fetched. Runtime
+  `TransferMetadata` and observation-guard companions do not retain citation strings.
+- Host-only `[transfer_families]` and `[gaps]` tables. A family shares one
+  formula, points, or model source across explicit selector members; only
+  `status = "emit"` members become independent `PiecewiseLinearTransfer`
+  constants. Non-`emit` statuses are `unnecessary`, `unsupported`, and
+  `forbidden`, each requiring a non-blank `reason`. `unnecessary` and
+  `forbidden` members retain a structurally/source-specifically validated
+  mapping. Validation may numerically derive/check its source window (notably
+  for NTC), but description-only members are never swept for full-window
+  monotonicity, fitted, error-measured, lowered, or emitted; `unsupported`
+  members have no mapping and therefore set no applicability coordinate or
+  input transform. Gaps record
+  `status = "undefined"` with a non-blank reason and are not generated.
+  `DefinitionsFile::transfer_families` and `gaps` are read-only inspection
+  views. Every family declares `selector_axes` (Cartesian product) or
+  `expected_selectors` (explicit maps); each expected identity is occupied
+  by exactly one member or family-scoped gap with a typed selector map and
+  a non-blank reason. Document-level `[gaps]` do not satisfy that occupancy.
+  Cartesian cardinality is checked for overflow, completeness is proven from
+  indexed duplicate-free occupancy and count equality without materializing
+  the product, and host IR enumeration is lazy. Explicit-universe membership
+  and selector-type checks use a single precomputed index rather than repeated
+  linear scans.
+  Selectors are never interpolated, unknown nested family source,
+  member, applicability, and gap fields are rejected, and every member is
+  validated before non-emitted statuses are filtered. Mapped member fields
+  follow a source capability matrix: formula and points use
+  `applicability.observation`, NTC uses `applicability.physical`, and
+  `scaled_polynomial` requires
+  `input_transform = { numerator, denominator }` plus
+  `applicability.model_input`. Family-scoped gap tables reject unknown
+  fields. Families may share a document with unrelated
+  `[curves]`; dense LUT generation stays curve-only.
+- Host-only transfer inspection and extension IR. `DefinitionsFile::validate`
+  returns a `ValidatedDefinitions` graph of families, every member (including
+  `unnecessary` / `unsupported` / `forbidden`), and gap reasons without
+  generating Rust.
+  `ValidatedFamily` exposes the declared selector universe, every member,
+  family-scoped gaps with resolved/declared provenance, typed selector
+  identities, and completeness status.
+  `TransferSpec` / `TransferSource` construct or overlay evaluated physical
+  truth and prefitted knots so a device crate can own source interpretation
+  while reusing ph-curves fitting, metadata, and `PiecewiseLinearTransfer`
+  codegen. Prefitted knots require dense truth so emitted accuracy metadata is
+  always verified. `GenerateOptions::transfers_only` skips dense LUT validation
+  when the document has no `[curves]`. There is still no plugin/evaluator ABI.
+- Host-only `kind = "scaled_polynomial"` models. Coefficients are
+  `[c0, c1, ...]` for `y = c0 + c1*u + c2*u^2 + ...` with Horner evaluation.
+  Model input is the exact rational `u = count * scale / 1e6` (integer product
+  first) for standalone definitions. Family members keep shared coefficients
+  and required per-member `input_transform = { numerator, denominator }`;
+  standalone definitions carry their own scale and observation domain.
+  Inclusive applicability bounds convert to codes without the floating-point
+  off-by-one from pre-rounding `scale / 1e6`. `u16::MAX` is legal unless the
+  caller excludes it. Empty or non-finite coefficients, zero scale, invalid
+  domain, non-monotonic truth, non-finite output, and scaled `i32` overflow
+  fail closed. Unknown scaled-polynomial model fields are rejected; the legacy
+  NTC model continues to ignore unknown model parameters for compatibility.
+  Generated firmware remains integer knots.
+- Explicit observation-code guard on piecewise-linear transfers, independent
+  of the fitted domain and of ordinary `below` / `above` policy. Forward
+  conversion classifies a declared code first: `Error` returns
+  `TransferError::RejectedObservation`, `Clamp` returns the output at
+  `domain_max`. Inverse conversion is unchanged. The host schema names the
+  field `saturation = { code, behavior }` (consumer/device policy, not
+  inferred from the integer); host IR and runtime use observation-guard
+  terminology. The guarded code must be strictly above `domain_max` and is
+  not added to the fitting domain. Metadata is an adjacent
+  `Option<ObservationGuardMetadata>` constant so `TransferMetadata` struct
+  literals stay additive. Standalone TOML guards require
+  `[transfers] requires = ["observation_guard_v1"]`; its array shape makes
+  older transfer-map decoders fail instead of silently dropping `saturation`.
+  Unused capabilities and guard keys misplaced inside model/point values are
+  rejected. A legacy transfer named `requires` must be renamed before opting
+  into the capability.
+
+### Breaking
+
+- `TransferError` gained `RejectedObservation { input }`, so a deliberately
+  rejected observation code is not an `AboveDomain`. Exhaustive downstream
+  matches need a new arm. `PiecewiseLinearTransfer` stores an optional guard
+  and its layout may grow (the verified 32-bit layout does); exact `size_of`
+  remains target/ABI-dependent. Unguarded construction keeps the previous
+  convert/invert behavior.
+- Every generated transfer now emits and reserves
+  `<NAME>_OBSERVATION_GUARD`, including a `None` constant for unguarded
+  transfers. A document containing both `foo` and `foo_observation_guard` must
+  rename one transfer. The uniform `Option` companion keeps symbol presence
+  stable when guard policy changes.
+- Host TOML parsing now fails closed on unknown top-level definition tables and
+  on unknown direct fields in standalone `[curves.*]` and `[transfers.*]`
+  entries. Documents that depended on those fields being ignored must remove
+  or correct them. Unreserved nested fields in legacy standalone point values
+  and NTC model parameters retain their 0.2.1 compatibility behavior.
 
 ### Changed
 
+- README now mirrors executable crate-level rustdoc examples for
+  device-neutral post-conversion pipelines over already-converted `u32` and
+  affine-calibrated `i32` measurements. They make composition order,
+  caller-owned cadence/error/reset/unit policy, and fixed storage/runtime costs
+  explicit, and correct the scope discussion now that affine calibration and
+  hysteretic decisions are available.
+- `AffineCalibration` contains an `AffineTransform` and delegates
+  gain/offset/scale arithmetic to it. Constructor, accessor, forward, inverse,
+  and boundary APIs are unchanged. `AffineCalibrationError` is still the
+  construction error, scalar `AffineTransform::unapply` still reports
+  `AffineOverflow`, and calibrated endpoint recovery remains wrapper policy.
+- Generated rustdoc for family members now includes the family name and typed
+  selector map. Host `TransferReport` / `FamilyMemberReport` also list
+  `_METADATA` and `_OBSERVATION_GUARD` companion symbol names. Standalone
+  transfer rustdoc is unchanged.
+- **0.3.0 host schema:** transfer-family member fields are source-aware.
+  Accepted-but-inert `scale` / `applicability.model_input` on formula, points,
+  and NTC members are rejected. `interpolate_selectors` is removed (discreteness
+  is an invariant). Member statuses are `emit`, `unnecessary`, `unsupported`,
+  and `forbidden`; non-`emit` statuses require a non-blank `reason`.
+  `unsupported` represents a selector combination without a source mapping,
+  while the other three statuses require the source-specific mapping. Families
+  declare a selector universe (`selector_axes` or
+  `expected_selectors`) and prove completeness with members and
+  family-scoped gaps. Families may share a document with unrelated
+  `[curves]`; dense LUT fallback remains curve-only. This is the publish
+  shape of `[transfer_families]`, first shipped in 0.3.0 and absent from 0.2.1.
+  Legacy standalone documents that use only documented 0.2.1 fields retain
+  their meaning. A whole-document `schema_version` field remains a separate
+  decision.
 - `scripts/local-ci.ps1` sets `CARGO_INCREMENTAL=0`. Incremental compilation
   made the gate flaky on Windows: rustc could fail to finalize
   `target/debug/incremental` ("Access is denied", os error 5) and `cargo test`
   exited 101 while reporting every test as passing, landing on a different
   feature each run so the failure read as a real, moving defect. CI builds
   fresh and gains nothing from incremental.
+- Family TOML now declares
+  `[transfers] requires = ["transfer_families_v1"]`. Released 0.2.1
+  generators reject that array before they can silently ignore
+  `[transfer_families]` and produce empty or incomplete output. The marker is
+  required exactly when at least one family is present. Family guards and
+  provenance are covered by that marker; `observation_guard_v1` and
+  `source_provenance_v1` are included in the same array only when standalone
+  transfers use those features, and otherwise fail as unused. Programmatic
+  `FamilySpec` construction has no wire format and needs no marker.
+- The `fixed` dependency is bounded to `>=1, <1.31`, because `fixed` 1.31 raises
+  its MSRV above this crate's Rust 1.92 baseline. CI and the local release gate
+  build a fresh edition-2021, resolver-2 downstream crate on Rust 1.92 and
+  require it to resolve `fixed` 1.30.x instead of relying on this repository's
+  lockfile.
+- Release validation treats warnings from every compilation step as errors,
+  compiles the headline runtime APIs in the no-std fixture matrix, and checks
+  the package list for the `u16` example and all generated fixtures needed by
+  packaged examples.
 - The README tagline now matches the manifest `description`, covering inverse
   transfers, calibration, and temporal filters. It had drifted the other way
   from the case `RELEASING.md` warns about — the manifest was the stale copy
   before 0.2.1 — but the tagline is the first thing a reader sees on both
   GitHub and crates.io, so the two should not disagree about what the crate
   does.
+- `[transfer_families]` and `[gaps]` are now known top-level definition
+  tables. Nested unknown fields on those types, on family point and NTC model
+  sources, and on family members and applicability are rejected. Unreserved
+  fields in legacy standalone point/NTC source values retain their permissive
+  compatibility behavior; direct standalone curve fields fail closed as
+  described under *Breaking*.
 
 ### Fixed
 
+- TOML-derived angle brackets in generated rustdoc now render literally through
+  HTML entities instead of relying on Markdown backslash escaping.
+- Affine calibration examples now scale numerator offsets correctly: with
+  `scale = 1_000`, a correction of -120 in the integer output scale is
+  `offset = -120_000`, not `-120`. The scalar and wrapper examples are now
+  self-contained, executable demonstrations with their separate fallible
+  boundaries visible.
+- `AffineCalibration::invert` now preserves the documented rule that anything
+  produced by `convert` is invertible even when undoing the affine at a signed
+  endpoint would exceed `i32`. It recovers only after verifying the applicable
+  inner endpoint's exact calibrated image. An arbitrary unrepresentable inverse
+  still reports overflow; ordinary representable values outside the image keep
+  their range errors, and scalar `AffineTransform::unapply` is unchanged.
+- `CurveLut` and `MonotonicCurveLut` now state their full-domain table-size
+  precondition and deterministic lookup panic explicitly. Their `const`
+  constructors remain unchanged; indexed assertions and regressions cover
+  undersized forward and inverse tables. The README no longer suggests that an
+  undersized `u16` LUT is a valid 16-bit-target alternative.
+- The default-feature runtime now builds against a core-only MSP430 sysroot.
+  On 16-bit-pointer targets, the `u32` moving-average window cap no longer
+  truncates to zero, and the two impossible 65,536-entry convenience aliases
+  are omitted while smaller-domain generic LUTs whose custom `UnitValue` domain
+  is completely covered, and the remaining runtime APIs, stay available.
+- `ValidatedDefinitions::insert_transfer` now rebuilds the validated graph
+  transactionally, matching `insert_family`. Normalized Rust-identifier and
+  companion-symbol collisions are rejected by the insertion call without
+  leaving the previously validated definitions partially mutated.
+- Pre- and post-validation transfer insertion now apply the same emitted-name
+  collision rules: a description-only family-member stem does not reserve a
+  generated symbol and therefore does not block a standalone emitted transfer.
+- Family selector keys and string values must contain at least one non-whitespace
+  character. Non-blank selector identities remain exact—leading or trailing
+  whitespace is preserved rather than silently canonicalized.
+- Prefitted generation now validates scaled dense truth as monotonic and
+  requires its direction to match the supplied knots before measuring error or
+  emitting accuracy metadata.
+- Generated rustdoc now escapes Markdown/HTML syntax in every user-derived
+  documentation string (names, representation, units, and citations), so text
+  such as `[missing]` cannot become a broken intra-doc link under `-D warnings`.
+  Provenance URLs and arbitrary runs of backticks use variable-length code
+  fences, preserving the literal value without creating autolinks or ending a
+  code span early.
+- Generated curve modules import and define only the LUT types used by that
+  document, so monotonic-only and non-monotonic-only output compiles under
+  `-D warnings`. Generator requests for LUT sizes below two now fail validation
+  instead of reaching invalid curve construction.
+- Transfer-family validation rejects duplicate capability markers and TOML
+  datetime selector values instead of silently accepting or coercing them.
+  Derived member names preserve the sign of negative integer and dash-prefixed
+  string selector values, so negative and positive identities cannot collapse
+  onto the same emitted symbol.
+- Programmatic family insertion now matches TOML by treating a family table
+  name as descriptive: it may match a standalone transfer or curve name while
+  emitted member symbols remain subject to the common collision checks.
+  Aggregate family budgets that cannot fit the minimum two knots per emitted
+  member fail before emitted-member table fitting; feasible budgets are then
+  enforced incrementally before later members are fitted.
+- CLI input, TOML, validation, and output-write failures now return concise
+  diagnostics and a failure exit status instead of panicking.
+- The public inverse-error audit now documents and asserts its table-shape,
+  strictly increasing-input, and declared-direction preconditions before
+  indexing or interpolating malformed host input.
+- Family source fields now fail closed: unknown keys in family point entries
+  or NTC model tables are rejected with the family and source path instead of
+  being accepted and discarded.
+- Overlay domain constraints now apply only to emitted family members.
+  Standalone TOML and programmatic transfer overlays may replace the original
+  source with a different observation domain.
+- Generated Rust files end with exactly one newline, so regenerated fixtures
+  no longer introduce a blank line at end of file.
+- Tickless Ceil and Nearest deadlines are the first millisecond the forward
+  quantized output actually changes, rather than the millisecond an inverted
+  grid point would be reached. The search walks elapsed time so it agrees
+  with `from_time_frac` / `lerp_u16` truncation; a closed-form `inv_lerp` of
+  either the next grid point or the raw rounding boundary wakes early.
+- `u16::inv_lerp_u16` clamps the target into the endpoint span and uses
+  integer `ceil` arithmetic, so a quantized target outside `[a, b]` no
+  longer overflows `I32F32` (debug panic, or a wrapped zero-length sleep
+  in release).
+- `TicklessIter` in `Once` mode emits the terminal quantized value before
+  finishing. A cycle whose next deadline is the segment end while the
+  current value is still pre-end is not treated as complete.
+- Zero-duration `Repeat` / `PingPong` schedules terminate after the due-now
+  end value instead of spinning on a zero-length cycle.
 - Documentation CI now runs rustdoc with `--features gen-lib`, matching the
   docs.rs feature set. The previous default-features-only invocation never
   compiled `src/gen`, so a broken intra-doc link in the host generator could
   not fail the gate.
-- The host generator now rejects unknown top-level definition tables instead
-  of succeeding with header-only output. A misspelled `[tranfsers…]` table, or
-  a newer document using tables such as `[transfer_families]` and `[gaps]`,
-  previously parsed as empty `curves`/`transfers` maps and looked like a
-  compatible `build.rs` run while omitting every expected symbol. Parse now
-  returns `Error::Toml` and names the unrecognized field. Nested unknown
-  fields are unchanged; that validation belongs to the family/member schema.
+- GitHub's runtime-purity job now enforces the same module-local `std` link as
+  the local release gate: crate-root `extern crate std` is rejected through
+  private/public, restricted-visibility, and aliased forms; bare and named
+  `#[macro_use(...)]` forms are rejected; and `src/gen/mod.rs` must retain its
+  explicit, unaliased host-only link.
+- The local release gate now fails when `cargo-deny` is unavailable and runs
+  its all-features dependency graph, rather than warning and silently skipping
+  a required dependency-policy check.
+- Release tagging instructions now fetch and fast-forward `main`, require a
+  clean worktree, prove `HEAD == origin/main`, reject an existing version tag,
+  and verify the annotated tag target before it can be pushed or published.
 
 ## [0.2.1] - 2026-08-10
 
@@ -297,7 +655,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 14 built-in easing curves plus legacy aliases.
 - 16-bit LUT support (`--value-type u16 --lut-size 65536`).
 
-[Unreleased]: https://github.com/photon-circus/ph-curves/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/photon-circus/ph-curves/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/photon-circus/ph-curves/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/photon-circus/ph-curves/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/photon-circus/ph-curves/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/photon-circus/ph-curves/compare/v0.1.1...v0.1.2

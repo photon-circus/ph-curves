@@ -7,114 +7,210 @@
 [![MSRV](https://img.shields.io/badge/MSRV-1.92.0-blue)](https://github.com/photon-circus/ph-curves/blob/main/rust-toolchain.toml)
 [![no_std](https://img.shields.io/badge/no__std-yes-green)](src/lib.rs)
 
-`no_std`, zero-allocation curve lookup tables, ADC-to-measurement transfer
-functions with inverse and calibration, temporal filters, and tickless
-scheduling for embedded Rust.
+`ph-curves` turns integer observations and normalized positions into
+deterministic firmware values: static curves, sparse ADC-to-measurement
+transfers, runtime calibration, fixed-memory stabilization, hysteretic
+decisions, and tickless deadlines.
+
+The host generator may model and fit with floating point, but firmware receives
+only static integer tables and bounded state. The runtime is always `no_std`
+and allocation-free.
+
+## Start here
+
+Choose the path that matches the job:
+
+| I need to… | Quick start | Main API |
+| --- | --- | --- |
+| Generate and evaluate a normalized curve | [Generate a curve](#quick-start-generate-a-curve) | `Curve`, `MonotonicCurve` |
+| Convert an ADC code into a physical measurement | [Convert an ADC observation](#quick-start-convert-an-adc-observation) | `TransferFunction`, `InverseTransferFunction` |
+| Apply per-unit gain/offset after conversion | [Calibrate a measurement](#quick-start-calibrate-a-measurement) | `AffineTransform`, `AffineCalibration` |
+| Smooth a measurement and make a stable decision | [Stabilize and decide](#quick-start-stabilize-and-decide) | `MovingAverage`, `StabilityDetector`, `Hysteresis` |
+| Sleep until a quantized curve output changes | [Schedule without polling](#quick-start-schedule-without-polling) | `Tickless`, `TicklessSchedule` |
+| Generate tables from Cargo rather than a shell command | [Generate from build.rs](#quick-start-generate-from-buildrs) | `ph_curves::r#gen` |
+| Describe hardware variants and intentional gaps together | [Model a transfer family](#quick-start-model-a-transfer-family) | `FamilySpec`, validated family IR and reports |
 
 ## Features
 
-- **Static LUTs** — curves are pre-computed at build time into `static` arrays,
-  so evaluation is a single index into a `&'static [u8; 256]` (or `[u16; 65536]`).
-- **`no_std` / `no_alloc`** — the library itself has zero runtime allocation.
-  Only the `fixed` crate is required at runtime (fixed-point math).
-- **Tickless scheduling** — computes the *next* wall-clock deadline where the
-  quantized output value changes, so your firmware can sleep instead of polling.
-- **Code-gen CLI** — a companion binary (`ph-curves-gen`) reads a simple TOML
-  file and emits the Rust source for all your curves.
-- **Physical transfer functions** — sparse adaptive knots convert integer ADC
-  observations to signed, scaled measurements with explicit range behavior.
-  Firmware uses only integer math; physical modeling and fitting are host-only.
-- **Runtime calibration** — `AffineCalibration` applies a caller-supplied
-  integer gain/offset/scale on top of any transfer, in both directions, without
-  regenerating tables or touching NVM.
-- **Temporal stabilization** — fixed-memory integer moving-average, median,
-  exponential smoothing, and stability detection for caller-supplied samples.
-- **Decision primitives** — `Hysteresis` and `Debounce` latch application
-  decisions from sample-count cadence alone; no clock, no GPIO.
+The features are ordered from build-time definition through the runtime
+measurement pipeline:
 
-## Scope and non-goals
+| Stage | Capability | Value |
+| --- | --- | --- |
+| Foundation | **`no_std` / `no_alloc` runtime** | No allocator, hidden I/O, clock, GPIO, or async-runtime dependency; `fixed` is the only runtime dependency. |
+| Generate | **CLI and `build.rs` code generation** | TOML, programmatic specifications, fitting, provenance, manifests, and resource reports stay on the host. |
+| Lookup | **Static curves** | A normalized curve evaluation is one index into a complete-domain static LUT. |
+| Convert | **Sparse physical transfers** | Adaptive integer knots map `u16` observations to signed, scaled `i32` measurements with explicit boundaries and inverse lookup. |
+| Calibrate | **Runtime affine correction** | Caller-supplied integer gain, offset, and scale correct an existing measurement or wrap a transfer without regenerating tables. |
+| Stabilize | **Fixed-memory temporal filters** | Moving average, median, exponential smoothing, and independent stability classification consume caller-supplied integer samples. |
+| Decide | **Hysteresis and debounce** | Latch application decisions from sample cadence without owning hardware or time. |
+| Schedule | **Tickless deadlines** | Compute the next wall-clock instant at which a quantized curve output changes so firmware can sleep instead of polling. |
 
-`ph-curves` is a pure math and scheduling-primitives crate, not a hardware
-driver crate. It may map caller-provided observations, normalized positions,
-and timestamps to values or future deadlines. It does not own or access ADCs,
-GPIO, buses, clocks, timers, interrupts, async runtimes, sensors, actuators, or
-device lifecycle. Hardware acquisition and application remain the caller's
-responsibility.
+## Install
 
-New APIs must remain deterministic and side-effect-free: data in, data or
-deadlines out. Sensor models in the host generator describe transfer
-mathematics only; they must not grow into sensor configuration, sampling,
-calibration storage, fault management, or device-specific driver behavior.
-
-## Quick start
-
-### 1. Define curves in TOML
-
-Create a file (e.g. `assets/curves.toml`):
+Firmware normally uses the default, runtime-only crate:
 
 ```toml
-[curves.ease_in_quad]
-builtin = "ease_in_quad"
+[dependencies]
+ph-curves = "0.3"
+```
 
+Host generation is opt-in:
+
+| Feature | Use |
+| --- | --- |
+| *(none)* | Firmware runtime: `no_std`, no allocation, integer-only. |
+| `gen-lib` | Host tools and `build.rs`; adds serde and TOML parsing. |
+| `gen-cli` | `gen-lib` plus the `ph-curves-gen` binary. |
+| `gen` | Compatibility alias for the 0.1.x CLI feature. |
+
+`#![no_std]` is unconditional. Cargo feature unification cannot turn the
+firmware runtime into a `std` build when another crate enables a host feature.
+
+## Quick starts
+
+### Quick start: generate a curve
+
+Create `assets/curves.toml`:
+
+```toml
 [curves.gamma_22]
 formula = "pow(t, 2.2)"
 
-[curves.contrast_boost]
-points = [[0, 0], [64, 32], [128, 128], [192, 224], [255, 255]]
+[curves.ease_in_quad]
+builtin = "ease_in_quad"
 ```
 
-Each curve uses exactly **one** of three definition styles:
-
-| Style      | Description                                               |
-|------------|-----------------------------------------------------------|
-| `builtin`  | Name of a built-in easing function (14 available)         |
-| `formula`  | Math expression in `t` (0→1), evaluated at build time     |
-| `points`   | Piecewise-linear control points `[input, output]`         |
-
-Set `monotonic = false` to skip inverse-LUT generation (default is `true`).
-Curve and transfer names are normalized to uppercase Rust identifiers. Names
-with no ASCII letters or digits, names that normalize to the same identifier,
-and names that collide with generated companions (`_FWD`, `_INV`, `_INPUTS`,
-`_OUTPUTS`, `_METADATA`) are rejected.
-
-### 2. Generate Rust source
+Install or run the generator:
 
 ```sh
-cargo install --path . --features gen-cli
-
+cargo install ph-curves --version 0.3.0 --features gen-cli --bin ph-curves-gen
 ph-curves-gen --input assets/curves.toml --output src/curves.rs
 ```
 
-This produces a `.rs` file with `static` arrays and `const` curve values
-ready to `include!` or copy into your crate. LUTs must cover the complete value
-domain: `u8` uses exactly 256 entries and `u16` uses exactly 65,536 entries.
-
-For 16-bit resolution:
-
-```sh
-ph-curves-gen --input assets/curves.toml --output src/curves.rs \
-    --value-type u16 --lut-size 65536
-```
-
-### 3. Use in firmware
+Use the generated constant:
 
 ```rust
-use ph_curves::{Curve, MonotonicCurve, Tickless, Rounding};
+use ph_curves::{Curve, MonotonicCurve};
 
 include!("curves.rs");
 
-// Simple evaluation — one table lookup.
 let brightness: u8 = GAMMA_22.eval(input);
+let input_again: u8 = GAMMA_22.inv(brightness);
+```
 
-// Tickless scheduling — sleep until the next value change.
+Curve definitions use exactly one of `builtin`, `formula`, or `points`.
+Monotonic curves also emit inverse data. See the checked-in
+[curve definitions](https://github.com/photon-circus/ph-curves/blob/main/assets/curves.toml)
+for complete examples.
+
+The [curve-generation guide](https://github.com/photon-circus/ph-curves/blob/main/docs/guides/curve-generation.md)
+lists every built-in curve, the formula language, naming rules, and LUT target
+constraints.
+
+### Quick start: convert an ADC observation
+
+Generate the reference NTC transfer:
+
+```sh
+ph-curves-gen --input assets/transfers.toml --output src/transfers.rs
+```
+
+```rust
+use ph_curves::{InverseTransferFunction, TransferFunction};
+
+include!("transfers.rs");
+
+let milli_celsius = NTC_10K_BETA_3950.convert(adc_code)?;
+let code_for_25_c = NTC_10K_BETA_3950.invert(25_000)?;
+```
+
+The reference uses 61 adaptive knots over a 12-bit ADC domain rather than a
+4,096-entry dense table. The generator checks every integer code and fails if
+the requested interpolation error cannot be met within the knot budget.
+
+Use a transfer when one monotonic `u16` observation determines one signed,
+scaled `i32` result. Formula, physical-point, and supported model fitting are
+host-only; generated firmware uses binary search and checked `i64`
+interpolation. Start from
+[the transfer examples](https://github.com/photon-circus/ph-curves/blob/main/assets/custom-transfers.toml).
+
+The [physical-transfer guide](https://github.com/photon-circus/ph-curves/blob/main/docs/guides/physical-transfer-generation.md)
+covers source selection, fitting, guards, accuracy scope, and non-goals.
+
+### Quick start: calibrate a measurement
+
+Use `AffineTransform` when a measurement is already converted:
+
+```rust
+use ph_curves::AffineTransform;
+
+// y' = (y * 1_005 - 120_000) / 1_000
+let trim = AffineTransform::new(1_005, -120_000, 1_000).unwrap();
+let corrected_milli_celsius = trim.apply(25_000).unwrap();
+let original = trim.unapply(corrected_milli_celsius).unwrap();
+assert!((original - 25_000).abs() <= 1);
+```
+
+Apply calibration before mutating temporal state so an affine overflow cannot
+insert a sample into a filter window. `AffineCalibration<T>` provides the same
+arithmetic around a `TransferFunction` and supports inverse conversion when
+the inner transfer does.
+
+### Quick start: stabilize and decide
+
+This policy smooths already-converted unsigned measurements, independently
+classifies stability, and changes the latch only while stable:
+
+```rust
+use ph_curves::{
+    Hysteresis, MovingAverage, Stability, StabilityDetector, TemporalFilter,
+};
+
+let mut average = MovingAverage::<u32, 4>::new();
+let mut settled = StabilityDetector::<u32, 3>::new(5_000);
+let mut high = Hysteresis::<u32>::new(900_000, 1_000_000);
+let mut high_light = false;
+
+for micro_lux in [
+    1_010_000, 1_006_000, 1_004_000, 1_002_000, 1_001_000, 999_000,
+] {
+    let Some(smoothed) = average.update(micro_lux).ready() else {
+        continue;
+    };
+    if matches!(settled.update(smoothed), Stability::Stable { .. }) {
+        high_light = high.update(smoothed);
+    }
+}
+
+assert!(high_light);
+```
+
+Warm-up, missing samples, invalid samples, reset behavior, cadence, and whether
+to hold or clear a decision during instability are caller policy. The filters
+own fixed, const-generic state only.
+
+The [measurement-pipeline guide](https://github.com/photon-circus/ph-curves/blob/main/docs/guides/measurement-pipelines.md)
+compares the primitives, their fixed state and update cost, warm-up behavior,
+and caller-owned reset policy.
+
+### Quick start: schedule without polling
+
+Any monotonic curve can produce deadlines for its quantized output changes:
+
+```rust
+use ph_curves::{Rounding, Tickless};
+
+include!("curves.rs");
+
 let schedule = EASE_IN_QUAD.tickless_schedule(
-    0,           // t0_ms: start time
-    1000,        // duration_ms
-    0,           // start value
-    255,         // end value
-    10,          // step (quantization)
+    0,                 // segment start, milliseconds
+    1_000,             // duration
+    0,                 // start value
+    255,               // end value
+    10,                // output quantum
     Rounding::Nearest,
-    0,           // min_dt_ms
+    0,                 // minimum deadline spacing
 );
 
 for deadline in schedule.iter(0) {
@@ -123,443 +219,147 @@ for deadline in schedule.iter(0) {
 }
 ```
 
-## ADC-to-measurement transfer functions
+Timestamps are wrapping `u32` milliseconds. Compare deadlines with wrapping
+remaining time rather than absolute numeric ordering across clock rollover.
 
-Transfer functions are separate from normalized easing curves and
-`UnitValue`. They accept a real `u16` input domain (raw ADC codes or explicitly
-scaled voltage-like integers) and return signed `i32` measurement quanta.
+The [tickless-scheduling guide](https://github.com/photon-circus/ph-curves/blob/main/docs/guides/tickless-scheduling.md)
+explains rollover-safe comparisons, duration bounds, quantization, and repeat
+modes.
 
-The included `assets/transfers.toml` reference models a 10 kOhm, Beta 3950 NTC
-thermistor in a 10 kOhm ratiometric divider on a 12-bit ADC:
-
-```toml
-[transfers.ntc_10k_beta_3950]
-input_unit = "adc_code"
-output_unit = "degree_celsius"
-output_scale = 1000
-max_interpolation_error = 50
-max_knots = 256
-below = "error"
-above = "error"
-output_range = [-40.0, 125.0]
-
-[transfers.ntc_10k_beta_3950.model]
-kind = "ntc_beta_divider"
-nominal_resistance_ohms = 10000.0
-beta_kelvin = 3950.0
-nominal_temperature_celsius = 25.0
-fixed_resistance_ohms = 10000.0
-adc_max_code = 4095
-topology = "ntc_to_ground"
-```
-
-Generate and use it:
-
-```sh
-ph-curves-gen --input assets/transfers.toml --output ntc_transfer.rs
-```
-
-```rust
-use ph_curves::TransferFunction;
-
-include!("ntc_transfer.rs");
-
-let milli_celsius = NTC_10K_BETA_3950.convert(adc_code)?;
-```
-
-The reference generates 61 nonuniform knots over ADC codes `142..=3995`:
-366 bytes of array payload rather than a 4,096- or 65,536-entry LUT. The
-generator checks every integer ADC code and reports a measured worst-case
-numerical error. Adaptive fitting defaults to at most 256 knots (configurable
-up to an absolute 4,096-knot safety limit) and fails rather than silently
-emitting a full domain table.
-
-Knot selection is a bounded greedy heuristic: it repeatedly adds the input
-with the current worst error. Exhaustive verification guarantees that every
-emitted table meets the requested error, but reaching `max_knots` does not
-prove that no alternative knot placement could meet it. Increase `max_knots`
-or generate physical points with a domain-specific fitting tool when that
-distinction matters.
-
-`below` and `above` independently select `"error"` (the default) or `"clamp"`.
-Transfer functions never extrapolate.
-
-### What transfer functions enable
-
-The transfer API is a good fit when all of the following are true:
-
-- One `u16` integer observation determines one signed, scaled `i32` result.
-- The relationship is static and monotonic, either increasing or decreasing.
-- A formula, empirical calibration points, or a supported host model can
-  describe the ideal relationship.
-- Endpoint errors or clamps are sufficient outside the generated domain.
-- Numerical interpolation error can be bounded independently from real-world
-  sensor accuracy.
-
-Examples include ADC code or integer millivolts to temperature, pressure,
-resistance, illuminance, position, calibrated voltage, tank level, or a rough
-user-facing battery charge estimate. The same primitives work for any unit;
-the crate does not attach sensor-specific behavior to unit labels.
-
-The strongest supported pipeline is:
-
-`one integer observation -> one monotonic physical result -> optional temporal stabilization`
-
-### Honest limitations
-
-The transfer layer does **not** currently provide:
-
-- Signed or wider-than-`u16` input domains, or outputs wider than `i32`.
-- Nonmonotonic forward maps.
-- Dense physical-domain inverse LUTs (inverse uses runtime search on the forward knots).
-- Multidimensional compensation such as measurement by temperature or load.
-- Runtime/factory gain-and-offset calibration wrappers.
-- Automatic chaining or unit conversion between transfer functions.
-- Sensor fusion, state estimation, hysteretic application decisions, or
-  missing/invalid-sample policy.
-- A plugin interface for arbitrary host model code.
-
-Only the NTC Beta-divider has a built-in physical model. Other devices should
-normally use a formula or empirical points. Dedicated crates may provide
-domain-specific models and policies while emitting or consuming generic
-`ph-curves` transfers.
-
-### Writing a custom transfer
-
-Use `assets/custom-transfers.toml` as a complete guide. A custom transfer has
-six design steps:
-
-1. Choose the integer input representation firmware already has, such as raw
-   ADC code or millivolts. Include divider/reference calibration in the model
-   if it is static.
-2. Choose an output unit and integer scale. For example,
-   `output_unit = "kilopascal"` with `output_scale = 1000` emits milli-kPa.
-3. Define the valid input domain and explicit below/above behavior.
-4. Select either a formula over `x` or increasing-input physical points.
-5. Set the numerical error target and a bounded knot budget.
-6. Generate the table, inspect its reported domain/knot/error metadata, and
-   validate it against independent reference measurements.
-
-For an analytical sensor, use a formula:
-
-```toml
-[transfers.pressure_100kpa]
-input_unit = "adc_code"
-output_unit = "kilopascal"
-output_scale = 1000
-domain = [410, 3686]
-formula = "(x - 410) * 100.0 / 3276.0"
-max_interpolation_error = 1
-max_knots = 32
-```
-
-The formula is evaluated only by the host generator. `x` is the integer input;
-the existing formula operators/functions are available. The generated
-firmware table contains no floating point.
-
-For an empirical or piecewise model, use physical points:
-
-```toml
-[transfers.tank_level]
-input_unit = "millivolt"
-output_unit = "percent"
-output_scale = 100
-max_interpolation_error = 5
-max_knots = 32
-below = "clamp"
-above = "clamp"
-points = [
-  { input = 500, output = 0.0 },
-  { input = 1200, output = 28.0 },
-  { input = 2050, output = 82.0 },
-  { input = 2500, output = 100.0 },
-]
-```
-
-Point inputs must be strictly increasing and outputs must be monotonic.
-Endpoints define the valid domain; unlike normalized easing curves, physical
-points do not need to start at zero or end at full scale.
-
-If a model needs conditionals, multiple independent inputs, dynamic
-calibration, temperature/load compensation, or domain-specific state, compute
-calibration points in a dedicated host tool/crate and feed those points to the
-generic generator. Do not turn `ph-curves` into a device driver or an
-open-ended sensor-model catalog.
-
-### Accuracy scope
-
-The generated error bound covers integer output quantization and interpolation
-against the configured ideal formula, point set, or model. It is **not** total
-sensor accuracy. For an NTC system, separately account for Beta-model error,
-thermistor and resistor tolerance, ADC/reference error, self-heating, wiring,
-and calibration uncertainty.
-
-All floating-point formulas, models, fitting, and error analysis are compiled
-only behind the host `gen-lib` feature (library API) / `gen-cli` (binary). The
-default library and generated firmware code contain integer arrays, binary
-search, and `i64` interpolation only.
-
-### Host features and the runtime guarantee
-
-| Feature | Pulls in | Use |
-| ------- | -------- | --- |
-| *(none)* | — | Firmware. `no_std`, no allocator, integer-only. |
-| `gen-lib` | serde, toml | `build.rs` and host tools calling `ph_curves::r#gen`. |
-| `gen-cli` | `gen-lib` + clap | Building or installing the `ph-curves-gen` binary. |
-| `gen` | `gen-cli` | 0.1.x compatibility alias. Prefer `gen-lib` in a build script. |
-
-`#![no_std]` is unconditional and **no feature relaxes it**. The host features
-link `std` only inside `src/gen` (module-local `extern crate std` and explicit
-imports); the crate root does not `extern crate std`. A crate elsewhere in
-your dependency graph enabling `ph-curves/gen-lib` therefore cannot turn your
-firmware build into a `std` build via Cargo's feature unification. CI enforces
-this by building the default feature set against a `core`-only sysroot
-(`-Z build-std=core`), which fails if anything on the runtime path reaches for
-`alloc` or `std`.
-
-### `build.rs` integration
+### Quick start: generate from build.rs
 
 ```toml
 [build-dependencies]
-ph-curves = { version = "0.2", features = ["gen-lib"] }
+ph-curves = { version = "0.3", features = ["gen-lib"] }
 ```
 
 ```rust
 // build.rs
-use std::env;
-use std::path::PathBuf;
+use std::{env, path::PathBuf};
 use ph_curves::r#gen::{generate_to_path, GenerateOptions};
 
 fn main() {
     let out = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("curves.rs");
     generate_to_path("assets/curves.toml", &out, &GenerateOptions::default())
-        .expect("ph-curves gen");
+        .expect("generate curves");
     println!("cargo:rerun-if-changed=assets/curves.toml");
 }
 ```
 
 ```rust
-// firmware lib.rs — no host features; still no_std + no_alloc
+// Firmware target; no host feature is enabled here.
 include!(concat!(env!("OUT_DIR"), "/curves.rs"));
 ```
 
-### Runtime calibration
+The library and CLI share the same parse, validation, fitting, and emission
+pipeline, so the same input produces the same Rust source.
 
-Per-unit trim lives outside the generated table. `AffineCalibration` applies a
-caller-supplied integer triple — read from EEPROM, flash, or a test fixture —
-as `y' = (y * gain + offset) / scale`, with the same nearest, ties-away
-rounding as the table itself. It never reads NVM, regenerates knots, or edits
-`TransferMetadata`.
+### Quick start: model a transfer family
 
-```rust
-use ph_curves::{AffineCalibration, InverseTransferFunction, TransferFunction};
+Transfer families describe discrete hardware variants that share one source
+model without pretending selector values are interpolated dimensions. Start
+with the complete
+[family acceptance document](https://github.com/photon-circus/ph-curves/blob/main/assets/family-acceptance.toml):
 
-// +0.5 % gain, -120 milli-Celsius offset, from this unit's factory trim.
-let trimmed = AffineCalibration::new(NTC_10K_BETA_3950, 1_005, -120, 1_000)?;
-
-let milli_celsius = trimmed.convert(adc_code)?;   // calibrated reading
-let setpoint_code = trimmed.invert(25_000)?;      // calibrated setpoint
+```sh
+ph-curves-gen \
+  --input assets/family-acceptance.toml \
+  --output src/front_end_transfers.rs
 ```
 
-Inversion undoes the affine and then inverts the table, so a calibrated
-setpoint is one call rather than hand-rolled arithmetic. Range errors are
-reported in *calibrated* units so the bounds are comparable with the value you
-passed in, and a calibration whose `gain` and `scale` have opposite signs
-reverses orientation, flipping `BelowRange` and `AboveRange` accordingly.
-`gain == 0` is rejected at construction — it collapses every observation onto
-one value and has no inverse.
+Each expected typed-selector identity must appear exactly once as an emitted or
+description-only member, or as an explicit family gap with a reason. Stable
+emitted names and the emission manifest identify firmware symbols before
+fitting; structured provenance, resource budgets, and generation reports audit
+the fitted result before flashing.
 
-Both directions round, so a convert-then-invert round trip is bounded rather
-than exact. Anything `convert` produces is guaranteed invertible; a value
-within half an uncalibrated quantum of a range endpoint clamps to that endpoint
-instead of failing. `TransferMetadata::achieved_max_inverse_code_error`
-describes the *uncalibrated* table — wrapping it in a calibration can widen
-that bound.
-
-## Temporal stabilization
-
-A transfer function converts one observation. Meaningful measurements often
-need several observations to suppress noise, reject spikes, or determine that
-a signal has settled. `ph-curves` provides caller-driven, fixed-memory
-primitives without acquiring samples or owning a clock:
-
-```rust
-use ph_curves::{MedianFilter, Stability, StabilityDetector, TemporalFilter};
-
-let mut median = MedianFilter::<u16, 5>::new();
-let mut stable = StabilityDetector::<i32, 4>::new(100); // 0.1 C in milli-C
-
-if let Some(filtered_adc) = median.update(adc_code).ready() {
-    let milli_celsius = NTC_10K_BETA_3950.convert(filtered_adc)?;
-    if matches!(stable.update(milli_celsius), Stability::Stable { .. }) {
-        use_measurement(milli_celsius);
-    }
-}
-```
-
-Available primitives:
-
-- `MovingAverage<T, N>`: `O(1)` exact fixed-window mean with explicit warm-up.
-- `MedianFilter<T, N>`: robust isolated-spike rejection for small odd windows.
-- `ExponentialSmoother<T>`: constant-memory smoothing with an explicit integer
-  blend coefficient (`alpha` in `0..=65535`). Because the update is quantized
-  as `round(delta * alpha / 65535)`, small steps can produce a zero adjustment
-  when `|delta| * alpha < 32768`. Prefer a larger `alpha`, or a moving average /
-  median, when tracking fine ADC or milli-unit noise.
-- `StabilityDetector<T, N>`: reports warming, stable, or unstable from the
-  recent range; it never substitutes a stale last-good value.
-
-Filtering raw ADC codes and filtering converted measurements are intentionally
-separate composition choices. For a nonlinear transfer,
-`transfer(mean(raw))` generally differs from `mean(transfer(raw))`. Raw-domain
-filtering suppresses acquisition noise before conversion; physical-domain
-filtering expresses windows and thresholds in measurement units. A median is
-order-based and therefore composes predictably with monotonic transfers,
-apart from integer rounding.
-
-Window sizes count caller-supplied valid samples. Sampling cadence, invalid
-sample policy, transfer errors, and whether instability resets application
-state remain caller responsibilities. The crate does not read timestamps or
-silently assume a sample rate.
-
-### Decision primitives
-
-Filters smooth a value; deciding what to *do* is separate. `Hysteresis` and
-`Debounce` latch boolean decisions from sample-count cadence only — they read
-no clock and own no GPIO.
-
-```rust
-use ph_curves::{Debounce, DebounceOutput, Hysteresis};
-
-// Fan on at 60 C, off at 55 C. The 5 C band stops chatter at the threshold.
-let mut fan = Hysteresis::<i32>::new(55_000, 60_000);
-let fan_on = fan.update(milli_celsius);
-
-// Require 3 consecutive agreeing samples before acting on a fault line.
-let mut fault = Debounce::<3>::new();
-match fault.update(raw_fault) {
-    DebounceOutput::Edge { level } => latch_fault(level),
-    DebounceOutput::Steady(_) | DebounceOutput::WarmingUp { .. } => {}
-}
-```
-
-`Hysteresis` needs `low <= high`; equal thresholds degrade to a plain
-comparison. `Debounce` reports `WarmingUp` until it has seen `N` consecutive
-matching samples, then `Edge` exactly once per confirmed transition and
-`Steady` otherwise, so callers can act on changes rather than re-applying a
-level every sample.
-
-## Built-in curves
-
-| Name                 | Formula              | Description                      |
-|----------------------|----------------------|----------------------------------|
-| `linear`             | `t`                  | Identity / straight line         |
-| `ease_in_quad`       | `t²`                 | Quadratic ease-in                |
-| `ease_out_quad`      | `1-(1-t)²`           | Quadratic ease-out               |
-| `ease_in_out_quad`   | piecewise quadratic  | Quadratic ease-in-out            |
-| `ease_in_cubic`      | `t³`                 | Cubic ease-in                    |
-| `ease_out_cubic`     | `1-(1-t)³`           | Cubic ease-out                   |
-| `ease_in_out_cubic`  | piecewise cubic      | Cubic ease-in-out                |
-| `ease_in_quart`      | `t⁴`                 | Quartic ease-in                  |
-| `ease_out_quart`     | `1-(1-t)⁴`           | Quartic ease-out                 |
-| `ease_in_out_quart`  | piecewise quartic    | Quartic ease-in-out              |
-| `ease_in_expo`       | `2^(10(t-1))`        | Exponential ease-in              |
-| `ease_out_expo`      | `1-2^(-10t)`         | Exponential ease-out             |
-| `smoothstep`         | `3t²-2t³`            | Hermite smoothstep               |
-| `smoother_step`      | `6t⁵-15t⁴+10t³`     | Ken Perlin's improved smoothstep |
-
-Legacy aliases: `ease_in`, `ease_out`, `ease_in_out` (mapped to the quad
-variants).
-
-## Formula syntax
-
-Formulas are math expressions over the variable `t` (0.0 to 1.0).
-
-**Operators:** `+` `-` `*` `/` `^` (or `**`), unary `-`, parentheses.
-
-**Functions:** `pow(x,y)` `sqrt(x)` `abs(x)` `min(x,y)` `max(x,y)`
-`clamp(x,lo,hi)` `sin(x)` `cos(x)` `tan(x)` `exp(x)` `ln(x)` `log2(x)`
-
-**Constants:** `pi` `e`
+Every family TOML document declares:
 
 ```toml
-[curves.cie_lightness]
-formula = "pow((t + 0.16) / 1.16, 3.0)"
+[transfers]
+requires = ["transfer_families_v1"]
 ```
 
-## Library API
+That marker makes released 0.2.1 readers reject the document instead of
+silently ignoring the family table. See the
+[transfer-family guide](https://github.com/photon-circus/ph-curves/blob/main/docs/design/transfer-families.md)
+and
+[host IR guide](https://github.com/photon-circus/ph-curves/blob/main/docs/design/host-transfer-ir.md)
+for the schema, programmatic `FamilySpec` construction, overlays, reports, and
+provenance rules.
 
-### Core types
+## How the pieces compose
 
-| Type                   | Description                                         |
-|------------------------|-----------------------------------------------------|
-| `CurveLut<I,V,N,M>`   | Forward LUT + optional inverse LUT                  |
-| `MonotonicCurveLut<I,V,N,M>` | Forward + required inverse LUT                |
-| `CurveLut256`          | Type alias: `CurveLut<u8, u8, 256>`                |
-| `MonotonicCurveLut256` | Type alias: `MonotonicCurveLut<u8, u8, 256>`        |
-| `CurveLut65536`        | Type alias: `CurveLut<u16, u16, 65536>`             |
-| `MonotonicCurveLut65536` | Type alias: `MonotonicCurveLut<u16, u16, 65536>`  |
-| `PiecewiseLinearTransfer<N>` | Sparse integer ADC↔measurement transfer (forward + inverse) |
-| `TransferMetadata`       | Units, scale, domain/range, flats, and error bounds |
-| `FlatResolution`         | Policy for non-unique (flat) inverse outputs      |
-| `AffineCalibration<T>`   | Gain/offset/scale wrapper over any transfer, invertible |
-| `MovingAverage<T,N>`     | Exact fixed-window integer mean                  |
-| `MedianFilter<T,N>`      | Small fixed-window outlier rejection             |
-| `ExponentialSmoother<T>` | Constant-memory integer smoothing                |
-| `StabilityDetector<T,N>` | Independent recent-range stability classification |
-| `Hysteresis<T>`          | Dual-threshold latch with a hold band             |
-| `Debounce<N>`            | N-consecutive-sample confirmation, with edge reporting |
+The common measurement path is:
 
-### Traits
+`u16 observation → transfer → optional affine calibration → optional filter → stability classification → optional hysteretic/debounced decision`
 
-- **`Curve<I, V>`** — `eval(u: I) -> V` — single table lookup.
-- **`MonotonicCurve<I, V>`** — adds `inv(w: V) -> I` — inverse lookup.
-- **`Tickless<T>`** — adds `tickless_schedule(...)` to any `MonotonicCurve`.
-- **`UnitValue`** — implemented for `u8` and `u16`; maps the unit interval
-  onto a discrete integer range with fixed-point helpers.
-- **`TransferFunction`** — checked physical conversion with explicit
-  below/above-domain behavior and no extrapolation.
-- **`InverseTransferFunction`** — physical → observation invert on the same
-  sparse knots (`invert` / `invert_physical`), with `FlatResolution` for
-  plateaus.
-- **`TemporalFilter`** — caller-driven update/reset interface with explicit
-  warm-up output.
+Each stage remains independent:
 
-### Tickless scheduling
+- A transfer converts one observation and owns no temporal state.
+- Affine calibration applies caller-provided coefficients and owns no NVM.
+- A filter changes a value but does not declare it stable.
+- A stability detector classifies its own recent window.
+- Hysteresis and debounce change state only when the caller updates them.
+- Tickless scheduling maps a time-varying curve to deadlines; it does not own a
+  clock or timer.
 
-`TicklessSchedule` computes the exact deadline (in milliseconds) at which the
-quantized output value will next change. This lets interrupt-driven firmware
-sleep between value changes instead of polling at a fixed tick rate.
+Ordering is intentional. Nonlinear transfer and filtering do not commute, and
+even affine correction can differ across integer stages because each stage
+rounds. Choose the domain in which thresholds and spans should be expressed.
 
-Timestamps are free-running `u32` milliseconds: schedule math uses wrapping
-addition/subtraction so a segment may start near `u32::MAX` and cross the
-~49.7-day rollover. For durations up to `i32::MAX` ms (~24.85 days), before /
-after classification uses the usual half-range signed-delta convention.
-Longer durations remain valid when `now_ms` is segment-relative elapsed time
-with `t0_ms == 0` (a wrapping wall clock cannot uniquely represent a single
-segment longer than half the clock period). Deadlines themselves are clamped
-on offsets from `t0_ms`, which stay bounded by `duration_ms`, so the full
-`u32` duration range works in either mode.
+## Guarantees and limits
 
-`deadline_ms` may be numerically smaller than `now_ms` when a deadline falls
-past the rollover. Compare with wrapping remaining-time
-(`deadline_ms.wrapping_sub(now_ms)`) rather than absolute ordering; the same
-applies to `end_ms()`, which now wraps rather than saturating.
+- **Pure runtime:** no hardware access, allocation, hidden I/O, interrupts,
+  clocks, async runtime, or device lifecycle.
+- **Integer firmware:** floating-point formulas, models, fitting, and error
+  analysis are host-only.
+- **Bounded numerical error, not sensor accuracy:** separately account for
+  sensor tolerance, ADC/reference error, self-heating, wiring, and calibration
+  uncertainty.
+- **Transfer shape:** one static monotonic `u16` input to one `i32` output.
+  Multidimensional compensation, nonmonotonic maps, fusion, and state
+  estimation belong in application or domain-specific crates.
+- **Caller-owned policy:** units, acquisition, cadence, missing/invalid sample
+  handling, reset, calibration storage, and hardware action remain outside the
+  crate.
+- **Complete-domain dense LUTs:** `u8` uses 256 entries and `u16` uses
+  65,536. A full `u16` LUT requires a pointer width of at least 32 bits; use a
+  sparse transfer or smaller domain on 16-bit-pointer targets.
+- **Fail-closed host schema:** family, standalone guard, and provenance
+  capabilities prevent older generators from silently discarding safety or
+  identity information.
 
-Supports `RepeatMode::Once`, `RepeatMode::Repeat`, and `RepeatMode::PingPong`.
+The complete migration contract is in
+[docs/compatibility.md](https://github.com/photon-circus/ph-curves/blob/main/docs/compatibility.md).
+The [documentation map](https://github.com/photon-circus/ph-curves/blob/main/docs/README.md)
+routes from each use case to the relevant guide, design record, or API
+reference.
 
-### Segment helpers
+## API map
 
-- `interpolate_segment(input, x0, y0, x1, y1)` — one signed segment forward.
-- `invert_segment(physical, x0, y0, x1, y1)` — its mirror. Host tools use it so
-  a generated round-trip audit rounds exactly the way the runtime does.
+Everything in the runtime is re-exported at the crate root. Detailed contracts,
+errors, panic conditions, and compiled examples live on
+[docs.rs](https://docs.rs/ph-curves).
 
-### Math helpers
+| Area | Main types and traits |
+| --- | --- |
+| Curves | `Curve`, `MonotonicCurve`, `CurveLut`, `MonotonicCurveLut` |
+| Transfers | `TransferFunction`, `InverseTransferFunction`, `PiecewiseLinearTransfer`, `TransferMetadata`, `ObservationGuard` |
+| Calibration | `AffineTransform`, `AffineCalibration` |
+| Temporal | `TemporalFilter`, `MovingAverage`, `MedianFilter`, `ExponentialSmoother`, `StabilityDetector` |
+| Decisions | `Hysteresis`, `Debounce` |
+| Scheduling | `Tickless`, `TicklessSchedule`, `TicklessIter`, `RepeatMode` |
+| Host generation | `DefinitionsFile`, `TransferSpec`, `FamilySpec`, `GenerateOptions`, generation reports and manifests under `ph_curves::r#gen` |
 
-- `lerp_u8(a, b, w)` / `lerp_u16(a, b, w)` — interpolate with `u8` weight.
-- `map_u8_to_u16(w, max)` — scale a `u8` into a `u16` range.
-- `quantize(value, step, rounding)` — snap to a step size.
-- `next_target_value(current, end, step, increasing)` — next quantized target.
+## Reference inputs
+
+- [Normalized curves](https://github.com/photon-circus/ph-curves/blob/main/assets/curves.toml)
+- [Full-domain u16 curves](https://github.com/photon-circus/ph-curves/blob/main/assets/curves-u16.toml)
+- [NTC transfer](https://github.com/photon-circus/ph-curves/blob/main/assets/transfers.toml)
+- [Custom formula and point transfers](https://github.com/photon-circus/ph-curves/blob/main/assets/custom-transfers.toml)
+- [Observation guards](https://github.com/photon-circus/ph-curves/blob/main/assets/observation-guards.toml)
+- [Transfer-family acceptance document](https://github.com/photon-circus/ph-curves/blob/main/assets/family-acceptance.toml)
 
 ## Minimum supported Rust version
 
@@ -567,33 +367,14 @@ Rust **1.92.0** (edition 2024).
 
 ## Contributing
 
-Contributions are welcome! Please read the [contributing guide](CONTRIBUTING.md)
-before opening a pull request.
-
-### CI
-
-Every pull request runs [`.github/workflows/ci.yml`](https://github.com/photon-circus/ph-curves/blob/main/.github/workflows/ci.yml):
-format, clippy at `-D warnings` across the feature matrix, tests, rustdoc,
-no-std and ESP32 target builds, dependency policy, and packaging.
-
-Two jobs guard the crate's core promises. **`runtime-purity`** rejects a
-feature-conditional `#![no_std]` and builds the default feature set against a
-`core`-only sysroot, which is what proves *no-alloc* — a plain `--target`
-build only proves *no-std*, because bare-metal `rust-std` ships `alloc`.
-**`feature-compat`** runs the 0.1.x `cargo run --features gen` invocation so
-the compatibility alias cannot rot.
-
-To run the same gate locally before pushing:
+Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md), the
+[security policy](SECURITY.md), and the
+[code of conduct](CODE_OF_CONDUCT.md) before participating. Run the same gate
+as CI with:
 
 ```powershell
 ./scripts/local-ci.ps1
 ```
-
-This project follows the
-[Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.md). By participating you
-agree to uphold it.
-
-For security issues, see our [security policy](SECURITY.md).
 
 ## License
 

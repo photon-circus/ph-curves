@@ -24,6 +24,8 @@ fn generated_ntc_metadata_and_boundaries() {
         NTC_10K_BETA_3950_METADATA.direction,
         ph_curves::MonotonicDirection::Decreasing
     );
+    assert_eq!(NTC_10K_BETA_3950.observation_guard(), None);
+    assert_eq!(NTC_10K_BETA_3950_OBSERVATION_GUARD, None);
     assert_eq!(
         NTC_10K_BETA_3950.convert(141),
         Err(TransferError::BelowDomain {
@@ -85,22 +87,22 @@ fn raw_median_and_physical_stability_compose_without_driver_state() {
     assert!(matches!(last, Some(Stability::Stable { .. })));
 }
 
-/// A calibrated setpoint on the real NTC table: "which ADC code reads 25 °C
+/// A calibrated setpoint on the real NTC table: "which ADC code reads 80 °C
 /// after this unit's factory trim?" — one call, no manual affine arithmetic.
 #[test]
 fn calibrated_setpoint_on_the_reference_ntc() {
-    // +0.5 % gain, -120 milli-Celsius offset, as a factory trim would supply.
-    let trimmed = AffineCalibration::new(NTC_10K_BETA_3950, 1_005, -120, 1_000).unwrap();
+    // +0.5 % gain, -120 milli-Celsius output offset, as a factory trim would supply.
+    let trimmed = AffineCalibration::new(NTC_10K_BETA_3950, 1_005, -120_000, 1_000).unwrap();
 
-    let code = trimmed.invert(25_000).expect("25 C is inside the range");
+    let code = trimmed.invert(80_000).expect("80 C is inside the range");
     let reading = trimmed.convert(code).expect("code is inside the domain");
     assert!(
-        (reading - 25_000).abs() <= 60,
+        (reading - 80_000).abs() <= 60,
         "calibrated round trip drifted: code {code} reads {reading} mC"
     );
 
     // The uncalibrated table disagrees, which is the whole point of the wrapper.
-    let raw_code = NTC_10K_BETA_3950.invert(25_000).unwrap();
+    let raw_code = NTC_10K_BETA_3950.invert(80_000).unwrap();
     assert_ne!(code, raw_code);
 }
 

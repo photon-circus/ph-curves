@@ -54,11 +54,15 @@ impl ValueType {
 /// Options controlling curve LUT generation.
 ///
 /// Defaults match the CLI today: `u8` values with a 256-entry LUT.
+/// Transfer-only documents should use [`Self::transfers_only`]; `value_type`
+/// and `lut_size` are ignored unless the document contains `[curves]`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GenerateOptions {
     /// Rust type used for LUT index and value (`u8` or `u16`).
+    /// Ignored when the document has no `[curves]`.
     pub value_type: ValueType,
     /// Number of entries in each LUT (must cover the full value-type domain).
+    /// Ignored when the document has no `[curves]`.
     pub lut_size: usize,
 }
 
@@ -68,6 +72,16 @@ impl Default for GenerateOptions {
             value_type: ValueType::U8,
             lut_size: ValueType::U8.required_lut_size(),
         }
+    }
+}
+
+impl GenerateOptions {
+    /// Options for a document with no `[curves]`.
+    ///
+    /// LUT fields keep CLI-compatible defaults but are not validated or used
+    /// when the definitions contain only transfers, families, or gaps.
+    pub fn transfers_only() -> Self {
+        Self::default()
     }
 }
 
@@ -139,8 +153,43 @@ pub fn generate_to_path(
 
 /// Lower-level entry: already-parsed definitions → Rust source.
 pub fn generate(defs: &DefinitionsFile, opts: &GenerateOptions) -> Result<String, Error> {
-    validate_options(opts)?;
+    if !defs.curves().is_empty() {
+        validate_options(opts)?;
+    }
     codegen::generate(defs, opts.value_type.as_str(), opts.lut_size).map_err(Error::Validation)
+}
+
+/// Read a TOML definitions file and return source plus the host audit report.
+pub fn generate_from_toml_report(
+    path: impl AsRef<Path>,
+    opts: &GenerateOptions,
+) -> Result<super::GenerationResult, Error> {
+    let toml_str = fs::read_to_string(path)?;
+    generate_from_str_report(&toml_str, opts)
+}
+
+/// Parse an in-memory TOML string and return source plus the host audit report.
+pub fn generate_from_str_report(
+    toml: &str,
+    opts: &GenerateOptions,
+) -> Result<super::GenerationResult, Error> {
+    let defs = DefinitionsFile::from_toml_str(toml)?;
+    generate_report(&defs, opts)
+}
+
+/// Lower-level entry: already-parsed definitions → source plus the host audit report.
+///
+/// Family aggregate budgets fail closed here. The `String`-returning helpers
+/// call this function and discard the report, so they cannot bypass a budget.
+pub fn generate_report(
+    defs: &DefinitionsFile,
+    opts: &GenerateOptions,
+) -> Result<super::GenerationResult, Error> {
+    if !defs.curves().is_empty() {
+        validate_options(opts)?;
+    }
+    codegen::generate_with_report(defs, opts.value_type.as_str(), opts.lut_size)
+        .map_err(Error::Validation)
 }
 
 fn validate_options(opts: &GenerateOptions) -> Result<(), Error> {
@@ -250,16 +299,123 @@ mod tests {
     }
 
     #[test]
-    fn unknown_family_schema_returns_toml_error_not_header_only() {
-        let toml = "[transfer_families]\n[gaps]\n";
+    fn unknown_table_returns_toml_error_not_header_only() {
+        let toml = "[invented]\nfoo = 1\n";
         let error = generate_from_str(toml, &GenerateOptions::default()).unwrap_err();
 
         assert!(matches!(error, Error::Toml(_)));
         let message = error.to_string();
         assert!(
-            message.contains("unknown field `transfer_families`")
-                || message.contains("unknown field `gaps`"),
+            message.contains("unknown field `invented`"),
             "expected a named unknown top-level table, got: {message}"
         );
+    }
+
+    #[test]
+    fn misspelled_standalone_saturation_returns_toml_error() {
+        let toml = r#"
+[transfers]
+requires = ["observation_guard_v1"]
+
+[transfers.sensor]
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+saturaton = { code = 65535, behavior = "error" }
+formula = "x"
+domain = [1, 10]
+"#;
+        let error = generate_from_str(toml, &GenerateOptions::transfers_only()).unwrap_err();
+        assert!(matches!(error, Error::Toml(_)));
+        assert!(error.to_string().contains("unknown field `saturaton`"));
+    }
+
+    #[test]
+    fn standalone_guard_without_capability_returns_toml_error() {
+        let toml = r#"
+[transfers.sensor]
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1
+max_interpolation_error = 1
+saturation = { code = 65535, behavior = "error" }
+formula = "x"
+domain = [1, 10]
+"#;
+        let error = generate_from_str(toml, &GenerateOptions::transfers_only()).unwrap_err();
+        assert!(matches!(error, Error::Toml(_)));
+        assert!(
+            error
+                .to_string()
+                .contains("requires = [\"observation_guard_v1\"]")
+        );
+    }
+
+    #[test]
+    fn malformed_description_only_member_fails_generate() {
+        let toml = r#"
+[transfers]
+requires = ["transfer_families_v1"]
+
+[transfer_families.als]
+provenance = { identity = "test fixture" }
+input_unit = "count"
+output_unit = "unit"
+output_scale = 1000
+max_interpolation_error = 50
+formula = "x"
+selector_axes = { gain = ["div4", "x1"], integration_time_ms = [100] }
+
+[[transfer_families.als.members]]
+selectors = { gain = "div4", integration_time_ms = 100 }
+status = "emit"
+applicability = { observation = [1, 10] }
+
+[[transfer_families.als.members]]
+selectors = { gain = "x1", integration_time_ms = 100 }
+status = "unnecessary"
+reason = "still validated"
+applicability = { observation = [10, 1] }
+"#;
+        let error = generate_from_str(toml, &GenerateOptions::default()).unwrap_err();
+        assert!(matches!(error, Error::Validation(_)));
+        assert!(error.to_string().contains("applicability.observation"));
+    }
+
+    #[test]
+    fn transfer_only_generation_skips_lut_size_validation() {
+        let toml = r#"
+            [transfers.linear]
+            input_unit = "code"
+            output_unit = "unit"
+            output_scale = 1
+            max_interpolation_error = 1
+            points = [
+              { input = 0, output = 0.0 },
+              { input = 10, output = 10.0 },
+            ]
+        "#;
+        let opts = GenerateOptions {
+            value_type: ValueType::U8,
+            lut_size: 1,
+        };
+        let out = generate_from_str(toml, &opts).unwrap();
+        assert!(out.contains("PiecewiseLinearTransfer"));
+        assert!(!out.contains("CurveLut"));
+    }
+
+    #[test]
+    fn curves_still_require_full_lut_domain() {
+        let toml = r#"
+            [curves.linear]
+            builtin = "linear"
+        "#;
+        let opts = GenerateOptions {
+            value_type: ValueType::U8,
+            lut_size: 1,
+        };
+        let error = generate_from_str(toml, &opts).unwrap_err();
+        assert!(error.to_string().contains("--lut-size must be 256"));
     }
 }

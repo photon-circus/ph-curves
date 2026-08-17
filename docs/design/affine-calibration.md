@@ -1,6 +1,6 @@
 # AffineCalibration
 
-**Status:** Shipped in 0.2.0 — `AffineCalibration` gain/offset wrapper, plus the calibrated inverse added during integration. Design rationale only; the code and its rustdoc are authoritative.
+**Status:** Shipped in 0.2.0 — `AffineCalibration` gain/offset wrapper, plus the calibrated inverse added during integration. The wrapper now contains [`AffineTransform`](../../src/affine.rs) (issue #50) for the same arithmetic on an already-converted `i32`. Design rationale only; the code and its rustdoc are authoritative.
 
 ## Motivation
 
@@ -19,15 +19,15 @@ PR #1 lists “runtime/factory gain-and-offset calibration wrappers” as a limi
 
 Pipeline placement: observation → Transfer → **AffineCal** → optional TemporalFilter → app.
 
+An already-converted `i32` measurement skips the transfer and uses `AffineTransform` directly. `AffineCalibration<T>` contains that primitive and delegates gain/offset/scale arithmetic to it; constructor, accessor, convert, invert, and error types on the wrapper are unchanged.
+
 ## API sketch
 
 ```rust
 /// y' = (y * gain + offset) / scale   (i64 intermediates)
 pub struct AffineCalibration<T> {
     inner: T,
-    gain: i32,
-    offset: i32,
-    scale: i32, // nonzero; typically output_scale-related
+    transform: AffineTransform,
 }
 
 impl<T> AffineCalibration<T> {
@@ -57,7 +57,7 @@ where
     {
         let y = self.inner.convert(input)?;
         // i64: (y * gain + offset) / scale, nearest ties-away
-        Ok(apply_affine_i64(y, self.gain, self.offset, self.scale)?)
+        Ok(self.transform.apply(y)?)
     }
 }
 ```
@@ -83,19 +83,34 @@ Identity: `gain = scale`, `offset = 0` → passthrough (modulo rounding when `|s
 `AffineCalibration<T>` implements `InverseTransferFunction` whenever `T` does, closing the composition gap between this companion and `feature/0.2.0-inverse-transfer`. Without it, a calibrated setpoint required the caller to hand-roll the affine inverse and get the rounding right.
 
 ```rust
-let trimmed = AffineCalibration::new(NTC_10K_BETA_3950, 1_005, -120, 1_000)?;
+let trimmed = AffineCalibration::new(NTC_10K_BETA_3950, 1_005, -120_000, 1_000)?;
 let code = trimmed.invert(25_000)?;   // calibrated setpoint -> ADC code
 ```
+
+Here `offset` is the numerator term. With `scale = 1_000`, an output-space
+offset of -120 milli-Celsius therefore requires `offset = -120_000`.
 
 - Solves `y = (y' * scale - offset) / gain` with the same nearest, ties-away rounding as the forward path, then delegates to the inner `invert`.
 - `gain == 0` is rejected by `new` with `AffineCalibrationError::ZeroGain`: it collapses every observation onto `offset / scale`, so the affine has no inverse. This is a deliberate tightening of the constructor rather than a deferred failure in `invert`.
 - Inner range errors are re-expressed in **calibrated** units, so `minimum` / `maximum` are comparable with the value the caller passed. When `gain` and `scale` have opposite signs the calibration reverses orientation, and an inner `BelowRange` surfaces as `AboveRange`.
-- `InverseTransferError::Overflow` covers an undone value that does not fit `i32`, and a range bound that cannot be re-expressed.
+- `InverseTransferError::Overflow` covers an ordinary undone value that does
+  not fit `i32`, and a range bound that cannot be re-expressed. At a signed
+  inner endpoint, the wrapper may recover only after verifying that endpoint's
+  calibrated image; standalone `AffineTransform::unapply` has no inner range
+  to verify and continues to report `AffineOverflow`.
 
 ### Round-trip bound
 
 Both directions round, so `invert(convert(x))` through a calibration is bounded, not exact. A calibration that compresses the physical scale cannot restore what the forward quantization discarded.
 
-When `|scale| > |gain|`, undoing the affine can land just outside the inner physical range even though the calibrated value is in the forward image of that range (for example `gain = 2`, `scale = 3` at a table endpoint). `invert` detects that case — the caller's value still compares inside the recalibrated bound — clamps to the inner endpoint, and retries, so `invert(convert(x))` never spuriously range-errors for in-domain `x`. Values outside the calibrated forward image still return `BelowRange` / `AboveRange` (with orientation flip when `gain` and `scale` disagree in sign).
+When `|scale| > |gain|`, undoing the affine can land just outside the inner
+physical range—or one integer beyond `i32`—even though the calibrated value is
+in the forward image of that range (for example `gain = 2`, `scale = 3` at a
+table endpoint). `invert` detects that case, verifies the applicable endpoint's
+calibrated image, and retries with the inner endpoint, so `invert(convert(x))`
+never spuriously range-errors or overflows for in-domain `x`. A representable
+undone value outside the calibrated forward image still returns `BelowRange` /
+`AboveRange` (with orientation flip when `gain` and `scale` disagree in sign);
+a genuinely unrepresentable undone value remains `Overflow`.
 
 `TransferMetadata::achieved_max_inverse_code_error` describes the uncalibrated table only; wrapping in `AffineCalibration` can widen it.
