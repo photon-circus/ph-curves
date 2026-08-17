@@ -77,6 +77,90 @@
 //! application decisions from sample-count cadence only; they do not live
 //! inside [`TransferFunction`] and never own GPIO or clocks.
 //!
+//! # Post-conversion integer pipelines
+//!
+//! Already-converted `u32` measurements can enter directly at the temporal
+//! stages. This example smooths micro-lux, classifies the independent filtered
+//! window, and updates the latch only when that window is stable:
+//!
+//! ```rust
+//! use ph_curves::{
+//!     Hysteresis, MovingAverage, Stability, StabilityDetector, TemporalFilter,
+//! };
+//!
+//! let mut average = MovingAverage::<u32, 4>::new();
+//! let mut settled = StabilityDetector::<u32, 3>::new(5_000);
+//! let mut high = Hysteresis::<u32>::new(900_000, 1_000_000);
+//! let mut high_light = false;
+//!
+//! // Already-converted micro-lux values supplied by the caller.
+//! for micro_lux in [
+//!     1_010_000, 1_006_000, 1_004_000, 1_002_000, 1_001_000, 999_000,
+//! ] {
+//!     let Some(smoothed) = average.update(micro_lux).ready() else {
+//!         continue;
+//!     };
+//!     if matches!(settled.update(smoothed), Stability::Stable { .. }) {
+//!         high_light = high.update(smoothed);
+//!     }
+//! }
+//!
+//! assert!(high_light);
+//! ```
+//!
+//! For an already-converted `i32` measurement, apply caller-supplied
+//! calibration before mutating temporal state. An affine overflow can then be
+//! handled without inserting a sample into either window:
+//!
+//! ```rust
+//! use ph_curves::{
+//!     AffineTransform, Hysteresis, MovingAverage, Stability, StabilityDetector,
+//!     TemporalFilter,
+//! };
+//!
+//! let trim = AffineTransform::new(1_005, -120_000, 1_000).unwrap();
+//! let mut average = MovingAverage::<i32, 3>::new();
+//! let mut settled = StabilityDetector::<i32, 3>::new(100);
+//! let mut fan = Hysteresis::<i32>::new(55_000, 60_000);
+//! let mut fan_on = false;
+//!
+//! // Already-converted, untrimmed milli-Celsius values.
+//! for untrimmed in [60_100, 60_080, 60_090, 60_070, 60_080] {
+//!     let corrected = trim.apply(untrimmed).unwrap();
+//!     let Some(smoothed) = average.update(corrected).ready() else {
+//!         continue;
+//!     };
+//!     if matches!(settled.update(smoothed), Stability::Stable { .. }) {
+//!         fan_on = fan.update(smoothed);
+//!     }
+//! }
+//!
+//! assert!(fan_on);
+//! ```
+//!
+//! The order is deliberate: optional affine correction, smoothing, independent
+//! stability classification, then a hysteretic decision. A moving average
+//! changes a value, a detector classifies its own recent window, and hysteresis
+//! changes its latch only when called. With filter window `F` and detector
+//! window `S`, the first classification requires `F + S - 1` caller-accepted
+//! samples. These examples hold the latch during warm-up or instability;
+//! resetting it instead is caller policy.
+//!
+//! Mapping and filtering do not generally commute. For nonlinear transfers,
+//! the two orders can differ even before integer rounding; affine correction
+//! can also disagree because each integer stage rounds. Units, cadence,
+//! missing/invalid samples, affine errors, reset policy, and hardware action
+//! all remain with the caller.
+//!
+//! Every stage has bounded inline state and allocates nothing. An
+//! [`AffineTransform`] stores three `i32` coefficients and is `O(1)`.
+//! [`MovingAverage<T, N>`](MovingAverage) stores `[T; N]`, an `i64` sum, and
+//! indices and is `O(1)` per sample. [`StabilityDetector<T, N>`](StabilityDetector)
+//! has a separate `[T; N]`, threshold, and indices and scans in `O(N)` per
+//! filtered sample. [`Hysteresis<T>`](Hysteresis) stores two thresholds and
+//! latch/reset state and is `O(1)`. Exact byte size and instruction latency are
+//! target-dependent.
+//!
 //! # Physical measurements
 //!
 //! Transfer functions are deliberately separate from normalized curves. The
