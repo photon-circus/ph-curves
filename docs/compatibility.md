@@ -9,8 +9,8 @@ standard a future breaking change must meet.
 0.2.1.** It adds `TransferError::RejectedObservation` to a public exhaustive
 enum, reserves and emits the generated `<NAME>_OBSERVATION_GUARD` companion,
 and tightens standalone transfer TOML by rejecting formerly ignored unknown
-direct fields and requiring localized capability markers so guard and
-provenance features fail closed across generator-version skew. These changes
+direct fields and requiring localized capability markers so guards,
+provenance, and transfer families fail closed across generator-version skew. These changes
 remove safety and schema footguns that could not be fixed additively. The
 transfer-family schema is new in 0.3.0 and therefore does not break a previously
 published family document.
@@ -184,7 +184,10 @@ against the family citation. A selector key literally named `provenance`
 remains part of the typed selector identity. Together, these constraints are
 the intended first-publish shape. `[transfer_families]` has not shipped in
 0.2.1, so this is not a 0.2.x document break. Legacy standalone transfer TOML
-without the new provenance or guard fields is unchanged. The first-publish
+that uses only documented 0.2.1 fields retains its meaning. A document that
+relied on unknown direct transfer fields being ignored now fails closed, as
+described above; that deliberate tightening is not covered by the compatibility
+statement. The first-publish
 shape is now evidenced by the device-neutral acceptance fixture
 (`assets/family-acceptance.toml`, `tests/family_acceptance.rs`,
 `tests/family_acceptance_gen.rs`): two selector axes, distinct member
@@ -199,7 +202,7 @@ No runtime API is involved. 0.3.0 ships the TOML tightening as a release
 decision, not as part of runtime behaviour. A broader whole-document
 `schema_version` field remains a separate schema decision.
 
-## Host TOML: fail-closed standalone guards and provenance
+## Host TOML: fail-closed guards, provenance, and families
 
 A standalone transfer using `saturation` must opt into the localized
 capability in the already-known transfer section:
@@ -225,30 +228,51 @@ provenance = { identity = "device data sheet", locator = "Table 1" }
 # remaining required transfer fields...
 ```
 
-List both capability strings in the same array when both features are present.
-This is deliberately localized: family provenance is part of the
-first-published 0.3.0 `[transfer_families]` shape and needs no compatibility
-marker; programmatic `TransferSpec` construction has no wire format.
+A document containing at least one `[transfer_families.<name>]` table must
+declare the family wire-format capability in the same already-known location:
+
+```toml
+[transfers]
+requires = ["transfer_families_v1"]
+
+[transfer_families.front_end]
+# remaining required family fields...
+```
+
+The family marker is required even when there are no standalone transfers:
+released 0.2.1 generators otherwise ignore the unknown top-level
+`[transfer_families]` table and can report success with empty or incomplete
+output. Family guards and required family provenance are covered by
+`transfer_families_v1`; they do not use the standalone
+`observation_guard_v1` / `source_provenance_v1` capabilities. Add those strings
+to the same array only when standalone transfers use their corresponding
+features. The array is rejected by the old transfer-map decoder before family
+omission can occur. The current generator also rejects unused markers, which
+catches a misspelled/mis-scoped family table and a standalone capability added
+only for a family. Programmatic `TransferSpec` / `FamilySpec` construction has
+no wire format and needs no marker.
 
 The location and shape are intentional. Released 0.2.x generators model
 `[transfers]` as `BTreeMap<String, TransferDef>` and ignore unknown fields
 inside each transfer. They therefore reject the `requires` array as an invalid
-transfer value before they can silently discard `saturation`. A new unknown
-top-level key would not provide that guarantee because older releases ignored
-unknown top-level keys too. Released 0.2.1 readers also ignored standalone
-`provenance`, so the source-provenance marker provides the same rejection
-guarantee. Unknown capability names and malformed capability values fail
-closed. Each capability must correspond to at least one direct use of its
-feature. Reserved guard and provenance keys found inside a model or point value
+transfer value before they can silently discard `saturation`, `provenance`, or
+the family table. A new unknown top-level key would not provide that guarantee
+because older releases ignored unknown top-level keys too. Unknown capability
+names and malformed capability values fail closed. The family capability must
+correspond to at least one family; each standalone capability must correspond
+to direct use on a standalone transfer. Family guard/provenance does not count
+as standalone use. Reserved guard and provenance keys found inside a model or
+point value
 are rejected as misplaced, even when another direct citation makes the
 capability otherwise appear used. This catches TOML table-scope mistakes
 without tightening unrelated legacy NTC extensions.
 
-A table named `[transfers.requires]` remains a legal legacy transfer name when
-the document has neither a standalone observation guard nor source provenance;
-only the array form is the marker. Because TOML cannot represent both forms at
-once, that transfer must be renamed before either capability is added. The
-parser diagnoses this combination explicitly.
+A table named `[transfers.requires]` remains a legal legacy transfer name in a
+familyless document that has neither a standalone observation guard nor source
+provenance; only the array form is the marker. Because TOML cannot represent
+both forms at once, that transfer must be renamed before any capability is
+added. In particular, it cannot coexist with `[transfer_families]`; the parser
+diagnoses that combination explicitly.
 
 The current parser also rejects unknown fields directly on standalone transfer
 definitions, so a misspelled guard cannot disappear. Nested standalone curve
@@ -326,6 +350,19 @@ report companion-symbol fields are host-only. None of these types enter the
 default-feature runtime path. Generated family-member rustdoc grows two comment
 lines (family name and selector map); standalone transfers are unchanged.
 
+`DefinitionsFile::validate` and the pre-/post-validation insertion APIs build a
+structural graph: they check names and emitted-symbol collisions,
+source-specific member mapping shape and domains, selector identities, and
+universe completeness. Deriving or checking a source-specific member window
+may perform limited numerical work, notably NTC model evaluation. Mapped
+description-only members therefore prove a valid source window but are never
+swept for full-window monotonicity, fitted, error-measured, lowered, or emitted.
+Those generation checks run for `emit` members in `generate` /
+`generate_report`. Because description-only stems do not reserve emitted
+symbols, inserting a standalone emitted transfer applies the same collision
+rule before or after validation. Family selector keys and string values reject
+whitespace-only identities while preserving every nonblank identity exactly.
+
 ## 16-bit-pointer targets
 
 The 0.3.0 runtime is checked against `msp430-none-elf` with a core-only
@@ -333,7 +370,9 @@ sysroot. The generic curve, transfer, affine, and temporal APIs compile there.
 The `CurveLut65536` and `MonotonicCurveLut65536` convenience aliases are
 conditionally absent when `target_pointer_width = "16"`, because the required
 array length 65,536 cannot be represented by that target's `usize`. Smaller
-generic LUTs remain available.
+generic LUTs remain available only for a custom `UnitValue` whose complete
+domain the table covers; `u8` curves and sparse transfers remain the built-in
+alternatives.
 
 This conditional surface is not a regression: earlier releases failed to
 compile on 16-bit-pointer targets at those two aliases. On such targets every

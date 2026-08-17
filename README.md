@@ -99,8 +99,11 @@ ph-curves-gen --input assets/curves.toml --output src/curves.rs \
 
 A full-domain `u16` LUT requires a target whose pointer width is at least 32
 bits: a 16-bit `usize` cannot represent an array length of 65,536. On
-16-bit-pointer targets, use `u8` curves, a smaller generic `CurveLut`, or a
-sparse `PiecewiseLinearTransfer` instead.
+16-bit-pointer targets, use `u8` curves, a custom `UnitValue` whose complete
+domain fits a smaller generic `CurveLut`, or a sparse
+`PiecewiseLinearTransfer` instead. `CurveLut::new` remains a `const fn` and
+accepts any array length, so the caller must uphold full-domain coverage;
+`eval` (or inverse lookup) panics if `to_index()` reaches beyond its table.
 
 ### 3. Use in firmware
 
@@ -335,16 +338,25 @@ points do not need to start at zero or end at full scale.
 Discrete selector combinations that share one source belong in a transfer
 family. Selectors are never interpolated. Only `status = "emit"` members are
 generated. `unnecessary` and `forbidden` members stay on the description,
-require a non-blank `reason`, and retain a validated source mapping.
+require a non-blank `reason`, and retain a structurally validated,
+source-specific mapping. Validation may calculate the source-specific window
+(including numerical NTC model evaluation), but these members are never swept
+for full-window monotonicity, fitted, error-measured, lowered, or emitted.
 `unsupported` members also require a reason but set no applicability coordinate
 or `input_transform` because no source mapping exists. Every family declares
 its expected selector universe with `selector_axes` (Cartesian product) or
 `expected_selectors` (an explicit non-Cartesian set). Each expected identity
 must appear exactly once as a member or as a family-scoped gap with a
-non-blank reason. Document-level `[gaps]` records channels the sources leave
-undefined and do not satisfy family completeness:
+non-blank reason. Selector keys and string values must contain a
+non-whitespace character; otherwise nonblank values are preserved exactly, so
+leading/trailing whitespace remains part of identity. Document-level `[gaps]`
+records channels the sources leave undefined and do not satisfy family
+completeness:
 
 ```toml
+[transfers]
+requires = ["transfer_families_v1"]
+
 [transfer_families.front_end]
 provenance = { identity = "synthetic multi-range ADC note", locator = "Table 1" }
 input_unit = "adc_code"
@@ -376,6 +388,16 @@ reason = "auxiliary digital flag; no conversion"
 provenance = { identity = "synthetic multi-range ADC note", locator = "§9" }
 ```
 
+Every TOML document containing a family declares
+`[transfers] requires = ["transfer_families_v1"]`, even when it has no
+standalone transfers. Released 0.2.1 generators reject that array rather than
+silently ignoring the unknown family table and producing empty or incomplete
+output. An unused family capability is also rejected. Add
+`observation_guard_v1` or `source_provenance_v1` to the same array only when a
+standalone transfer uses that feature. Family guards and required family
+provenance are covered by `transfer_families_v1`; adding either standalone
+capability solely for a family is rejected as unused.
+
 Families may share a document with unrelated `[curves]`. Dense LUT generation
 stays curve-only; family members remain sparse integer transfers. Family knot
 default is 64 with a hard cap of 256. Every accepted member field is
@@ -404,7 +426,8 @@ applicability = { model_input = [0.2, 1.0] }
 ```
 
 The scaled-polynomial snippet above still needs a declared universe on the
-family table (`selector_axes` or `expected_selectors`) covering that member.
+family table (`selector_axes` or `expected_selectors`) covering that member and
+the document-level `[transfers] requires = ["transfer_families_v1"]` marker.
 
 Standalone polynomial definitions supply their own `scale` and `domain`. The
 generic polynomial evaluator includes `u16::MAX` whenever that declared domain
@@ -420,6 +443,17 @@ status, and document-level gap reasons. The universe exposes a checked
 `identity_count`; Cartesian overflow is a validation error, completeness is
 proven from indexed occupancy counts, and `identities()` enumerates lazily
 without materializing the axis product.
+
+Validation builds this structural inspection graph; it checks names and
+generated-symbol collisions, source-specific member shape and domains, typed
+selector identities, and completeness. Deriving or checking a source-specific
+window can include limited numerical work, notably NTC model evaluation.
+Full-window monotonicity, fitting, dense-oracle/error verification, and emitted
+aggregate budgets run for `emit` members when `generate` or `generate_report`
+is called. The transactional
+`insert_transfer` / `insert_family` APIs use the same structural rules before
+and after validation, so successful insertion does not by itself promise that
+generation will succeed.
 
 Family citations are a structured `provenance` table
 (identity, optional revision/locator/URL/note), distinct from fit policy,
@@ -475,7 +509,9 @@ mandatory citation but cannot clear it. The validated member's effective
 `provenance()` follows that choice while `provenance_override()` remains the
 original document declaration. Transfer-only generation uses
 `GenerateOptions::transfers_only()`; curve LUT `value_type` / `lut_size` are
-not required.
+not required. Prefitted knots require a dense truth oracle; after output
+scaling, that truth must be monotonic in the same direction as the knots before
+error is measured or accuracy metadata is emitted.
 
 `generate_report` exposes the same distinctions for audit tooling. Each
 emitted transfer reports its effective source citation, the separately
@@ -595,7 +631,12 @@ one value and has no inverse.
 Both directions round, so a convert-then-invert round trip is bounded rather
 than exact. Anything `convert` produces is guaranteed invertible; a value
 within half an uncalibrated quantum of a range endpoint clamps to that endpoint
-instead of failing. `TransferMetadata::achieved_max_inverse_code_error`
+instead of failing. The wrapper also recognizes the exact calibrated image of
+a signed inner endpoint when undoing the affine would otherwise exceed `i32`;
+an arbitrary unrepresentable inverse still reports overflow, and ordinary
+representable values outside the image retain range errors. Standalone
+`AffineTransform::unapply` continues to report overflow.
+`TransferMetadata::achieved_max_inverse_code_error`
 describes the *uncalibrated* table — wrapping it in a calibration can widen
 that bound. Those metadata fields describe the table, not the live affine
 coefficients.
@@ -897,9 +938,11 @@ format, clippy at `-D warnings` across the feature matrix, tests, rustdoc,
 no-std and ESP32 target builds, dependency policy, and packaging.
 
 Two jobs guard the crate's core promises. **`runtime-purity`** rejects a
-feature-conditional `#![no_std]` and builds the default feature set against a
-`core`-only sysroot, which is what proves *no-alloc* — a plain `--target`
-build only proves *no-std*, because bare-metal `rust-std` ships `alloc`.
+feature-conditional `#![no_std]`, rejects crate-root or macro-imported `std`,
+requires the explicit module-local link under `src/gen`, and builds the default
+feature set against a `core`-only sysroot. The build is what proves *no-alloc* —
+a plain `--target` build only proves *no-std*, because bare-metal `rust-std`
+ships `alloc`.
 **`feature-compat`** runs the 0.1.x `cargo run --features gen` invocation so
 the compatibility alias cannot rot.
 The core-only matrix includes `msp430-none-elf`: it proves the runtime remains

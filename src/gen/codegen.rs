@@ -1036,6 +1036,9 @@ mod tests {
     fn family_header_with_axes(axes: &str) -> String {
         format!(
             r#"
+[transfers]
+requires = ["transfer_families_v1"]
+
 [transfer_families.als]
 provenance = {{ identity = "test fixture" }}
 input_unit = "count"
@@ -1127,6 +1130,9 @@ selector_axes = {axes}
     #[test]
     fn scaled_polynomial_family_emits_sparse_integer_transfers_without_floats() {
         let toml = r#"
+[transfers]
+requires = ["transfer_families_v1"]
+
 [transfer_families.als]
 provenance = { identity = "test fixture" }
 input_unit = "count"
@@ -1277,7 +1283,8 @@ reason = "undefined channel"
 
     #[test]
     fn expanded_member_collides_with_standalone_transfer() {
-        let mut toml = String::from(
+        let mut toml = family_header();
+        toml.push_str(
             r#"
 [transfers.als_gain_div4_integration_time_ms_100]
 input_unit = "count"
@@ -1288,7 +1295,6 @@ domain = [1, 10]
 formula = "x"
 "#,
         );
-        toml.push_str(&family_header());
         toml.push_str(&member_toml("div4", 100, "emit"));
         let error = generate(
             &toml::from_str::<DefinitionsFile>(&toml).unwrap(),
@@ -1301,7 +1307,8 @@ formula = "x"
 
     #[test]
     fn family_member_companion_identifier_collision_is_rejected() {
-        let mut toml = String::from(
+        let mut toml = family_header();
+        toml.push_str(
             r#"
 [transfers.als_gain_div4_integration_time_ms_100_inputs]
 input_unit = "count"
@@ -1312,7 +1319,6 @@ domain = [1, 10]
 formula = "x"
 "#,
         );
-        toml.push_str(&family_header());
         toml.push_str(&member_toml("div4", 100, "emit"));
         let error = generate(
             &toml::from_str::<DefinitionsFile>(&toml).unwrap(),
@@ -1326,6 +1332,9 @@ formula = "x"
     #[test]
     fn generated_rustdoc_labels_provenance_representation_and_policy() {
         let toml = r#"
+[transfers]
+requires = ["transfer_families_v1"]
+
 [transfer_families.als]
 provenance = { identity = "synthetic ALS application note", revision = "1.0", locator = "Table 1" }
 input_unit = "count"
@@ -1447,6 +1456,9 @@ domain = [1, 10]
     #[test]
     fn observation_guard_rustdoc_is_policy_unless_cited() {
         let policy_only = r#"
+[transfers]
+requires = ["transfer_families_v1"]
+
 [transfer_families.als]
 provenance = { identity = "datasheet" }
 input_unit = "count"
@@ -1464,6 +1476,9 @@ status = "emit"
 applicability = { observation = [1, 10] }
 "#;
         let cited = r#"
+[transfers]
+requires = ["transfer_families_v1"]
+
 [transfer_families.als]
 provenance = { identity = "datasheet" }
 input_unit = "count"

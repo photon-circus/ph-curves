@@ -24,13 +24,22 @@ plugin ABI: README and `docs/design/gen-build-api.md` keep that as a non-goal.
 
 1. **Parsed** — `DefinitionsFile` from TOML, `insert_transfer`, or
    `insert_family`.
-2. **Validated** — `DefinitionsFile::validate` runs family/gap/identity and
-   selector-universe completeness checks without fitting or emitting Rust.
+2. **Validated** — `DefinitionsFile::validate` runs family/gap/identity,
+   source-specific mapping-shape, domain, collision, and selector-universe
+   completeness checks. Source-window derivation/checking may perform limited
+   numerical work, notably NTC model evaluation, but validation does not fit or
+   emit Rust.
    Every member, including `unnecessary`, `unsupported`, and `forbidden`, is
    inspectable, as is every family-scoped gap. Explicit and derived emitted
    names are reserved only for `emit`. Successful validation yields
    `FamilyCompleteness::Complete`. Document-level `[gaps]` remain a separate
    named map and do not occupy family identities.
+   Mapped description-only members (`unnecessary` and `forbidden`) prove that
+   the required applicability coordinate and input transform are structurally
+   valid for the selected family source and that its window can be derived and
+   checked. Because they are not emitted, the generator does not sweep that
+   window for full-window monotonicity, fit or error-measure it, lower it, or
+   emit it.
 3. **Generation sources** — TOML formula/points/model, or a `TransferSource`
    overlay (`EvaluatedTruth`, `PrefittedKnots`, `Points`). Source *citations*
    (`SourceProvenance`) are distinct from the selected representation (formula
@@ -105,7 +114,12 @@ Extension:
   fitting/boundary/guard policy. `FamilySpec` requires provenance because a
   source-backed family must name its document. `insert_family` on
   `DefinitionsFile` or `ValidatedDefinitions` (the latter re-validates) uses
-  the same pipeline as parsed TOML.
+  the same structural pipeline as parsed TOML. These insertion calls are
+  transactional and enforce the same names, symbols, selector identities, and
+  description-only collision rules before or after validation. They may run
+  source-specific window derivation/checks (including numerical NTC work), but
+  full-window monotonicity, fitting, error measurement, lowering, and emission
+  run only for `emit` members in `generate` / `generate_report`.
 - `ValidatedDefinitions::set_source` overlays truth or knots on a standalone
   transfer or an **emitted** family member. Description-only members reject
   overlays so source facts and generation input stay distinct. Construct the
@@ -123,8 +137,9 @@ Extension:
 - Evaluated truth is dense unscaled physical samples; the existing greedy
   fitter runs.
 - Prefitted knots skip the fitter. Inverse-code-error measurement and
-  `emit_transfer` still run. A dense oracle is required so interpolation error
-  is verified before the table and its accuracy metadata are emitted.
+  `emit_transfer` still run. A dense oracle is required; after output scaling,
+  it must be monotonic in the same direction as the knots before interpolation
+  error is measured and the table and its accuracy metadata are emitted.
 
 Output remains ordinary `PiecewiseLinearTransfer` constants. An optional
 observation-code guard (TOML `saturation`) is copied through family expansion
@@ -141,7 +156,14 @@ Standalone TOML guards require the localized
 makes older generators reject rather than silently omit the guard.
 Standalone TOML source provenance likewise requires
 `[transfers] requires = ["source_provenance_v1"]`. Documents using both list
-both strings in the same array. Programmatic construction needs no marker.
+both strings in the same array. TOML documents containing families add
+`"transfer_families_v1"`; released 0.2.1 generators reject the array before
+they can ignore the unknown family table. Family guards and family provenance
+are covered by that family capability and do not consume either standalone
+capability. Therefore a family-only document lists only
+`"transfer_families_v1"`; standalone capability strings are combined with it
+only when standalone transfers use those features. Missing and unused
+capabilities fail parsing. Programmatic construction needs no marker.
 
 ## Options
 

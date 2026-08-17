@@ -646,6 +646,13 @@ fn build_prefitted(
             "transfer `{name}`: prefitted truth must cover {domain_min}..={last} ({expected_len} samples)"
         ));
     }
+    let truth_direction = validate_monotonic(name, &scaled)?;
+    if truth_direction != direction {
+        return Err(format!(
+            "transfer `{name}`: prefitted knot direction {direction:?} does not match \
+             evaluated truth direction {truth_direction:?}"
+        ));
+    }
     let knot_offsets: Vec<usize> = inputs
         .iter()
         .map(|&input| usize::from(input - domain_min))
@@ -1150,6 +1157,28 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("not monotonic"), "{error}");
+    }
+
+    #[test]
+    fn prefitted_knots_reject_non_monotonic_dense_truth() {
+        let def = base_def();
+        let truth = EvaluatedTruth::new(0, vec![0.0, 2.0, 1.0, 3.0]);
+        let source = TransferSource::prefitted_knots_verified(vec![0, 3], vec![0, 3], truth);
+
+        let error = build_with_source("prefitted", &def, Some(&source)).unwrap_err();
+        assert!(error.contains("source is not monotonic"), "{error}");
+    }
+
+    #[test]
+    fn prefitted_knots_must_match_dense_truth_direction() {
+        let mut def = base_def();
+        def.max_interpolation_error = 3;
+        let truth = EvaluatedTruth::new(0, vec![3.0, 2.0, 1.0, 0.0]);
+        let source = TransferSource::prefitted_knots_verified(vec![0, 3], vec![0, 3], truth);
+
+        let error = build_with_source("prefitted", &def, Some(&source)).unwrap_err();
+        assert!(error.contains("knot direction Increasing"), "{error}");
+        assert!(error.contains("truth direction Decreasing"), "{error}");
     }
 
     #[test]

@@ -355,6 +355,9 @@ domain = [1, 10]
     #[test]
     fn malformed_description_only_member_fails_generate() {
         let toml = r#"
+[transfers]
+requires = ["transfer_families_v1"]
+
 [transfer_families.als]
 provenance = { identity = "test fixture" }
 input_unit = "count"

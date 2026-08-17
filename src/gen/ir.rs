@@ -317,8 +317,12 @@ impl ValidatedMember {
 impl DefinitionsFile {
     /// Validate families, gaps, and name collisions without generating Rust.
     ///
-    /// Every family member is checked before non-`emit` statuses are filtered.
-    /// Description-only members remain inspectable on the returned graph.
+    /// Every family member's structural and source-window declarations are
+    /// checked before non-`emit` statuses are filtered. Deriving or checking a
+    /// source-specific window may perform limited numerical work, notably NTC
+    /// model evaluation. Only `emit` members receive full-window monotonicity,
+    /// fitting, error measurement, lowering, and emission during generation;
+    /// description-only members remain inspectable on the returned graph.
     pub fn validate(&self) -> Result<ValidatedDefinitions, Error> {
         let resolved = self.resolved_transfers().map_err(Error::Validation)?;
         let curves: Vec<_> = self.curves.iter().collect();
@@ -704,11 +708,6 @@ impl ValidatedDefinitions {
                 "transfer `{name}` collides with an emitted transfer"
             )));
         }
-        if self.is_description_only(&name) {
-            return Err(Error::Validation(format!(
-                "transfer `{name}` collides with a description-only family member name"
-            )));
-        }
         let mut defs = self.defs.clone();
         defs.insert_transfer(spec)?;
         *self = defs.validate()?;
@@ -759,6 +758,9 @@ mod tests {
 
     fn family_toml() -> &'static str {
         r#"
+[transfers]
+requires = ["transfer_families_v1"]
+
 [transfer_families.als]
 provenance = { identity = "test fixture" }
 input_unit = "count"
@@ -887,6 +889,9 @@ reason = "counts only; no conversion"
     #[test]
     fn validate_enumerates_family_scoped_gaps_independently_of_global_gaps() {
         let toml = r#"
+[transfers]
+requires = ["transfer_families_v1"]
+
 [transfer_families.front_end]
 provenance = { identity = "test fixture" }
 input_unit = "count"
@@ -957,6 +962,9 @@ reason = "counts only; no conversion"
     #[test]
     fn family_gap_inherits_family_provenance_in_validated_ir() {
         let toml = r#"
+[transfers]
+requires = ["transfer_families_v1"]
+
 [transfer_families.front_end]
 provenance = { identity = "front-end datasheet", revision = "2.0", locator = "Table 7", url = "https://example.invalid/front-end", note = "characterization matrix" }
 input_unit = "count"
@@ -994,6 +1002,9 @@ reason = "the source does not characterize this mode"
     #[test]
     fn family_gap_override_replaces_identity_or_clears_inherited_fields() {
         let toml = r#"
+[transfers]
+requires = ["transfer_families_v1"]
+
 [transfer_families.front_end]
 provenance = { identity = "front-end datasheet", revision = "2.0", locator = "Table 7", url = "https://example.invalid/front-end", note = "characterization matrix" }
 input_unit = "count"
@@ -1057,6 +1068,9 @@ provenance = { clear = ["locator"] }
     #[test]
     fn invalid_family_gap_provenance_overrides_fail_validation() {
         let template = r#"
+[transfers]
+requires = ["transfer_families_v1"]
+
 [transfer_families.front_end]
 provenance = { identity = "front-end datasheet", locator = "Table 7" }
 input_unit = "count"
@@ -1101,6 +1115,9 @@ provenance = __OVERRIDE__
     #[test]
     fn programmatic_family_gap_override_is_preserved_in_validated_ir() {
         let toml = r#"
+[transfers]
+requires = ["transfer_families_v1"]
+
 [transfer_families.front_end]
 provenance = { identity = "front-end datasheet", locator = "Table 7", url = "https://example.invalid/front-end" }
 input_unit = "count"
@@ -1143,6 +1160,9 @@ applicability = { observation = [1, 10] }
     #[test]
     fn provenance_remains_a_valid_family_gap_selector_key() {
         let toml = r#"
+[transfers]
+requires = ["transfer_families_v1"]
+
 [transfer_families.front_end]
 provenance = { identity = "front-end datasheet", locator = "Table 7" }
 input_unit = "count"
@@ -1230,6 +1250,9 @@ provenance = { locator = "Table 8" }
     fn points_family_overlay_uses_resolved_clipped_control_point_domain() {
         let defs = DefinitionsFile::from_toml_str(
             r#"
+                [transfers]
+                requires = ["transfer_families_v1"]
+
                 [transfer_families.front_end]
 provenance = { identity = "test fixture" }
                 input_unit = "count"
@@ -1282,6 +1305,9 @@ provenance = { identity = "test fixture" }
     fn ntc_family_overlay_uses_derived_observation_domain() {
         let defs = DefinitionsFile::from_toml_str(
             r#"
+                [transfers]
+                requires = ["transfer_families_v1"]
+
                 [transfer_families.ntc]
 provenance = { identity = "test fixture" }
                 input_unit = "adc_code"
@@ -1693,6 +1719,9 @@ domain = [1, 3]
     #[test]
     fn provenance_round_trips_through_toml_and_inspection() {
         let toml = r#"
+[transfers]
+requires = ["transfer_families_v1"]
+
 [transfer_families.als]
 provenance = { identity = "synthetic ALS application note", revision = "1.0", locator = "Table 1", url = "https://example.invalid/als", note = "gain/IT matrix" }
 input_unit = "count"
@@ -1742,6 +1771,9 @@ provenance = { identity = "synthetic ALS application note", locator = "§9 white
     #[test]
     fn policy_is_independently_inspectable_from_provenance() {
         let toml = r#"
+[transfers]
+requires = ["transfer_families_v1"]
+
 [transfer_families.tight]
 provenance = { identity = "shared datasheet" }
 input_unit = "count"
@@ -1799,6 +1831,9 @@ applicability = { observation = [1, 10] }
 
     fn guarded_family_toml() -> &'static str {
         r#"
+[transfers]
+requires = ["transfer_families_v1"]
+
 [transfer_families.sensor]
 provenance = { identity = "family source", revision = "A", locator = "transfer table" }
 input_unit = "count"
@@ -1937,6 +1972,9 @@ provenance = { identity = "member source", revision = "B", locator = "member tab
     #[test]
     fn member_provenance_can_explicitly_clear_inherited_fields() {
         let toml = r#"
+[transfers]
+requires = ["transfer_families_v1"]
+
 [transfer_families.als]
 provenance = { identity = "datasheet", revision = "1.0", locator = "Table 1", url = "https://example.invalid", note = "family note" }
 input_unit = "count"
@@ -2042,6 +2080,9 @@ points = [
     #[test]
     fn gap_provenance_without_identity_fails_validation() {
         let toml = r#"
+[transfers]
+requires = ["transfer_families_v1"]
+
 [transfer_families.als]
 provenance = { identity = "datasheet" }
 input_unit = "count"
@@ -2090,6 +2131,9 @@ provenance = { locator = "§9" }
 
     fn formula_family_toml() -> &'static str {
         r#"
+[transfers]
+requires = ["transfer_families_v1"]
+
 [transfer_families.als]
 provenance = { identity = "synthetic ALS application note", revision = "1.0", locator = "Table 1" }
 input_unit = "count"
@@ -2259,6 +2303,9 @@ provenance = { identity = "errata sheet" }
     #[test]
     fn programmatic_points_and_scaled_polynomial_families_match_toml() {
         let points_toml = r#"
+[transfers]
+requires = ["transfer_families_v1"]
+
 [transfer_families.front_end]
 provenance = { identity = "test fixture" }
 input_unit = "count"
@@ -2341,6 +2388,9 @@ applicability = { observation = [0, 10] }
         );
 
         let poly_toml = r#"
+[transfers]
+requires = ["transfer_families_v1"]
+
 [transfer_families.als]
 provenance = { identity = "test fixture" }
 input_unit = "count"
@@ -2427,6 +2477,9 @@ applicability = { model_input = [100.0, 22000.0] }
     #[test]
     fn programmatic_ntc_family_matches_toml_validated_ir_and_generated_bytes() {
         let toml = r#"
+[transfers]
+requires = ["transfer_families_v1"]
+
 [transfer_families.ntc]
 provenance = { identity = "test fixture" }
 input_unit = "adc_code"
@@ -2763,6 +2816,50 @@ applicability = { physical = [-20.0, 80.0] }
                 .generate(&GenerateOptions::transfers_only())
                 .unwrap()
                 .contains("pub const BAR:")
+        );
+    }
+
+    #[test]
+    fn insert_transfer_before_or_after_validation_ignores_description_only_stems() {
+        fn standalone() -> TransferSpec {
+            TransferSpec::new(
+                "als_gain_x1",
+                "code",
+                "unit",
+                1,
+                1,
+                TransferSource::points(vec![
+                    PhysicalPoint::new(0, 0.0),
+                    PhysicalPoint::new(1, 1.0),
+                ]),
+            )
+        }
+
+        let mut before = DefinitionsFile::default();
+        before.insert_family(formula_family_spec()).unwrap();
+        before.insert_transfer(standalone()).unwrap();
+        let before = before.validate().unwrap();
+
+        let mut after_defs = DefinitionsFile::default();
+        after_defs.insert_family(formula_family_spec()).unwrap();
+        let mut after = after_defs.validate().unwrap();
+        after.insert_transfer(standalone()).unwrap();
+
+        assert_eq!(
+            before.emitted_transfer_names().collect::<Vec<_>>(),
+            after.emitted_transfer_names().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            before.generate(&GenerateOptions::transfers_only()).unwrap(),
+            after.generate(&GenerateOptions::transfers_only()).unwrap()
+        );
+        assert_eq!(
+            after.families()[0].members()[1].status(),
+            MemberStatus::Unnecessary
+        );
+        assert_eq!(
+            after.families()[0].members()[1].emitted_name(),
+            "als_gain_x1"
         );
     }
 

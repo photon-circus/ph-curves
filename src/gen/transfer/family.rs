@@ -712,7 +712,12 @@ impl GapDef {
 
 /// Expand families into standalone transfer defs.
 ///
-/// Every member is validated before non-`emit` statuses are filtered.
+/// Every member's identity, status, provenance, source-specific fields, and
+/// applicability window are validated before non-`emit` statuses are
+/// filtered. Window derivation may include limited numerical model evaluation.
+/// Only `emit` members are lowered into transfer definitions, swept for
+/// full-window monotonicity, fitted, error-measured, and generated;
+/// description-only mappings are not generation inputs.
 pub(crate) fn expand_families(
     families: &BTreeMap<String, TransferFamilyDef>,
 ) -> Result<BTreeMap<String, ResolvedTransfer>, String> {
@@ -933,9 +938,9 @@ fn validate_selector_axes(
         ));
     }
     for (name, values) in axes {
-        if name.is_empty() {
+        if name.trim().is_empty() {
             return Err(format!(
-                "transfer family `{family_name}`: selector axis names must not be empty"
+                "transfer family `{family_name}`: selector axis names must not be blank"
             ));
         }
         if values.is_empty() {
@@ -946,7 +951,7 @@ fn validate_selector_axes(
         let mut seen = BTreeSet::new();
         for value in values {
             if let SelectorValue::String(text) = value
-                && text.is_empty()
+                && text.trim().is_empty()
             {
                 return Err(format!(
                     "transfer family `{family_name}`: selector axis `{name}` must not contain a blank string"
@@ -978,9 +983,9 @@ fn validate_expected_selectors(
             "transfer family `{family_name}`: expected selector 0 must not be empty"
         ));
     }
-    if expected_keys.iter().any(|key| key.is_empty()) {
+    if expected_keys.iter().any(|key| key.trim().is_empty()) {
         return Err(format!(
-            "transfer family `{family_name}`: expected selector 0 keys must not be empty"
+            "transfer family `{family_name}`: expected selector 0 keys must not be blank"
         ));
     }
     let mut seen: BTreeMap<&BTreeMap<String, SelectorValue>, usize> = BTreeMap::new();
@@ -991,13 +996,13 @@ fn validate_expected_selectors(
             ));
         }
         for (key, value) in identity {
-            if key.is_empty() {
+            if key.trim().is_empty() {
                 return Err(format!(
-                    "transfer family `{family_name}`: expected selector {index} keys must not be empty"
+                    "transfer family `{family_name}`: expected selector {index} keys must not be blank"
                 ));
             }
             if let SelectorValue::String(text) = value
-                && text.is_empty()
+                && text.trim().is_empty()
             {
                 return Err(format!(
                     "transfer family `{family_name}`: expected selector {index} `{key}` must not be blank"
@@ -1035,11 +1040,11 @@ fn validate_family_gap(
         return Err(format!("{label}: selectors must not be empty"));
     }
     for (key, value) in &gap.selectors {
-        if key.is_empty() {
-            return Err(format!("{label}: selector keys must not be empty"));
+        if key.trim().is_empty() {
+            return Err(format!("{label}: selector keys must not be blank"));
         }
         if let SelectorValue::String(text) = value
-            && text.is_empty()
+            && text.trim().is_empty()
         {
             return Err(format!("{label}: selector `{key}` must not be blank"));
         }
@@ -1194,11 +1199,11 @@ fn validate_member(
         return Err(format!("{label}: emitted_name must not be blank"));
     }
     for (key, value) in &member.selectors {
-        if key.is_empty() {
-            return Err(format!("{label}: selector keys must not be empty"));
+        if key.trim().is_empty() {
+            return Err(format!("{label}: selector keys must not be blank"));
         }
         if let SelectorValue::String(text) = value
-            && text.is_empty()
+            && text.trim().is_empty()
         {
             return Err(format!("{label}: selector `{key}` must not be blank"));
         }
@@ -1873,6 +1878,63 @@ applicability = { observation = [1, 10] }
     }
 
     #[test]
+    fn whitespace_only_selector_keys_and_values_are_rejected() {
+        let mut blank_key = emit_member("div4", 100);
+        blank_key.selectors =
+            BTreeMap::from([("   ".into(), SelectorValue::String("value".into()))]);
+        let error = expand_families(&BTreeMap::from([(
+            "als".into(),
+            formula_family(vec![blank_key]),
+        )]))
+        .unwrap_err();
+        assert!(error.contains("selector keys must not be blank"), "{error}");
+
+        let mut blank_value = emit_member("div4", 100);
+        blank_value.selectors =
+            BTreeMap::from([("gain".into(), SelectorValue::String(" \t ".into()))]);
+        let error = expand_families(&BTreeMap::from([(
+            "als".into(),
+            formula_family(vec![blank_value]),
+        )]))
+        .unwrap_err();
+        assert!(
+            error.contains("selector `gain` must not be blank"),
+            "{error}"
+        );
+
+        let axes = BTreeMap::from([(" \t ".into(), vec![SelectorValue::String("value".into())])]);
+        let error = validate_selector_axes("als", &axes).unwrap_err();
+        assert!(error.contains("axis names must not be blank"), "{error}");
+
+        let identities = vec![BTreeMap::from([(
+            "gain".into(),
+            SelectorValue::String("   ".into()),
+        )])];
+        let error = validate_expected_selectors("als", &identities).unwrap_err();
+        assert!(error.contains("`gain` must not be blank"), "{error}");
+
+        let family = formula_family(vec![emit_member("div4", 100)]);
+        let gap = FamilyGapDef {
+            selectors: BTreeMap::from([("gain".into(), SelectorValue::String("   ".into()))]),
+            status: GapStatus::Undefined,
+            reason: "not characterized".into(),
+            provenance: None,
+        };
+        let error = validate_family_gap("als", &family, 0, &gap).unwrap_err();
+        assert!(
+            error.contains("selector `gain` must not be blank"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn nonblank_selector_whitespace_remains_part_of_exact_identity() {
+        let axes = BTreeMap::from([(" gain ".into(), vec![SelectorValue::String(" x1 ".into())])]);
+        let validated = validate_selector_axes("als", &axes).unwrap();
+        assert_eq!(validated, axes);
+    }
+
+    #[test]
     fn duplicate_selector_maps_are_rejected_across_statuses() {
         let mut families = BTreeMap::new();
         families.insert(
@@ -1919,6 +1981,27 @@ applicability = { observation = [1, 10] }
         assert_eq!(expanded.len(), 1);
         assert!(expanded.contains_key("als_a_div4"));
         assert!(!expanded.contains_key("als_a_1"));
+    }
+
+    #[test]
+    fn description_only_formula_mapping_is_not_evaluated_or_fitted() {
+        let mut emitted = emit_member("safe", 100);
+        emitted.applicability = observation([1, 4]);
+        let mut described = described("hazard", 100, MemberStatus::Unnecessary);
+        described.applicability = observation([4, 6]);
+        let mut family = formula_family(vec![emitted, described]);
+        family.formula = Some("1 / (x - 5)".into());
+
+        // The description-only window includes x=5, so treating it as a
+        // generation input would fail numerical evaluation.
+        let described_def = member_transfer("als", &family, &family.members[1]).unwrap();
+        let error = super::super::build("description_only_probe", &described_def).unwrap_err();
+        assert!(error.contains("non-finite output"), "{error}");
+
+        let expanded = expand_families(&BTreeMap::from([("als".into(), family)])).unwrap();
+        assert_eq!(expanded.len(), 1);
+        let emitted = &expanded["als_gain_safe_integration_time_ms_100"];
+        super::super::build("emitted", emitted).unwrap();
     }
 
     #[test]
@@ -2028,7 +2111,8 @@ applicability = { observation = [1, 10] }
     }
 
     fn parse_family(toml: &str) -> Result<DefinitionsFile, String> {
-        DefinitionsFile::from_toml_str(toml).map_err(|error| error.to_string())
+        let document = format!("[transfers]\nrequires = [\"transfer_families_v1\"]\n\n{toml}");
+        DefinitionsFile::from_toml_str(&document).map_err(|error| error.to_string())
     }
 
     #[test]

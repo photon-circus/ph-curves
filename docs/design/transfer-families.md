@@ -32,6 +32,15 @@ not add a device-specific model, a runtime family registry, or firmware API.
 
 A definitions document may contain `[transfer_families.<name>]` and
 `[gaps.<name>]` alongside standalone `[transfers]` and unrelated `[curves]`.
+Any TOML document with at least one family must also declare
+`[transfers] requires = ["transfer_families_v1"]`. The marker occupies a table
+shape released 0.2.1 generators cannot deserialize as a transfer, so they fail
+instead of silently dropping the unknown family table. It is rejected when no
+family is present. The standalone `observation_guard_v1` and
+`source_provenance_v1` capabilities share the array only when standalone
+transfers use those features. Family guard/provenance is covered solely by
+`transfer_families_v1`; adding a standalone capability only for a family fails
+as unused. Programmatic `FamilySpec` has no wire format and needs no marker.
 Dense LUT generation remains curve-only; family members still expand to sparse
 `PiecewiseLinearTransfer` constants. Family knot default is 64 with a hard cap
 of 256 so discrete members cannot become dense ADC tables. Standalone
@@ -95,8 +104,10 @@ Every expected identity is occupied by exactly one member (any status) or one
 family-scoped gap. A missing occupancy is an error; so is a member or
 family-scoped gap outside the universe, a wrong or missing selector key, a
 selector value type that disagrees with a homogeneous axis, or the same typed
-map used as both a member and a gap. Integer `1` and string `"1"` remain
-distinct identities.
+map used as both a member and a gap. Selector keys and string values must
+contain at least one non-whitespace character. Nonblank strings are not
+trimmed or canonicalized: leading/trailing whitespace remains part of the
+exact identity. Integer `1` and string `"1"` remain distinct identities.
 
 Family-scoped gaps are `[[transfer_families.<name>.gaps]]` records with the
 same typed selector map, `status = "undefined"`, a non-blank `reason`, and an
@@ -130,9 +141,13 @@ as evaluation: smallest code with `u >= min`, largest with `u <= max`.
 `status` is `emit`, `unnecessary`, `unsupported`, or `forbidden`. `emit`
 forbids `reason`. Every other status requires a non-blank `reason`.
 `unnecessary` and `forbidden` describe known mappings, so their transform and
-applicability are validated just like an emitted member. `unsupported` means
-the selector combination has no source mapping and therefore forbids both
-`input_transform` and `applicability`.
+applicability shape and source-specific window are structurally validated like
+an emitted member. Deriving/checking that window may include numerical source
+work, notably NTC model evaluation. Description-only members are nevertheless
+never swept for full-window monotonicity, fitted, error-measured, lowered, or
+emitted.
+`unsupported` means the selector combination has no source mapping and
+therefore forbids both `input_transform` and `applicability`.
 
 Gaps require `status = "undefined"` and a non-blank `reason`. They are not
 generated as transfers. Family-scoped gaps carry a selector identity;
@@ -155,10 +170,13 @@ also define their own domain.
 
 1. Deserialize with top-level and nested `deny_unknown_fields` on the family
    types.
-2. Validate **every** member (selectors, identity, status/reason, and the
-   source/member capability matrix for mapped statuses) before filtering
-   non-`emit` statuses. An `unsupported` member is instead checked to ensure
-   no source mapping was invented.
+2. Structurally validate **every** member (selectors, identity, status/reason,
+   and the source/member capability matrix and window for mapped statuses)
+   before filtering non-`emit` statuses. Window derivation/checking can perform
+   limited numerical source work, notably NTC evaluation. Full-window
+   monotonicity, fitting, interpolation-error measurement, lowering, and
+   emission happen later only for emitted members. An `unsupported` member is
+   instead checked to ensure no source mapping was invented.
 3. Resolve the declared selector universe (`selector_axes` xor
    `expected_selectors`). Reject empty axes, duplicate typed axis values,
    empty or duplicate expected maps, and heterogeneous key sets in
